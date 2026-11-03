@@ -1,0 +1,243 @@
+import type { Capability, QbitChain } from './capabilities'
+
+// Every error class carries a brand, `Symbol.for('qbit-rpc.<ClassName>')`, on
+// its prototype. `Symbol.for` keys are shared across realms and across the
+// CommonJS and ESM builds, so `X.is(error)` recognizes an error from another
+// copy of this package where `instanceof` cannot.
+function brand(target: { prototype: object }, name: string): void {
+  Object.defineProperty(target.prototype, Symbol.for(`qbit-rpc.${name}`), { value: true })
+}
+
+function hasBrand(value: unknown, name: string): boolean {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    (value as Record<symbol, unknown>)[Symbol.for(`qbit-rpc.${name}`)] === true
+  )
+}
+
+/**
+ * Base class of every error this package throws for a refused, failed or
+ * malformed call. The messages and properties it writes never contain
+ * credentials, cookie contents or request parameters; only `RpcError.message`
+ * carries the node's own text.
+ */
+export class QbitRpcError extends Error {
+  /** The JSON-RPC method the error is about, when there is one. */
+  readonly method?: string
+
+  constructor(message: string, method?: string, options?: { cause?: unknown }) {
+    super(message, options)
+    this.name = new.target.name
+    if (method !== undefined) this.method = method
+  }
+
+  /** Whether `value` is a `QbitRpcError` (or subclass) from any copy of this package. */
+  static is(value: unknown): value is QbitRpcError {
+    return hasBrand(value, 'QbitRpcError')
+  }
+}
+brand(QbitRpcError, 'QbitRpcError')
+
+/** Why a call was refused before any request was sent. */
+export type RpcCapabilityRefusal = 'not_enabled' | 'unknown_method' | 'not_batchable'
+
+/**
+ * The client refused a method before sending anything: its capability is not
+ * enabled, the method is not on the allowlist, or it cannot go in a batch.
+ */
+export class RpcCapabilityError extends QbitRpcError {
+  readonly reason: RpcCapabilityRefusal
+  /** The capability the method needs, for `not_enabled`. */
+  readonly required?: Capability
+
+  constructor(method: string, reason: RpcCapabilityRefusal, required?: Capability) {
+    const detail =
+      reason === 'not_enabled'
+        ? `needs the '${required}' capability, which this client does not enable`
+        : reason === 'unknown_method'
+          ? 'is not on the allowlist'
+          : 'cannot be sent in a batch (batches carry read methods only)'
+    super(`RPC method ${method} refused: it ${detail}`, method)
+    this.reason = reason
+    if (required !== undefined) this.required = required
+  }
+
+  static override is(value: unknown): value is RpcCapabilityError {
+    return hasBrand(value, 'RpcCapabilityError')
+  }
+}
+brand(RpcCapabilityError, 'RpcCapabilityError')
+
+/**
+ * A wallet-write or broadcast call was refused because the node's chain has
+ * not been confirmed (`reason: 'unconfirmed'`), or {@link QbitRpcClient.confirmChain}
+ * found a different chain (`reason: 'mismatch'`).
+ */
+export class RpcChainGuardError extends QbitRpcError {
+  readonly reason: 'unconfirmed' | 'mismatch'
+  readonly expected: QbitChain
+  /** The chain the node reported, for `mismatch`. */
+  readonly actual?: string
+
+  constructor(method: string, reason: 'unconfirmed' | 'mismatch', expected: QbitChain, actual?: string) {
+    super(
+      reason === 'unconfirmed'
+        ? `RPC method ${method} refused: call confirmChain() first to check the node is on ${expected}`
+        : `RPC method ${method} refused: the node reports chain '${actual}', expected '${expected}'`,
+      method
+    )
+    this.reason = reason
+    this.expected = expected
+    if (actual !== undefined) this.actual = actual
+  }
+
+  static override is(value: unknown): value is RpcChainGuardError {
+    return hasBrand(value, 'RpcChainGuardError')
+  }
+}
+brand(RpcChainGuardError, 'RpcChainGuardError')
+
+/**
+ * The node answered with a JSON-RPC error object. `code` is the node's error
+ * code (for example -5 invalid address or key, -8 invalid parameter, -25
+ * missing inputs, -26 rejected, -27 already in the chain, -28 warming up) and
+ * `message` the node's message, capped at 1,000 characters.
+ */
+export class RpcError extends QbitRpcError {
+  readonly code: number
+
+  constructor(method: string, code: number, message: string) {
+    super(message, method)
+    this.code = code
+  }
+
+  static override is(value: unknown): value is RpcError {
+    return hasBrand(value, 'RpcError')
+  }
+}
+brand(RpcError, 'RpcError')
+
+/**
+ * The request could not be completed: the connection failed (`network`), the
+ * node or a proxy answered with an HTTP status that carries no JSON-RPC reply
+ * (`http_status`, see `status`), or the cookie file could not be read
+ * (`credentials`).
+ */
+export class RpcTransportError extends QbitRpcError {
+  readonly reason: 'network' | 'http_status' | 'credentials'
+  /** The HTTP status, for `http_status`. */
+  readonly status?: number
+  /** A Node.js error code such as `ECONNREFUSED` or `ENOENT`, when there is one. */
+  readonly code?: string
+
+  constructor(
+    method: string,
+    reason: 'network' | 'http_status' | 'credentials',
+    details: { status?: number; code?: string } = {}
+  ) {
+    const message =
+      reason === 'http_status'
+        ? `RPC ${method} failed: HTTP ${details.status}${details.status === 401 ? ' (credentials rejected)' : ''}`
+        : reason === 'credentials'
+          ? `RPC ${method} failed: the cookie file could not be read${details.code ? ` (${details.code})` : ''}`
+          : `RPC ${method} failed: connection error${details.code ? ` (${details.code})` : ''}`
+    super(message, method)
+    this.reason = reason
+    if (details.status !== undefined) this.status = details.status
+    if (details.code !== undefined) this.code = details.code
+  }
+
+  static override is(value: unknown): value is RpcTransportError {
+    return hasBrand(value, 'RpcTransportError')
+  }
+}
+brand(RpcTransportError, 'RpcTransportError')
+
+/** The operation's deadline (`timeoutMs`) expired. It covers every attempt, backoff and the cookie read. */
+export class RpcTimeoutError extends QbitRpcError {
+  readonly timeoutMs: number
+
+  constructor(method: string, timeoutMs: number) {
+    super(`RPC ${method} timed out after ${timeoutMs} ms`, method)
+    this.timeoutMs = timeoutMs
+  }
+
+  static override is(value: unknown): value is RpcTimeoutError {
+    return hasBrand(value, 'RpcTimeoutError')
+  }
+}
+brand(RpcTimeoutError, 'RpcTimeoutError')
+
+/** The caller's `AbortSignal` fired. The signal's reason is the `cause`. */
+export class RpcAbortedError extends QbitRpcError {
+  constructor(method: string, reason: unknown) {
+    super(`RPC ${method} was aborted`, method, { cause: reason })
+  }
+
+  static override is(value: unknown): value is RpcAbortedError {
+    return hasBrand(value, 'RpcAbortedError')
+  }
+}
+brand(RpcAbortedError, 'RpcAbortedError')
+
+/** The response body passed `maxResponseBytes`, so the client stopped reading it. */
+export class RpcResponseTooLargeError extends QbitRpcError {
+  readonly limitBytes: number
+
+  constructor(method: string, limitBytes: number) {
+    super(`RPC ${method} response exceeded ${limitBytes} bytes`, method)
+    this.limitBytes = limitBytes
+  }
+
+  static override is(value: unknown): value is RpcResponseTooLargeError {
+    return hasBrand(value, 'RpcResponseTooLargeError')
+  }
+}
+brand(RpcResponseTooLargeError, 'RpcResponseTooLargeError')
+
+/**
+ * The response was not a well-formed JSON-RPC reply (`protocol`), or its result
+ * failed this package's validation (`validation`). `path` locates the
+ * offending value, for example `result.vout[0].value`.
+ */
+export class RpcResponseError extends QbitRpcError {
+  readonly reason: 'protocol' | 'validation'
+  readonly path: string
+
+  constructor(method: string, reason: 'protocol' | 'validation', path: string, expected: string) {
+    super(`RPC ${method} returned an invalid response at ${path}: expected ${expected}`, method)
+    this.reason = reason
+    this.path = path
+  }
+
+  static override is(value: unknown): value is RpcResponseError {
+    return hasBrand(value, 'RpcResponseError')
+  }
+}
+brand(RpcResponseError, 'RpcResponseError')
+
+/**
+ * A wallet-write or broadcast request may have been executed, but no valid
+ * reply arrived: the deadline expired, the caller aborted, the connection
+ * dropped, the reply was too large or malformed, or a proxy answered with a
+ * 5xx status after the request was sent. The client never retries such a call.
+ * Reconcile before trying again: for `sendrawtransaction`, look the `txid` up
+ * (`getrawtransaction`, `gettransaction`, `getmempoolentry`); resubmitting the
+ * same hex is harmless, but never rebuild the payment with different inputs.
+ * The underlying error is the `cause`.
+ */
+export class RpcUnknownOutcomeError extends QbitRpcError {
+  /** For `sendrawtransaction`, the txid computed from the submitted hex, when it parses. */
+  readonly txid?: string
+
+  constructor(method: string, cause: QbitRpcError, txid?: string) {
+    super(`RPC ${method} outcome is unknown: the node may have executed it (${cause.message})`, method, { cause })
+    if (txid !== undefined) this.txid = txid
+  }
+
+  static override is(value: unknown): value is RpcUnknownOutcomeError {
+    return hasBrand(value, 'RpcUnknownOutcomeError')
+  }
+}
+brand(RpcUnknownOutcomeError, 'RpcUnknownOutcomeError')

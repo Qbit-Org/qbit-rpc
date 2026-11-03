@@ -1,0 +1,62 @@
+{
+  "name": "@qbit-oss/rpc",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Node.js JSON-RPC client for qbit Core with capability gating, chain guard, strict result validation and lossless amounts",
+  "main": "lib/index.js",
+  "module": "lib/index.mjs",
+  "types": "lib/index.d.ts",
+  "files": [
+    "lib/**/*",
+    "src/**/*",
+    "README.md"
+  ],
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./lib/index.d.mts",
+        "default": "./lib/index.mjs"
+      },
+      "require": {
+        "types": "./lib/index.d.ts",
+        "default": "./lib/index.js"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "engines": {
+    "node": "^22.13.0 || ^24.0.0 || >=26.0.0"
+  },
+  "scripts": {
+    "build": "tsup",
+    "prepack": "tsup",
+    "test": "vitest run --config vitest.config.ts",
+    "test:regtest": "vitest run --config test/regtest/vitest.config.ts",
+    "typecheck": "tsc --noEmit",
+    "typecheck:test": "tsc -p test",
+    "clean": "rm -rf lib coverage"
+  },
+  "keywords": [
+    "qbit",
+    "json-rpc",
+    "qbitd",
+    "wallet"
+  ],
+  "author": "Qbit",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Qbit-Org/qbit-rpc.git",
+    "directory": "packages/rpc"
+  },
+  "bugs": {
+    "url": "https://github.com/Qbit-Org/qbit-rpc/issues"
+  },
+  "homepage": "https://github.com/Qbit-Org/qbit-rpc/tree/main/packages/rpc#readme",
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "vitest": "^5.0.5"
+  }
+}

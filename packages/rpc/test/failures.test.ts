@@ -1,0 +1,408 @@
+import { createHash } from 'node:crypto'
+import type { ServerResponse } from 'node:http'
+import { createServer, type AddressInfo } from 'node:net'
+
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+
+import {
+  QbitRpcClient,
+  requests,
+  RpcAbortedError,
+  RpcError,
+  RpcResponseError,
+  RpcResponseTooLargeError,
+  RpcTimeoutError,
+  RpcTransportError,
+  RpcUnknownOutcomeError,
+  type Capability,
+} from '../src'
+import { blockchainInfoJson, FakeNode, HASH_A, TX_HEX } from './helpers/fake-node'
+
+let node: FakeNode
+
+beforeEach(async () => {
+  node = await FakeNode.start()
+})
+afterEach(async () => {
+  await node.close()
+})
+
+const TXID = Buffer.from(
+  createHash('sha256')
+    .update(createHash('sha256').update(Buffer.from(TX_HEX, 'hex')).digest())
+    .digest()
+)
+  .reverse()
+  .toString('hex')
+
+async function confirmed(
+  options: { capabilities?: Capability[]; readRetries?: number; timeoutMs?: number } = {}
+): Promise<QbitRpcClient> {
+  const previous = node.handler
+  node.results({ getblockchaininfo: blockchainInfoJson('regtest') })
+  const rpc = new QbitRpcClient({
+    url: node.url,
+    auth: { username: 'u', password: 'p' },
+    expectedChain: 'regtest',
+    capabilities: options.capabilities ?? ['wallet-read', 'wallet-write', 'broadcast'],
+    retryDelayMs: 0,
+    ...(options.readRetries === undefined ? {} : { readRetries: options.readRetries }),
+    ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+  })
+  await rpc.confirmChain()
+  node.requests.length = 0
+  node.handler = previous
+  return rpc
+}
+
+const reply = (body: string, id: unknown): string => `{"jsonrpc":"2.0","result":${body},"id":${JSON.stringify(id)}}`
+const idOf = (body: string): unknown => (JSON.parse(body) as { id: unknown }).id
+
+async function failure(promise: Promise<unknown>): Promise<unknown> {
+  return promise.then(
+    () => expect.fail('expected the call to fail'),
+    (e: unknown) => e
+  )
+}
+
+describe('unknown outcomes after a side effect may have happened', () => {
+  it('reports a dropped connection after sendrawtransaction as unknown, with the txid, and never retries', async () => {
+    const rpc = await confirmed({ readRetries: 5 })
+    let broadcasts = 0
+    node.handler = (_request, response) => {
+      broadcasts += 1 // the node accepted and relayed it, then the reply was lost
+      response.socket?.destroy()
+    }
+    const error = await failure(rpc.sendRawTransaction(TX_HEX))
+    expect(RpcUnknownOutcomeError.is(error)).toBe(true)
+    expect((error as RpcUnknownOutcomeError).txid).toBe(TXID)
+    expect((error as RpcUnknownOutcomeError).method).toBe('sendrawtransaction')
+    expect(RpcTransportError.is((error as Error).cause)).toBe(true)
+    expect(broadcasts).toBe(1)
+    expect(node.requests).toHaveLength(1)
+  })
+
+  it('reports a timeout after the node acted as unknown, and the caller can reconcile by txid', async () => {
+    const rpc = await confirmed({ timeoutMs: 150 })
+    const mempool = new Set<string>()
+    node.handler = (request, response) => {
+      const call = JSON.parse(request.body) as { id: number; method: string; params: unknown[] }
+      if (call.method === 'sendrawtransaction') {
+        mempool.add(TXID) // side effect happens; the reply never comes
+        return
+      }
+      if (call.method === 'getrawtransaction') {
+        const found = mempool.has(call.params[0] as string)
+        response.end(
+          found
+            ? reply(JSON.stringify(TX_HEX), call.id)
+            : `{"jsonrpc":"2.0","error":{"code":-5,"message":"No such mempool transaction"},"id":${call.id}}`
+        )
+      }
+    }
+    const started = performance.now()
+    const error = await failure(rpc.sendRawTransaction(TX_HEX))
+    expect(performance.now() - started).toBeLessThan(1000)
+    expect(RpcUnknownOutcomeError.is(error)).toBe(true)
+    expect(RpcTimeoutError.is((error as Error).cause)).toBe(true)
+    const txid = (error as RpcUnknownOutcomeError).txid!
+    // Reconcile: the transaction is in the mempool, so it must not be rebuilt.
+    expect(await rpc.getRawTransaction(txid)).toBe(TX_HEX)
+    expect(node.calls().filter(call => call.method === 'sendrawtransaction')).toHaveLength(1)
+    await expect.poll(() => node.closedEarly).toBe(1)
+  })
+
+  it.each([
+    ['walletprocesspsbt', (rpc: QbitRpcClient) => rpc.walletProcessPsbt('cHNidP8=')],
+    [
+      'walletcreatefundedpsbt',
+      (rpc: QbitRpcClient) => rpc.walletCreateFundedPsbt({ outputs: [{ address: 'tq1x', amountBits: 1n }] }),
+    ],
+    ['walletpassphrase', (rpc: QbitRpcClient) => rpc.walletPassphrase('pw', 10)],
+    ['walletlock', (rpc: QbitRpcClient) => rpc.walletLock()],
+    ['call(lockunspent)', (rpc: QbitRpcClient) => rpc.call('lockunspent', [false])],
+  ])('treats a dropped reply to %s as unknown', async (_name, run) => {
+    const rpc = await confirmed({ readRetries: 3 })
+    node.handler = (_request, response) => response.socket?.destroy()
+    const error = await failure(run(rpc))
+    expect(RpcUnknownOutcomeError.is(error)).toBe(true)
+    expect(node.requests).toHaveLength(1)
+  })
+
+  type Respond = (response: ServerResponse, id: unknown) => void
+  const cases: [string, Respond][] = [
+    [
+      'an HTTP 502 from a proxy',
+      response => {
+        response.statusCode = 502
+        response.end('Bad Gateway')
+      },
+    ],
+    [
+      'a proxy 502 with its own JSON error',
+      response => {
+        response.statusCode = 502
+        response.end('{"error":{"code":502,"message":"Bad Gateway"}}')
+      },
+    ],
+    ['a malformed body', response => response.end('{"jsonrpc":"2.0","result":')],
+    ['a reply with the wrong id', response => response.end(reply(`"${TXID}"`, 999))],
+    ['a result that is not a txid', (response, id) => response.end(reply('"ok"', id))],
+    ['a txid that is not the submitted one', (response, id) => response.end(reply(`"${HASH_A}"`, id))],
+    ['an oversized reply', (response, id) => response.end(reply(`"${'0'.repeat(4096)}"`, id))],
+  ]
+  it.each(cases)('treats %s after sendrawtransaction as unknown', async (_name, respond) => {
+    const rpc = new QbitRpcClient({
+      url: node.url,
+      auth: { username: 'u', password: 'p' },
+      expectedChain: 'regtest',
+      capabilities: ['broadcast'],
+      maxResponseBytes: 1024,
+    })
+    node.results({ getblockchaininfo: blockchainInfoJson('regtest') })
+    await rpc.confirmChain()
+    node.handler = (request, response) => respond(response, idOf(request.body))
+    const error = await failure(rpc.sendRawTransaction(TX_HEX))
+    expect(RpcUnknownOutcomeError.is(error)).toBe(true)
+    expect((error as RpcUnknownOutcomeError).txid).toBe(TXID)
+  })
+
+  it('keeps definite answers definite: a node error, an auth rejection, a refused connection', async () => {
+    const rpc = await confirmed()
+    node.handler = (request, response) =>
+      response.end(
+        `{"jsonrpc":"2.0","error":{"code":-26,"message":"min relay fee not met"},"id":${idOf(request.body)}}`
+      )
+    const rejected = await failure(rpc.sendRawTransaction(TX_HEX))
+    expect(RpcError.is(rejected)).toBe(true)
+    expect(rejected).toMatchObject({ code: -26, message: 'min relay fee not met', method: 'sendrawtransaction' })
+
+    node.handler = (_request, response) => {
+      response.statusCode = 401
+      response.end()
+    }
+    const unauthorized = await failure(rpc.sendRawTransaction(TX_HEX))
+    expect(RpcTransportError.is(unauthorized)).toBe(true)
+    expect(unauthorized).toMatchObject({ reason: 'http_status', status: 401 })
+
+    // A port with nothing listening: the request never left this process.
+    const closed = createServer()
+    await new Promise<void>(resolve => closed.listen(0, '127.0.0.1', resolve))
+    const port = (closed.address() as AddressInfo).port
+    await new Promise<void>(resolve => closed.close(() => resolve()))
+    const offline = new QbitRpcClient({
+      url: `http://127.0.0.1:${port}/`,
+      auth: { username: 'u', password: 'p' },
+      expectedChain: 'regtest',
+      capabilities: ['broadcast'],
+    })
+    node.results({ getblockchaininfo: blockchainInfoJson('regtest') })
+    await expect(offline.confirmChain()).rejects.toMatchObject({ reason: 'network', code: 'ECONNREFUSED' })
+  })
+})
+
+describe('deadlines', () => {
+  it('times out a read that gets no reply and releases the connection', async () => {
+    node.handler = () => undefined
+    const rpc = new QbitRpcClient({
+      url: node.url,
+      auth: { username: 'u', password: 'p' },
+      expectedChain: 'regtest',
+      timeoutMs: 100,
+    })
+    const started = performance.now()
+    const error = await failure(rpc.getBestBlockHash())
+    expect(RpcTimeoutError.is(error)).toBe(true)
+    expect(error).toMatchObject({ timeoutMs: 100, method: 'getbestblockhash' })
+    expect(performance.now() - started).toBeLessThan(600)
+    await expect.poll(() => node.closedEarly).toBe(1)
+  })
+
+  it('applies one deadline to a whole batch, across retries and backoff', async () => {
+    let attempts = 0
+    node.handler = (_request, response) => {
+      attempts += 1
+      setTimeout(() => {
+        response.statusCode = 503
+        response.end()
+      }, 60)
+    }
+    const rpc = new QbitRpcClient({
+      url: node.url,
+      auth: { username: 'u', password: 'p' },
+      expectedChain: 'regtest',
+      readRetries: 10,
+      retryDelayMs: 20,
+    })
+    const started = performance.now()
+    const error = await failure(
+      rpc.batch([requests.getBlockHash(1), requests.getBlockHash(2), requests.getBestBlockHash()], { timeoutMs: 250 })
+    )
+    const elapsed = performance.now() - started
+    // Ten retries at 60 ms each plus backoff would take well over a second.
+    expect(elapsed).toBeLessThan(500)
+    expect(attempts).toBeGreaterThanOrEqual(2)
+    expect(attempts).toBeLessThan(10)
+    expect(RpcTimeoutError.is(error) || RpcTransportError.is(error)).toBe(true)
+  })
+
+  it('times out a batch whose reply never arrives', async () => {
+    node.handler = () => undefined
+    const rpc = new QbitRpcClient({ url: node.url, auth: { username: 'u', password: 'p' }, expectedChain: 'regtest' })
+    const error = await failure(rpc.batch([requests.getBlockHash(1), requests.getBlockHash(2)], { timeoutMs: 80 }))
+    expect(RpcTimeoutError.is(error)).toBe(true)
+    expect((error as RpcTimeoutError).method).toBe('batch(2)')
+  })
+
+  it('aborts on the caller signal, before or during a call', async () => {
+    node.handler = () => undefined
+    const rpc = new QbitRpcClient({ url: node.url, auth: { username: 'u', password: 'p' }, expectedChain: 'regtest' })
+    const before = new AbortController()
+    before.abort(new Error('stop'))
+    const early = await failure(rpc.getBestBlockHash({ signal: before.signal }))
+    expect(RpcAbortedError.is(early)).toBe(true)
+    expect(node.requests).toHaveLength(0)
+
+    const during = new AbortController()
+    const pending = rpc.getBestBlockHash({ signal: during.signal })
+    await expect.poll(() => node.requests.length).toBe(1)
+    during.abort('user')
+    const late = await failure(pending)
+    expect(RpcAbortedError.is(late)).toBe(true)
+    expect((late as Error).cause).toBe('user')
+  })
+
+  it('validates timeoutMs', async () => {
+    const rpc = new QbitRpcClient({ url: node.url, auth: { username: 'u', password: 'p' }, expectedChain: 'regtest' })
+    for (const timeoutMs of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      await expect(rpc.getBestBlockHash({ timeoutMs })).rejects.toThrow(RangeError)
+    }
+    expect(
+      () =>
+        new QbitRpcClient({
+          url: node.url,
+          auth: { username: 'u', password: 'p' },
+          expectedChain: 'regtest',
+          timeoutMs: Infinity,
+        })
+    ).toThrow(RangeError)
+    expect(node.requests).toHaveLength(0)
+  })
+})
+
+describe('read retries', () => {
+  it('does not retry unless the caller opts in', async () => {
+    node.handler = (_request, response) => {
+      response.statusCode = 503
+      response.end()
+    }
+    const rpc = new QbitRpcClient({ url: node.url, auth: { username: 'u', password: 'p' }, expectedChain: 'regtest' })
+    await expect(rpc.getBestBlockHash()).rejects.toMatchObject({ reason: 'http_status', status: 503 })
+    expect(node.requests).toHaveLength(1)
+  })
+
+  it('retries reads after transient failures and warm-up when enabled', async () => {
+    const script = ['drop', '503', 'warmup', 'ok']
+    node.handler = (request, response) => {
+      const step = script.shift()
+      if (step === 'drop') return void response.socket?.destroy()
+      if (step === '503') {
+        response.statusCode = 503
+        return void response.end()
+      }
+      if (step === 'warmup') {
+        return void response.end(
+          `{"jsonrpc":"2.0","error":{"code":-28,"message":"Loading block index..."},"id":${idOf(request.body)}}`
+        )
+      }
+      response.end(reply(JSON.stringify(HASH_A), idOf(request.body)))
+    }
+    const rpc = new QbitRpcClient({
+      url: node.url,
+      auth: { username: 'u', password: 'p' },
+      expectedChain: 'regtest',
+      readRetries: 3,
+      retryDelayMs: 1,
+    })
+    expect(await rpc.getBestBlockHash()).toBe(HASH_A)
+    expect(node.requests).toHaveLength(4)
+  })
+
+  it('does not retry definite failures', async () => {
+    node.handler = (request, response) =>
+      response.end(
+        `{"jsonrpc":"2.0","error":{"code":-8,"message":"Block height out of range"},"id":${idOf(request.body)}}`
+      )
+    const rpc = new QbitRpcClient({
+      url: node.url,
+      auth: { username: 'u', password: 'p' },
+      expectedChain: 'regtest',
+      readRetries: 3,
+    })
+    await expect(rpc.getBlockHash(99)).rejects.toMatchObject({ code: -8 })
+    expect(node.requests).toHaveLength(1)
+  })
+})
+
+describe('malformed and oversized responses', () => {
+  const rpcWith = (maxResponseBytes?: number): QbitRpcClient =>
+    new QbitRpcClient({
+      url: node.url,
+      auth: { username: 'u', password: 'p' },
+      expectedChain: 'regtest',
+      ...(maxResponseBytes === undefined ? {} : { maxResponseBytes }),
+    })
+
+  it('stops reading a reply past maxResponseBytes, declared or streamed', async () => {
+    node.handler = (_request, response) => {
+      response.setHeader('content-length', 5000)
+      response.end('x'.repeat(5000))
+    }
+    const declared = await failure(rpcWith(1024).getBestBlockHash())
+    expect(RpcResponseTooLargeError.is(declared)).toBe(true)
+    expect((declared as RpcResponseTooLargeError).limitBytes).toBe(1024)
+
+    node.handler = (_request, response) => {
+      const chunk = 'y'.repeat(512)
+      const write = (left: number): void => {
+        if (left === 0) return void response.end()
+        response.write(chunk, () => setImmediate(() => write(left - 1)))
+      }
+      write(100)
+    }
+    const streamed = await failure(rpcWith(1024).getBestBlockHash())
+    expect(RpcResponseTooLargeError.is(streamed)).toBe(true)
+  })
+
+  it.each([
+    ['not JSON', 'Internal error'],
+    ['an array for a single call', '[]'],
+    ['a missing jsonrpc marker', `{"result":"${HASH_A}","id":1}`],
+    ['the wrong id', `{"jsonrpc":"2.0","result":"${HASH_A}","id":2}`],
+    ['a string id', `{"jsonrpc":"2.0","result":"${HASH_A}","id":"1"}`],
+    ['both result and error', `{"jsonrpc":"2.0","result":null,"error":{"code":-1,"message":"x"},"id":1}`],
+    ['neither result nor error', '{"jsonrpc":"2.0","id":1}'],
+    ['an unexpected key', `{"jsonrpc":"2.0","result":"${HASH_A}","id":1,"extra":true}`],
+    ['an error without a code', '{"jsonrpc":"2.0","error":{"message":"x"},"id":1}'],
+    ['a fractional error code', '{"jsonrpc":"2.0","error":{"code":-1.5,"message":"x"},"id":1}'],
+  ])('rejects a reply with %s as a protocol error', async (_label, body) => {
+    node.handler = (_request, response) => response.end(body)
+    const error = await failure(rpcWith().getBestBlockHash())
+    expect(RpcResponseError.is(error)).toBe(true)
+    expect((error as RpcResponseError).reason).toBe('protocol')
+  })
+
+  it('rejects a body that is not valid UTF-8', async () => {
+    node.handler = (_request, response) => response.end(Buffer.from([0x7b, 0xff, 0xfe, 0x7d]))
+    const error = await failure(rpcWith().getBestBlockHash())
+    expect(error).toMatchObject({ reason: 'protocol' })
+  })
+
+  it('passes a JSON-RPC error carried by an HTTP error status through as RpcError', async () => {
+    node.handler = (request, response) => {
+      response.statusCode = 500
+      response.end(`{"result":null,"error":{"code":-1,"message":"legacy"},"id":${idOf(request.body)}}`)
+    }
+    await expect(rpcWith().getBestBlockHash()).rejects.toSatisfy(error => RpcError.is(error) && error.code === -1)
+  })
+})
