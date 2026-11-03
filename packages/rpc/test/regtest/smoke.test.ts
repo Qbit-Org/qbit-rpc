@@ -2,7 +2,16 @@ import { execFileSync } from 'node:child_process'
 
 import { describe, expect, it } from 'vitest'
 
-import { JsonNumber, QbitRpcClient, requests, RpcChainGuardError, RpcError, type QbitRpcClientOptions } from '../../src'
+import {
+  JsonNumber,
+  QbitRpcClient,
+  requests,
+  RpcChainGuardError,
+  RpcError,
+  type Outpoint,
+  type QbitRpcClientOptions,
+} from '../../src'
+import type { CoreRpc } from '../helpers/core-rpc'
 
 // Runs only under scripts/regtest-smoke.sh, which starts a throwaway regtest
 // node on loopback and sets these variables.
@@ -264,5 +273,156 @@ describe.runIf(enabled)('qbit Core v1.0.0 regtest', () => {
       proofMode: 'p2mr-pubkey',
     })
     expect(verified).toMatchObject({ valid: true, address, messageHash })
+  })
+
+  // Every method qbit-payments' core-wallet adapter reaches, through its own
+  // CoreRpc interface, on the client it is wired with.
+  it('serves the payout adapter: chain tip, outputs, mempool, addresses, change and coin locks', async () => {
+    const wallet = client({ wallet: 'smoke', capabilities: ['wallet-read', 'wallet-write', 'broadcast'] })
+    await wallet.confirmChain()
+    const core: CoreRpc = wallet
+    const nodeError = (code: number) => (error: unknown) => RpcError.is(error) && error.code === code
+    const sorted = (outpoints: Outpoint[]): Outpoint[] =>
+      [...outpoints].sort((a, b) => `${a.txid}:${a.vout}`.localeCompare(`${b.txid}:${b.vout}`))
+    cli('-named', 'createwallet', 'wallet_name=adapter-foreign', 'descriptors=true')
+    const foreign = cli('-rpcwallet=adapter-foreign', 'getnewaddress', '', 'p2mr')
+
+    // getblockcount.
+    const height = await core.getBlockCount()
+    expect(height).toBe((await wallet.getBlockchainInfo()).blocks)
+
+    // getrawchangeaddress, and getaddressinfo with the PQC signature budget.
+    const change = await core.getRawChangeAddress({ addressType: 'p2mr' })
+    const changeInfo = await wallet.getAddressInfo(change)
+    expect(changeInfo).toMatchObject({
+      address: change,
+      isMine: true,
+      solvable: true,
+      isChange: true,
+      witnessVersion: 2,
+    })
+    expect(changeInfo.pqcKeyStates).toHaveLength(1)
+    const [changeKey] = changeInfo.pqcKeyStates!
+    expect(changeKey).toMatchObject({ pqcSignatureCount: 0, pqcSignatureLimit: 2 ** 30, pqcLimitState: 'normal' })
+    expect(changeInfo).toMatchObject({
+      pqcOverallLimitState: 'normal',
+      pqcSignatureCount: 0,
+      pqcSignatureLimit: 2 ** 30,
+      pqcSignaturesRemaining: 2 ** 30,
+      pqcLimitState: 'normal',
+    })
+    expect(await wallet.getRawChangeAddress()).toMatch(/^qbrt1z/)
+    await expect(wallet.getRawChangeAddress({ addressType: 'bogus' })).rejects.toSatisfy(nodeError(-5))
+    const locked = client({ wallet: 'locked', capabilities: ['wallet-write'] })
+    await locked.confirmChain()
+    expect(await locked.getRawChangeAddress({ addressType: 'p2mr' })).toMatch(/^qbrt1z/)
+    const receive = (await wallet.call('getnewaddress', ['', 'p2mr'])) as string
+    expect(await wallet.getAddressInfo(receive.toUpperCase())).toMatchObject({ address: receive, isChange: false })
+    const foreignInfo = await core.getAddressInfo(foreign)
+    expect(foreignInfo).toMatchObject({ address: foreign, isMine: false, solvable: false })
+    expect(foreignInfo).not.toHaveProperty('pqcKeyStates')
+    await expect(
+      wallet.getAddressInfo('qb1zqqqsyqcyq5rqwzqfpg9scrgwpugpzysnzs23v9ccrydpk8qarc0sjq57mw')
+    ).rejects.toSatisfy(nodeError(-5))
+
+    // gettxout of a confirmed coin.
+    const [coin, second] = await wallet.listUnspent()
+    const outpoint = { txid: coin!.txid, vout: coin!.vout }
+    const other = { txid: second!.txid, vout: second!.vout }
+    const unspent = await core.getTxOut(coin!.txid, coin!.vout)
+    expect(unspent).toMatchObject({
+      confirmations: coin!.confirmations,
+      valueBits: coin!.amountBits,
+      scriptPubKey: { hex: coin!.scriptPubKey, address: coin!.address, type: 'witness_v2_p2mr' },
+    })
+    expect(unspent!.bestBlock).toBe(await wallet.getBestBlockHash())
+    expect(unspent!.coinbase).toBe('coinbase' in (await wallet.getRawTransactionVerbose(coin!.txid)).vin[0]!)
+    expect(await wallet.getTxOut(coin!.txid, 999)).toBeNull()
+
+    // lockunspent and listlockunspent.
+    await wallet.call('lockunspent', [true])
+    expect(await core.listLockUnspent()).toEqual([])
+    expect(await core.lockUnspent(false, [outpoint])).toBe(true)
+    expect(await core.listLockUnspent()).toEqual([outpoint])
+    expect((await wallet.listUnspent()).some(u => u.txid === coin!.txid && u.vout === coin!.vout)).toBe(false)
+    await expect(wallet.lockUnspent(false, [outpoint])).rejects.toSatisfy(nodeError(-8))
+    // One bad output and the node changes nothing.
+    await expect(wallet.lockUnspent(false, [other, { txid: '00'.repeat(32), vout: 0 }])).rejects.toSatisfy(
+      nodeError(-8)
+    )
+    await expect(wallet.lockUnspent(false, [{ txid: coin!.txid, vout: 999 }])).rejects.toSatisfy(nodeError(-8))
+    await expect(wallet.lockUnspent(true, [outpoint, other])).rejects.toSatisfy(nodeError(-8))
+    expect(await wallet.listLockUnspent()).toEqual([outpoint])
+    expect(await wallet.lockUnspent(false, [other], { persistent: true })).toBe(true)
+    expect(sorted(await wallet.listLockUnspent())).toEqual(sorted([outpoint, other]))
+    expect(await wallet.lockUnspent(true, [outpoint, other])).toBe(true)
+    expect(await wallet.listLockUnspent()).toEqual([])
+    await expect(wallet.lockUnspent(true, [outpoint])).rejects.toSatisfy(nodeError(-8))
+
+    // Spend the coin: signing uses one signature of its key, which getaddressinfo reports.
+    const before = await wallet.getAddressInfo(coin!.address!)
+    const funded = await wallet.walletCreateFundedPsbt({
+      inputs: [outpoint],
+      outputs: [{ address: foreign, amountBits: 100_000_000n }],
+      options: { addInputs: false, changeAddress: change, feeRateBitsPerKvB: 2000n },
+    })
+    const signed = await wallet.walletProcessPsbt(funded.psbt)
+    const after = await wallet.getAddressInfo(coin!.address!)
+    expect(after.pqcKeyStates![0]!.pqcSignatureCount).toBe(before.pqcKeyStates![0]!.pqcSignatureCount + 1)
+    expect(after.pqcSignaturesRemaining).toBe(before.pqcSignaturesRemaining! - 1)
+    expect(signed.pqcKeyStates![0]!.pqcSignatureCount).toBe(after.pqcSignatureCount)
+    const txid = await wallet.sendRawTransaction(signed.hex!)
+    const decoded = await wallet.getRawTransactionVerbose(txid)
+    expect(decoded.vout[funded.changePos]!.scriptPubKey.address).toBe(change)
+    const paid = decoded.vout.findIndex(output => output.scriptPubKey.address === foreign)
+
+    // getmempoolentry, and gettxout with and without the mempool.
+    const entry = await wallet.getMempoolEntry(txid)
+    expect(entry).toMatchObject({ height, ancestorCount: 1, descendantCount: 1, depends: [], spentBy: [] })
+    expect(entry.fees.baseBits).toBe(funded.feeBits)
+    expect(entry.vsize).toBe(entry.weight)
+    expect(entry.wtxid).toBe(decoded.hash)
+    expect(typeof (await core.getMempoolEntry(txid))).toBe('object')
+    expect(await core.getTxOut(coin!.txid, coin!.vout, { includeMempool: true })).toBeNull()
+    expect(await wallet.getTxOut(coin!.txid, coin!.vout, { includeMempool: false })).toMatchObject({
+      valueBits: coin!.amountBits,
+    })
+    expect(await wallet.getTxOut(txid, paid)).toMatchObject({
+      confirmations: 0,
+      valueBits: 100_000_000n,
+      coinbase: false,
+      scriptPubKey: { address: foreign },
+    })
+    expect(await wallet.getTxOut(txid, paid, { includeMempool: false })).toBeNull()
+
+    // A child spending the change: the two entries name each other.
+    const childFunded = await wallet.walletCreateFundedPsbt({
+      inputs: [{ txid, vout: funded.changePos }],
+      outputs: [{ address: foreign, amountBits: 100_000_000n }],
+      options: { addInputs: false, feeRateBitsPerKvB: 2000n },
+    })
+    const child = await wallet.sendRawTransaction((await wallet.walletProcessPsbt(childFunded.psbt)).hex!)
+    expect((await wallet.getMempoolEntry(txid)).spentBy).toEqual([child])
+    expect(await wallet.getMempoolEntry(child)).toMatchObject({ depends: [txid], ancestorCount: 2 })
+
+    // Mined: out of the mempool, and confirmed in the UTXO set.
+    cli('generatetoaddress', '1', foreign)
+    expect(await core.getBlockCount()).toBe(height + 1)
+    await expect(core.getMempoolEntry(txid)).rejects.toSatisfy(nodeError(-5))
+    expect(await wallet.getTxOut(txid, paid, { includeMempool: false })).toMatchObject({ confirmations: 1 })
+
+    // The read and wallet-read methods in one batch.
+    const [count, spent, info, locks, gone] = await wallet.batch([
+      requests.getBlockCount(),
+      requests.getTxOut(coin!.txid, coin!.vout),
+      requests.getAddressInfo(change),
+      requests.listLockUnspent(),
+      requests.getMempoolEntry(txid),
+    ])
+    expect(count).toEqual({ ok: true, value: height + 1 })
+    expect(spent).toEqual({ ok: true, value: null })
+    expect(info.ok && info.value.isChange).toBe(true)
+    expect(locks).toEqual({ ok: true, value: [] })
+    expect(!gone.ok && RpcError.is(gone.error) && gone.error.code).toBe(-5)
   })
 })
