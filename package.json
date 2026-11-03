@@ -1,0 +1,42 @@
+{
+  "name": "qbit-rpc",
+  "version": "0.0.0",
+  "private": true,
+  "description": "TypeScript clients for qbit Core JSON-RPC and ZMQ",
+  "engines": {
+    "node": "^22.13.0 || ^24.0.0 || >=26.0.0"
+  },
+  "packageManager": "pnpm@11.28.6+sha512.55d90390c3b39042f1505a2697789f0256c6d95bb28bdd7cb731af1887c9f2629ef581acb9f4e4ec772024c8203c2aed22a03299b97103fdcf32668e905d0024",
+  "scripts": {
+    "build": "pnpm -r --if-present build",
+    "test": "pnpm -r --if-present test",
+    "test:regtest": "pnpm -r --workspace-concurrency=1 --if-present test:regtest",
+    "typecheck": "pnpm -r --if-present typecheck",
+    "typecheck:test": "pnpm -r --if-present typecheck:test",
+    "clean": "pnpm -r --if-present clean",
+    "pack:check": "node scripts/check-pack.mjs",
+    "consumer:check": "node scripts/check-packed-consumer.mjs",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "verify": "pnpm format:check && pnpm build && pnpm test && pnpm typecheck && pnpm typecheck:test && pnpm pack:check && pnpm consumer:check"
+  },
+  "keywords": [
+    "qbit",
+    "json-rpc",
+    "zmq",
+    "typescript"
+  ],
+  "author": "Qbit",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Qbit-Org/qbit-rpc.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Qbit-Org/qbit-rpc/issues"
+  },
+  "homepage": "https://github.com/Qbit-Org/qbit-rpc#readme",
+  "devDependencies": {
+    "prettier": "3.9.10"
+  }
+}

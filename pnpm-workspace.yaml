@@ -1,0 +1,17 @@
+packages:
+  - 'packages/*'
+
+# pnpm 11 reads only camelCase settings from this file; kebab-case keys are ignored.
+preferWorkspacePackages: true
+linkWorkspacePackages: true
+sharedWorkspaceLockfile: true
+
+# Dependency lifecycle scripts are blocked unless approved here (strictDepBuilds
+# fails the install otherwise). esbuild's postinstall verifies its platform
+# binary; zeromq's install script selects its prebuilt native addon.
+allowBuilds:
+  esbuild: true
+  zeromq: true
+
+# Do not resolve package versions published less than 1 day (in minutes) ago.
+minimumReleaseAge: 1440
