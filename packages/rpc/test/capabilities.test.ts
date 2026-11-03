@@ -47,8 +47,12 @@ describe('capabilities', () => {
       [rpc.getTransaction(HASH_A), 'wallet-read'],
       [rpc.getAddressInfo('qbrt1zaddress'), 'wallet-read'],
       [rpc.listLockUnspent(), 'wallet-read'],
+      [rpc.listSinceBlock(), 'wallet-read'],
+      [rpc.listTransactions(), 'wallet-read'],
+      [rpc.getBalances(), 'wallet-read'],
       [rpc.walletLock(), 'wallet-write'],
       [rpc.getRawChangeAddress({ addressType: 'p2mr' }), 'wallet-write'],
+      [rpc.getNewAddress({ label: 'deposit' }), 'wallet-write'],
       [rpc.lockUnspent(false, [{ txid: HASH_A, vout: 0 }]), 'wallet-write'],
       [rpc.walletPassphrase('secret passphrase', 10), 'wallet-write'],
       [rpc.walletProcessPsbt('cHNidP8='), 'wallet-write'],
@@ -89,6 +93,7 @@ describe('capabilities', () => {
     expect(error.reason).toBe('not_batchable')
     expect((await refusal(rpc.batch([requests.testMempoolAccept([TX_HEX])]))).reason).toBe('not_batchable')
     expect((await refusal(rpc.batch([requests.getRawChangeAddress()]))).reason).toBe('not_batchable')
+    expect((await refusal(rpc.batch([requests.getBalances(), requests.getNewAddress()]))).reason).toBe('not_batchable')
     const lock = requests.lockUnspent(true, [{ txid: HASH_A, vout: 0 }])
     expect((await refusal(rpc.batch([requests.listLockUnspent(), lock]))).reason).toBe('not_batchable')
     expect((await refusal(client().batch([requests.getWalletInfo()]))).reason).toBe('not_enabled')
@@ -180,6 +185,7 @@ describe('chain guard', () => {
       rpc.call('lockunspent', [true]),
       rpc.lockUnspent(false, [{ txid: HASH_A, vout: 0 }]),
       rpc.getRawChangeAddress(),
+      rpc.getNewAddress(),
     ]) {
       const error = await promise.then(
         () => expect.fail('expected a refusal'),

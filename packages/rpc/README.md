@@ -42,8 +42,8 @@ Every method, typed or through `call()`, must be on the allowlist
 | Capability | Methods |
 | --- | --- |
 | none (read) | `getblockchaininfo`, `getnetworkinfo`, `getbestblockhash`, `getblockcount`, `getblockhash`, `getblockheader`, `getrawtransaction`, `getmempoolentry`, `gettxout`, `getconfirmationtarget`, `estimatesmartfee`, `validateaddress`, `verifydatapqchash`; untyped: `getblock`, `getchaintips`, `getmempoolinfo`, `getrawmempool`, `decoderawtransaction`, `decodepsbt`, `analyzepsbt`, `getorphanmetrics`, `getarchivepeers`, `getindexinfo`, `getzmqnotifications`, `uptime` |
-| `wallet-read` | `getwalletinfo`, `gettransaction`, `listunspent`, `getaddressinfo`, `listlockunspent`; untyped: `getbalances`, `listtransactions`, `listsinceblock`, `listwallets` |
-| `wallet-write` | `walletcreatefundedpsbt`, `walletprocesspsbt`, `finalizepsbt`, `walletpassphrase`, `walletlock`, `getrawchangeaddress`, `lockunspent`; untyped: `getnewaddress` |
+| `wallet-read` | `getwalletinfo`, `gettransaction`, `listunspent`, `getaddressinfo`, `listlockunspent`, `listsinceblock`, `listtransactions`, `getbalances`; untyped: `listwallets` |
+| `wallet-write` | `walletcreatefundedpsbt`, `walletprocesspsbt`, `finalizepsbt`, `walletpassphrase`, `walletlock`, `getrawchangeaddress`, `lockunspent`, `getnewaddress` |
 | `broadcast` | `testmempoolaccept`, `sendrawtransaction` |
 
 `sendmany`, `sendtoaddress`, `send`, `sendall`, `bumpfee` and `psbtbumpfee` are
@@ -102,11 +102,15 @@ offending value.
 | `listUnspent(options?)` | `UnspentOutput[]` |
 | `getAddressInfo(address)` | `AddressInfo` with the PQC usage fields; checks the address |
 | `listLockUnspent()` | `Outpoint[]` (`{ txid, vout }`) |
+| `listSinceBlock({ blockHash?, targetConfirmations?, includeWatchOnly?, includeRemoved?, includeChange? })` | `SinceBlockHistory`: `transactions`, `removed`, `lastBlock`; `RpcError` -5 for an unknown block |
+| `listTransactions({ label?, count?, skip?, includeWatchOnly? })` | `WalletHistoryEntry[]`, the newest `count` (default 10), oldest first |
+| `getBalances()` | `WalletBalances`: `mine` (`trustedBits`, `untrustedPendingBits`, `immatureBits`, `usedBits?`) and `lastProcessedBlock` |
 | `walletCreateFundedPsbt({ inputs?, outputs, locktime?, options?, bip32derivs?, version? })` | `{ psbt, feeBits, changePos }` |
 | `walletProcessPsbt(psbt, { sign?, sighashType?, bip32derivs?, finalize? })` | `ProcessedPsbt` with the PQC usage fields |
 | `finalizePsbt(psbt, { extract? })` | `{ psbt?, hex?, complete }` |
 | `walletPassphrase(passphrase, timeoutSeconds)`, `walletLock()` | nothing |
 | `getRawChangeAddress({ addressType? })` | a new change address |
+| `getNewAddress({ label?, addressType? })` | a new receiving address, filed under `label` |
 | `lockUnspent(unlock, outputs, { persistent? })` | `true` |
 
 `AddressInfo` and `ProcessedPsbt` carry qbit Core's PQC signature-budget
@@ -128,6 +132,78 @@ already locked (locking) or not locked (unlocking) rejects the whole call with
 reads an empty list as "do nothing"; to unlock everything, use
 `call('lockunspent', [true])`. `getRawChangeAddress` takes a key from the
 change keypool. Both are side-effecting wallet-write calls.
+
+`getNewAddress` takes a key from the receiving keypool and files the address
+under `label` (the default label, `''`, when left out; `*` is refused before
+sending, as qbit Core reserves it). It is side-effecting too: never retried,
+and a lost reply is an `RpcUnknownOutcomeError`, since a second call would hand
+out a second address.
+
+### Wallet history
+
+`listSinceBlock` and `listTransactions` return `WalletHistoryEntry` objects,
+one per output a wallet transaction sent or received, in signed bits:
+`amountBits` is at most 0 for `send` (0 for an OP_RETURN output, which has no
+`address`) and at least 0 for every other category. `feeBits` is on every
+`send` entry and no other. It is all outputs minus this wallet's inputs,
+repeated on each of the transaction's `send` entries, so do not add it up per
+entry. When every input is this wallet's, that is the fee, as a negative
+number; with inputs from other wallets it is not the fee, and it can be
+positive. A payment to the wallet itself is a `send` and a `receive` entry for
+one output. `blockHash`, `blockHeight`, `blockIndex` and `blockTime` (the block
+header's time, unlike the wallet's `time` and `timeReceived`) are present
+exactly when `confirmations` is above 0, and `trusted` exactly when it is not.
+`confirmations` is negative for a transaction that a mined conflict replaced,
+and `abandoned` marks a transaction the wallet gave up on, or an orphaned
+coinbase.
+
+Use `listSinceBlock` as a cursor: store `lastBlock` and pass it as the next
+call's `blockHash`. `transactions` holds every entry of the later blocks and
+every entry at 0 confirmations, plus the `send` entries of a transaction a later
+block conflicted. An unconfirmed entry comes back until it is mined. An
+abandoned transaction or orphaned coinbase stays at 0 confirmations and comes
+back on every call until it is mined after all (it then confirms, with
+`abandoned` false), a conflict is mined (negative `confirmations`), or the
+orphaned block is reconnected; an entry that stops being listed may have gone
+either way, and `getTransaction` tells which. Key entries by `txid`, `vout` and
+whether the entry is a `send` (a payment to the wallet itself has a `send` and a
+`receive` entry for one `vout`), and keep the latest `category`: a coinbase
+output goes from `immature` to `generate`, or to `orphan`. With
+`targetConfirmations: n`, `lastBlock` is n - 1 blocks below the tip (the genesis
+block on a shorter chain), so entries keep coming back until they have n
+confirmations. When the stored block has left the active chain, the call lists
+from the fork point, and `removed` holds the entries of the blocks that left,
+each as it is now: 0 `confirmations` back in the mempool, positive with its new
+block when mined again, negative when a conflict was mined instead. `removed` is
+absent only when `includeRemoved: false` was passed; otherwise a reply without
+it fails validation instead of reading as "nothing removed". qbit Core v1.0.0
+accepts `includeWatchOnly` and ignores it.
+
+To credit deposits, read `receive` entries, and undo a credit from `removed` and
+`getTransaction`. qbit Core leaves a conflicted transaction's `receive` entries
+out of `transactions` and `listTransactions`, so a double-spent deposit just
+stops being listed. It is in `removed` only when the stored block was in a part
+of the chain that left. A deposit credited while unconfirmed, or while the
+stored block was still below its block, is in neither list, so check each
+credited `txid` with `getTransaction` until you consider it final: it reports
+negative `confirmations`, with no `receive` entry in `details`.
+
+To add up what the wallet sent, take `send` entries without `includeChange`
+(which adds each change output as a `send` and a `receive` entry), count each
+`txid` and `vout` once, and skip `abandoned` entries and those with negative
+`confirmations`. A replaced transaction's entries have `replacedByTxid`, and its
+replacement is listed too, so skip those as well.
+
+`listTransactions` lists the newest `count` entries after skipping the newest
+`skip`, without change outputs. A `label` keeps incoming entries paying to that
+label; `*` lists everything, and qbit Core refuses `''`, so the client does.
+`count + skip` must be at most 2,147,483,647, as qbit Core adds them as 32-bit
+integers.
+
+`getBalances` reports `mine` in bits. `usedBits` is present only for a wallet
+with `avoid_reuse` set, where `0n` is a real zero. qbit Core v1.0.0 has no
+`watchonly` section: a wallet without private keys reports what it watches
+under `mine`. `lastProcessedBlock` is the block the balances were computed at.
 
 `QbitRpcClient` satisfies the `CoreRpc` interface of the qbit Core wallet
 adapter in `qbit-payments` with no wrapper (`test/core-rpc.test.ts` checks a

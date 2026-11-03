@@ -425,4 +425,229 @@ describe.runIf(enabled)('qbit Core v1.0.0 regtest', () => {
     expect(locks).toEqual({ ok: true, value: [] })
     expect(!gone.ok && RpcError.is(gone.error) && gone.error.code).toBe(-5)
   })
+
+  // listsinceblock, listtransactions, getbalances and getnewaddress on wallets
+  // this case creates, funded from the script's smoke wallet, with a payout
+  // made the adapter's way and a reorg made through the CLI. It ends on the
+  // most-work chain with no block marked invalid.
+  it('lists wallet history and balances, follows a reorg through listSinceBlock, and labels new addresses', async () => {
+    cli('-named', 'createwallet', 'wallet_name=history', 'descriptors=true')
+    cli('-named', 'createwallet', 'wallet_name=history-peer', 'descriptors=true')
+    cli('-named', 'createwallet', 'wallet_name=history-reuse', 'descriptors=true', 'avoid_reuse=true')
+    cli('-named', 'createwallet', 'wallet_name=history-locked', 'descriptors=true', 'passphrase=history-passphrase')
+    const wallet = client({ wallet: 'history', capabilities: ['wallet-read', 'wallet-write', 'broadcast'] })
+    const peer = client({ wallet: 'history-peer', capabilities: ['wallet-read', 'wallet-write'] })
+    await wallet.confirmChain()
+    await peer.confirmChain()
+    const nodeError = (code: number) => (error: unknown) => RpcError.is(error) && error.code === code
+    const mineTo = await peer.getNewAddress({ addressType: 'p2mr' })
+    const mine = (blocks = 1, to = mineTo): string[] =>
+      JSON.parse(cli('generatetoaddress', String(blocks), to)) as string[]
+
+    // A new wallet: nothing listed, and zero balances; avoid_reuse adds a used balance.
+    const tip = await wallet.getBestBlockHash()
+    expect(await wallet.listSinceBlock()).toEqual({ transactions: [], removed: [], lastBlock: tip })
+    expect(await wallet.listTransactions()).toEqual([])
+    expect(await wallet.getBalances()).toEqual({
+      mine: { trustedBits: 0n, untrustedPendingBits: 0n, immatureBits: 0n },
+      lastProcessedBlock: { hash: tip, height: await wallet.getBlockCount() },
+    })
+    const reuse = client({ wallet: 'history-reuse', capabilities: ['wallet-read'] })
+    expect((await reuse.getBalances()).mine).toEqual({
+      trustedBits: 0n,
+      untrustedPendingBits: 0n,
+      immatureBits: 0n,
+      usedBits: 0n,
+    })
+
+    // getnewaddress: a label, the default label, and errors the node answers.
+    const label = 'deposit-alice'
+    const deposit = await wallet.getNewAddress({ label, addressType: 'p2mr' })
+    expect((await wallet.getAddressInfo(deposit)).labels).toEqual([label])
+    expect((await wallet.getAddressInfo(await wallet.getNewAddress())).labels).toEqual([''])
+    await expect(wallet.getNewAddress({ addressType: 'bogus' })).rejects.toSatisfy(nodeError(-5))
+    await expect(wallet.getNewAddress({ label: '*' })).rejects.toThrow(RangeError)
+    await expect(wallet.call('getnewaddress', ['*'])).rejects.toSatisfy(nodeError(-11))
+    // A wallet encrypted at creation, still locked.
+    const locked = client({ wallet: 'history-locked', capabilities: ['wallet-write'] })
+    await locked.confirmChain()
+    await expect(locked.getNewAddress()).rejects.toSatisfy(nodeError(-12))
+    expect(await locked.getNewAddress({ label, addressType: 'p2mr' })).toMatch(/^qbrt1z/)
+
+    // A deposit from another wallet: unconfirmed and untrusted, then mined.
+    // sendrawtransaction returns once the wallets have seen the transaction;
+    // the CLI's sendtoaddress does not wait for that.
+    const funder = client({ wallet: 'smoke', capabilities: ['wallet-write', 'broadcast'] })
+    await funder.confirmChain()
+    const funding = await funder.walletCreateFundedPsbt({ outputs: [{ address: deposit, amountBits: 2_000_000_000n }] })
+    const fundTxid = await funder.sendRawTransaction((await funder.walletProcessPsbt(funding.psbt)).hex!)
+    const pending = await wallet.listSinceBlock({ blockHash: tip })
+    expect(pending.transactions).toEqual([
+      expect.objectContaining({
+        category: 'receive',
+        address: deposit,
+        label,
+        amountBits: 2_000_000_000n,
+        txid: fundTxid,
+        confirmations: 0,
+        trusted: false,
+        abandoned: false,
+      }),
+    ])
+    expect(pending.transactions[0]).not.toHaveProperty('blockHash')
+    expect((await wallet.getBalances()).mine).toMatchObject({ trustedBits: 0n, untrustedPendingBits: 2_000_000_000n })
+    expect(await wallet.listTransactions({ label })).toEqual(pending.transactions)
+    expect(await wallet.listTransactions({ label: 'nobody' })).toEqual([])
+    const [funded] = mine()
+    const fundedHeader = await wallet.getBlockHeader(funded!)
+    const [deposited] = (await wallet.listSinceBlock({ blockHash: tip })).transactions
+    expect(deposited).toMatchObject({
+      txid: fundTxid,
+      confirmations: 1,
+      blockHash: funded,
+      blockHeight: fundedHeader.height,
+      blockTime: fundedHeader.time,
+    })
+    expect(deposited!.blockIndex).toBeGreaterThan(0)
+    expect(deposited).not.toHaveProperty('trusted')
+    expect(await wallet.getBalances()).toEqual({
+      mine: { trustedBits: 2_000_000_000n, untrustedPendingBits: 0n, immatureBits: 0n },
+      lastProcessedBlock: { hash: funded, height: fundedHeader.height },
+    })
+
+    // A payout made as the adapter makes one, then its listsinceblock call
+    // (listsinceblock(blockHash, 1, false, false, true)): the wallet's sends,
+    // by txid. With change included, the change output is a send and a
+    // receive entry too.
+    const cursor = funded!
+    const payee = await peer.getNewAddress({ label: 'payee', addressType: 'p2mr' })
+    const built = await wallet.walletCreateFundedPsbt({
+      outputs: [{ address: payee, amountBits: 500_000_000n }],
+      options: { feeRateBitsPerKvB: 2000n, changeType: 'p2mr' },
+    })
+    const payout = await wallet.sendRawTransaction((await wallet.walletProcessPsbt(built.psbt)).hex!)
+    const decoded = await wallet.getRawTransactionVerbose(payout)
+    const paidVout = decoded.vout.findIndex(output => output.scriptPubKey.address === payee)
+    const adapterCall = await wallet.listSinceBlock({
+      blockHash: cursor,
+      targetConfirmations: 1,
+      includeWatchOnly: false,
+      includeRemoved: false,
+      includeChange: true,
+    })
+    expect(adapterCall).not.toHaveProperty('removed')
+    expect(adapterCall.lastBlock).toBe(cursor)
+    const sends = adapterCall.transactions.filter(entry => entry.category === 'send')
+    expect(sends.map(entry => entry.txid)).toEqual([payout, payout])
+    expect(sends.map(entry => entry.vout).sort()).toEqual([0, 1])
+    expect(adapterCall.transactions.filter(entry => entry.category === 'receive')).toHaveLength(1)
+    const withChange = await wallet.listSinceBlock({ blockHash: cursor, targetConfirmations: 1, includeChange: true })
+    expect(withChange).toEqual({ ...adapterCall, removed: [] })
+    // Without change: one send entry, the payment, in exact bits.
+    const [sent] = (await wallet.listSinceBlock({ blockHash: cursor })).transactions
+    expect(sent).toMatchObject({
+      category: 'send',
+      address: payee,
+      amountBits: -500_000_000n,
+      feeBits: -built.feeBits,
+      vout: paidVout,
+      confirmations: 0,
+      trusted: true,
+      abandoned: false,
+      wtxid: decoded.hash,
+    })
+    expect(sent).not.toHaveProperty('label')
+    expect((await wallet.getTransaction(payout)).feeBits).toBe(sent!.feeBits)
+    // The change is the wallet's own, so it stays trusted.
+    expect((await wallet.getBalances()).mine).toEqual({
+      trustedBits: 2_000_000_000n - 500_000_000n - built.feeBits,
+      untrustedPendingBits: 0n,
+      immatureBits: 0n,
+    })
+    expect(await peer.listTransactions({ label: 'payee' })).toEqual([
+      expect.objectContaining({ category: 'receive', txid: payout, amountBits: 500_000_000n, vout: paidVout }),
+    ])
+    expect((await peer.getBalances()).mine.untrustedPendingBits).toBe(500_000_000n)
+
+    // listtransactions: oldest first, count and skip from the newest.
+    const recent = await wallet.listTransactions()
+    expect(recent.map(entry => [entry.category, entry.txid])).toEqual([
+      ['receive', fundTxid],
+      ['send', payout],
+    ])
+    expect(await wallet.listTransactions({ count: 1 })).toEqual([recent[1]])
+    expect(await wallet.listTransactions({ count: 1, skip: 1 })).toEqual([recent[0]])
+    expect(await wallet.listTransactions({ count: 0 })).toEqual([])
+    await expect(wallet.call('listtransactions', [''])).rejects.toSatisfy(nodeError(-8))
+
+    // Mined in block B; lastBlock follows targetConfirmations.
+    const blockB = mine()[0]!
+    const minedB = await wallet.listSinceBlock({ blockHash: cursor })
+    expect(minedB.lastBlock).toBe(blockB)
+    expect(minedB.transactions).toEqual([
+      expect.objectContaining({ txid: payout, confirmations: 1, blockHash: blockB }),
+    ])
+    expect((await wallet.listSinceBlock({ blockHash: cursor, targetConfirmations: 2 })).lastBlock).toBe(cursor)
+    expect((await wallet.listSinceBlock({ blockHash: cursor, targetConfirmations: 2_147_483_647 })).lastBlock).toBe(
+      await wallet.getBlockHash(0)
+    )
+    await expect(wallet.listSinceBlock({ blockHash: 'ab'.repeat(32) })).rejects.toSatisfy(nodeError(-5))
+    await expect(wallet.call('listsinceblock', [cursor, 0])).rejects.toSatisfy(nodeError(-8))
+
+    // Reorg: invalidate B. A cursor at B gets the payout back in removed, and
+    // in transactions as unconfirmed; the peer's coinbase from B is orphaned.
+    try {
+      cli('invalidateblock', blockB)
+      const reorged = await wallet.listSinceBlock({ blockHash: blockB })
+      expect(reorged.lastBlock).toBe(cursor)
+      expect(reorged.removed).toEqual([
+        expect.objectContaining({ txid: payout, category: 'send', amountBits: -500_000_000n, confirmations: 0 }),
+      ])
+      expect(reorged.removed![0]).not.toHaveProperty('blockHash')
+      expect(reorged.transactions).toContainEqual(reorged.removed![0])
+      expect(await wallet.listSinceBlock({ blockHash: blockB, includeRemoved: false })).not.toHaveProperty('removed')
+      expect((await peer.listSinceBlock({ blockHash: blockB })).removed).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ txid: payout, category: 'receive', label: 'payee' }),
+          expect.objectContaining({ category: 'orphan', abandoned: true, generated: true, confirmations: 0 }),
+        ])
+      )
+      expect((await wallet.getBalances()).lastProcessedBlock).toEqual({ hash: cursor, height: fundedHeader.height })
+
+      // reconsiderblock brings B back: nothing removed since it.
+      cli('reconsiderblock', blockB)
+      expect(await wallet.listSinceBlock({ blockHash: blockB })).toEqual({
+        transactions: [],
+        removed: [],
+        lastBlock: blockB,
+      })
+
+      // A competing branch instead: the payout is mined again, and removed
+      // reports it as it is now, in its new block. Another coinbase address
+      // keeps the first block from repeating B, which the node holds invalid.
+      cli('invalidateblock', blockB)
+      const [blockC, blockD] = mine(2, await peer.getNewAddress())
+      const remined = await wallet.listSinceBlock({ blockHash: blockB })
+      expect(remined.lastBlock).toBe(blockD)
+      expect(remined.removed).toEqual([expect.objectContaining({ txid: payout, confirmations: 2, blockHash: blockC })])
+      expect(remined.transactions).toEqual(remined.removed)
+
+      // The reads in one batch.
+      const [since, list, balances] = await wallet.batch([
+        requests.listSinceBlock({ blockHash: cursor }),
+        requests.listTransactions({ count: 1 }),
+        requests.getBalances(),
+      ])
+      expect(since.ok && since.value.transactions.map(entry => entry.txid)).toEqual([payout])
+      expect(list.ok && list.value).toEqual([expect.objectContaining({ txid: payout, blockHash: blockC })])
+      expect(balances.ok && balances.value.lastProcessedBlock.hash).toBe(blockD)
+    } finally {
+      // Whatever happened, no block stays marked invalid: B is a shorter valid
+      // fork again, or the tip.
+      cli('reconsiderblock', blockB)
+    }
+    const tips = JSON.parse(cli('getchaintips')) as { hash: string; status: string }[]
+    expect(tips.find(tip => tip.hash === blockB)?.status).toBe('valid-fork')
+    expect(tips.filter(tip => tip.status === 'invalid')).toEqual([])
+  })
 })

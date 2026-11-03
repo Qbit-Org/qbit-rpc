@@ -70,3 +70,18 @@ version. Nothing has been published yet: both are `0.0.0` and private.
   a qbit Core v1.0.0 regtest node, and the smoke test drives each method.
 - `lockUnspent` refuses an empty list of outputs, which qbit Core would read as
   "do nothing".
+
+### Wallet history and receiving
+
+- Typed, validated `listsinceblock`, `listtransactions` and `getbalances`
+  (wallet-read) and `getnewaddress` (wallet-write, side-effecting: never
+  retried, unknown outcome when the reply is lost). Entries carry signed bits,
+  their block placement and conflicts, and are checked for consistency (a
+  send's sign, a fee on every send and only there, a block exactly when
+  confirmed, `trusted` exactly when not); `listSinceBlock` returns `lastBlock`
+  and `removed`, which must be present unless `includeRemoved: false`;
+  balances keep an absent `used` apart from zero. `listTransactions` refuses a
+  `count + skip` above 2,147,483,647 and an empty label, and `getNewAddress`
+  the label `*`. Parameters and reply shapes were checked against a qbit Core
+  v1.0.0 regtest node, including a reorg, and the smoke test drives each
+  method, including the payout adapter's `listsinceblock` call.

@@ -82,10 +82,10 @@ export const METHOD_POLICIES: Readonly<Record<string, MethodPolicy>> = Object.fr
   listunspent: WALLET_READ,
   getaddressinfo: WALLET_READ,
   listlockunspent: WALLET_READ,
-  // Untyped.
   getbalances: WALLET_READ,
   listtransactions: WALLET_READ,
   listsinceblock: WALLET_READ,
+  // Untyped.
   listwallets: WALLET_READ,
 
   walletcreatefundedpsbt: WALLET_WRITE,
@@ -96,7 +96,6 @@ export const METHOD_POLICIES: Readonly<Record<string, MethodPolicy>> = Object.fr
   walletlock: WALLET_WRITE,
   getrawchangeaddress: WALLET_WRITE,
   lockunspent: WALLET_WRITE,
-  // Untyped.
   getnewaddress: WALLET_WRITE,
 })
 
