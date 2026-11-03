@@ -29,6 +29,7 @@ const info = await rpc.getBlockchainInfo()
 | `maxResponseBytes` | 16 MiB | Larger replies fail with `RpcResponseTooLargeError` (or an unknown outcome for side-effecting calls). |
 | `readRetries` | 0 | Opt-in retries for methods without side effects (see below). |
 | `retryDelayMs` | 250 | First backoff; doubles per retry, capped at 10 s, never past the deadline. |
+| `chainCheckMaxAgeMs` | 10,000 | How long a chain confirmation stays fresh before a wallet-write or broadcast call re-checks it. 0 re-checks before every such call. |
 
 Every call also takes `{ signal?: AbortSignal, timeoutMs?: number }`.
 
@@ -54,9 +55,22 @@ signed transaction before it leaves the node. `finalizepsbt` and
 
 `wallet-write` and `broadcast` calls also need `await rpc.confirmChain()`,
 which compares `getblockchaininfo.chain` with `expectedChain`. Until it has
-matched, or after it found another chain, they throw `RpcChainGuardError`
-(`reason: 'unconfirmed'` or `'mismatch'`). `rpc.chainStatus` reports the state.
-The check is made when you call it; the client does not repeat it.
+matched, or after a check found another chain, they throw `RpcChainGuardError`
+(`reason: 'unconfirmed'` or `'mismatch'`) without sending anything.
+
+A confirmation goes stale after `chainCheckMaxAgeMs` (default 10 s), and at
+once on a connection error, an HTTP 401, or a changed cookie (qbitd writes a
+new one each time it starts). A wallet-write or broadcast call made while it is
+stale first runs `getblockchaininfo` again, under the call's own deadline. If
+that check fails, the call fails without being sent (a plain error, never an
+unknown outcome; the error names `getblockchaininfo`). If it finds another
+chain, the call is refused and so is every later one until `confirmChain()`
+matches again. `rpc.chainStatus` is `unconfirmed`, `confirmed`, `stale` or
+`mismatch`.
+
+The check and the call are separate requests. Behind a load balancer or DNS
+name that can switch nodes, they can reach different nodes: point the client
+at one node.
 
 ## Typed methods
 
@@ -126,7 +140,7 @@ bits; the 210,000,000 QBT cap is 2.1e16 bits, above 2^53). Fee rates are
 | Connection refused, DNS failure, TLS failure, cookie unreadable | `RpcTransportError` | `RpcTransportError` (provably not sent) |
 | Node error object | `RpcError` | `RpcError` |
 | HTTP 401/403/404 and other 3xx/4xx | `RpcTransportError` | `RpcTransportError` (rejected before execution) |
-| Timeout, abort, dropped connection, HTTP 5xx, malformed, invalid or oversized reply after the request was sent | the matching error | `RpcUnknownOutcomeError`, with that error as `cause` and, for `sendrawtransaction`, the `txid` |
+| Timeout, abort, dropped connection, HTTP 5xx, malformed, invalid or oversized reply after the request was sent | the matching error | `RpcUnknownOutcomeError`, with that error as `cause` and, for `sendrawtransaction` (typed or through `call()`), the `txid` |
 
 - **Retries** happen only for methods without side effects, only when
   `readRetries` is set, and only for connection errors, HTTP 5xx, cookie read

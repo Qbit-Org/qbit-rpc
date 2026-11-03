@@ -11,6 +11,8 @@ export interface RecordedRequest {
   readonly url: string
   readonly headers: IncomingHttpHeaders
   readonly body: string
+  /** The client side's port: equal for two requests on one keep-alive connection. */
+  readonly remotePort: number | undefined
 }
 
 export interface RpcCall {
@@ -50,7 +52,12 @@ export class FakeNode {
       const chunks: Buffer[] = []
       req.on('data', (chunk: Buffer) => chunks.push(chunk))
       req.on('end', () => {
-        const recorded = { url: req.url ?? '', headers: req.headers, body: Buffer.concat(chunks).toString('utf8') }
+        const recorded = {
+          url: req.url ?? '',
+          headers: req.headers,
+          body: Buffer.concat(chunks).toString('utf8'),
+          remotePort: req.socket.remotePort,
+        }
         this.requests.push(recorded)
         res.on('close', () => {
           if (!res.writableFinished) this.closedEarly += 1
@@ -62,7 +69,7 @@ export class FakeNode {
 
   static async start(): Promise<FakeNode> {
     const server = createServer()
-    server.keepAliveTimeout = 1000
+    // Keep Node's default: a 1 s Keep-Alive hint makes the client agent drop pooled sockets at once.
     await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
     return new FakeNode(server)
   }

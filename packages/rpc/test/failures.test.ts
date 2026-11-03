@@ -1,6 +1,9 @@
 import { createHash } from 'node:crypto'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import type { ServerResponse } from 'node:http'
 import { createServer, type AddressInfo } from 'node:net'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
@@ -404,5 +407,97 @@ describe('malformed and oversized responses', () => {
       response.end(`{"result":null,"error":{"code":-1,"message":"legacy"},"id":${idOf(request.body)}}`)
     }
     await expect(rpcWith().getBestBlockHash()).rejects.toSatisfy(error => RpcError.is(error) && error.code === -1)
+  })
+})
+
+describe('side-effecting calls', () => {
+  it('get no retry budget, even for failures that provably never reached the node', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'qbit-rpc-retry-'))
+    try {
+      const cookieFile = join(dir, '.cookie')
+      await writeFile(cookieFile, '__cookie__:x')
+      const rpc = new QbitRpcClient({
+        url: node.url,
+        auth: { cookieFile },
+        expectedChain: 'regtest',
+        capabilities: ['broadcast'],
+        readRetries: 3,
+        retryDelayMs: 1,
+      })
+      node.results({ getblockchaininfo: blockchainInfoJson('regtest') })
+      await rpc.confirmChain()
+      node.requests.length = 0
+      // A cookie 401 is retryable for reads (the cookie may have rotated)...
+      node.handler = (_request, response) => {
+        response.statusCode = 401
+        response.end()
+      }
+      await expect(rpc.call('getblockcount')).rejects.toMatchObject({ status: 401 })
+      expect(node.requests).toHaveLength(4)
+      // ...but a broadcast gets exactly one attempt.
+      node.requests.length = 0
+      await expect(rpc.sendRawTransaction(TX_HEX, { timeoutMs: 5000 })).rejects.toMatchObject({ status: 401 })
+      // The 401 made the chain confirmation stale, so a chain check runs first; the broadcast itself runs once.
+      expect(node.calls().filter(call => call.method === 'sendrawtransaction')).toHaveLength(0)
+      node.requests.length = 0
+      node.results({ getblockchaininfo: blockchainInfoJson('regtest') })
+      await rpc.confirmChain()
+      node.requests.length = 0
+      node.handler = (_request, response) => {
+        response.statusCode = 401
+        response.end()
+      }
+      await expect(rpc.sendRawTransaction(TX_HEX)).rejects.toMatchObject({ status: 401 })
+      expect(node.calls().map(call => call.method)).toEqual(['sendrawtransaction'])
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('are not retried after a refused connection', async () => {
+    const rpc = await confirmed({ readRetries: 3 })
+    const url = node.url
+    await node.close()
+    const read = new QbitRpcClient({
+      url,
+      auth: { username: 'u', password: 'p' },
+      expectedChain: 'regtest',
+      readRetries: 3,
+      retryDelayMs: 150,
+    })
+    const readStarted = performance.now()
+    await expect(read.getBestBlockHash()).rejects.toMatchObject({ code: 'ECONNREFUSED' })
+    expect(performance.now() - readStarted).toBeGreaterThanOrEqual(150)
+    const sendStarted = performance.now()
+    const error = await failure(rpc.call('lockunspent', [true]))
+    expect(error).toMatchObject({ reason: 'network', code: 'ECONNREFUSED' })
+    expect(RpcUnknownOutcomeError.is(error)).toBe(false)
+    expect(performance.now() - sendStarted).toBeLessThan(140)
+    node = await FakeNode.start() // for afterEach
+  })
+
+  it('use a new connection each time, while reads share a keep-alive socket', async () => {
+    const rpc = await confirmed()
+    node.rpc(call => ({ result: call.method === 'sendrawtransaction' ? JSON.stringify(TXID) : JSON.stringify(HASH_A) }))
+    await rpc.getBestBlockHash()
+    await rpc.getBestBlockHash()
+    await rpc.sendRawTransaction(TX_HEX)
+    await rpc.sendRawTransaction(TX_HEX)
+    const [read1, read2, send1, send2] = node.requests
+    expect(read1!.remotePort).toBe(read2!.remotePort)
+    expect(new Set([read1!.remotePort, send1!.remotePort, send2!.remotePort]).size).toBe(3)
+    expect(send1!.headers.connection).toBe('close')
+    expect(read1!.headers.connection).toBe('keep-alive')
+  })
+
+  it('carry the computed txid through call("sendrawtransaction") as well', async () => {
+    expect(requests.raw('sendrawtransaction', [TX_HEX]).txid).toBe(TXID)
+    expect(requests.raw('sendrawtransaction', ['zz']).txid).toBeUndefined()
+    expect(requests.raw('getblockcount').txid).toBeUndefined()
+    const rpc = await confirmed()
+    node.handler = (_request, response) => response.socket?.destroy()
+    const error = await failure(rpc.call('sendrawtransaction', [TX_HEX]))
+    expect(RpcUnknownOutcomeError.is(error)).toBe(true)
+    expect((error as RpcUnknownOutcomeError).txid).toBe(TXID)
   })
 })

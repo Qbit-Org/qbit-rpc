@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { inspect } from 'node:util'
 
 import {
@@ -77,6 +78,14 @@ export interface QbitRpcClientOptions {
   readonly readRetries?: number
   /** Delay before the first retry; it doubles for each further one, up to 10 s. Default 250 ms. */
   readonly retryDelayMs?: number
+  /**
+   * How long a chain confirmation stays fresh. A wallet-write or broadcast call
+   * made later first re-runs the chain check, under the call's own deadline.
+   * A connection error, an HTTP 401 or a changed cookie (a qbitd restart)
+   * makes the confirmation stale at once. 0 re-checks before every such call.
+   * Default 10,000 ms.
+   */
+  readonly chainCheckMaxAgeMs?: number
 }
 
 /** Per-call options. */
@@ -95,12 +104,30 @@ export type BatchResults<T extends readonly RpcRequest<unknown>[]> = {
   -readonly [K in keyof T]: BatchItem<T[K] extends RpcRequest<infer R> ? R : never>
 }
 
-/** Whether `confirmChain()` has matched the node's chain to `expectedChain`. */
-export type ChainStatus = 'unconfirmed' | 'confirmed' | 'mismatch'
+/**
+ * The chain guard's state:
+ *
+ * - `unconfirmed`: `confirmChain()` has not succeeded yet. Wallet-write and
+ *   broadcast calls are refused.
+ * - `confirmed`: the node reported `expectedChain` within `chainCheckMaxAgeMs`.
+ * - `stale`: it did, but longer ago, or a connection error, an HTTP 401 or a
+ *   cookie change happened since. The next wallet-write or broadcast call
+ *   checks the chain again before it is sent.
+ * - `mismatch`: the node reported another chain. Wallet-write and broadcast
+ *   calls are refused until `confirmChain()` matches again.
+ */
+export type ChainStatus = 'unconfirmed' | 'confirmed' | 'stale' | 'mismatch'
+
+type ChainState =
+  | { readonly status: 'unconfirmed' }
+  | { readonly status: 'confirmed'; readonly at: number }
+  | { readonly status: 'invalidated' }
+  | { readonly status: 'mismatch'; readonly actual: string }
 
 const DEFAULT_TIMEOUT_MS = 30_000
 const DEFAULT_MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 const DEFAULT_RETRY_DELAY_MS = 250
+const DEFAULT_CHAIN_CHECK_MAX_AGE_MS = 10_000
 const MAX_RETRY_DELAY_MS = 10_000
 const MAX_BATCH = 1000
 const RPC_IN_WARMUP = -28
@@ -143,8 +170,11 @@ export class QbitRpcClient {
   readonly #maxResponseBytes: number
   readonly #readRetries: number
   readonly #retryDelayMs: number
+  readonly #chainCheckMaxAgeMs: number
   readonly #transport = new HttpTransport()
-  #chain: { status: ChainStatus; actual?: string } = { status: 'unconfirmed' }
+  #chain: ChainState = { status: 'unconfirmed' }
+  /** A digest of the last Authorization header sent: a change means the cookie rotated. */
+  #authDigest: string | undefined
   #nextId = 1
 
   constructor(options: QbitRpcClientOptions) {
@@ -174,25 +204,34 @@ export class QbitRpcClient {
     )
     this.#readRetries = checkInteger(options.readRetries, 'readRetries', 0, 10, 0)
     this.#retryDelayMs = checkInteger(options.retryDelayMs, 'retryDelayMs', 0, 60_000, DEFAULT_RETRY_DELAY_MS)
+    this.#chainCheckMaxAgeMs = checkInteger(
+      options.chainCheckMaxAgeMs,
+      'chainCheckMaxAgeMs',
+      0,
+      86_400_000,
+      DEFAULT_CHAIN_CHECK_MAX_AGE_MS
+    )
   }
 
-  /** Whether the node's chain has been confirmed with {@link confirmChain}. */
+  /** The chain guard's state; see {@link ChainStatus}. */
   get chainStatus(): ChainStatus {
-    return this.#chain.status
+    const chain = this.#chain
+    if (chain.status === 'invalidated') return 'stale'
+    if (chain.status === 'confirmed' && this.#chainExpired(chain.at)) return 'stale'
+    return chain.status
   }
 
   /**
    * Call `getblockchaininfo` and compare its `chain` with `expectedChain`. On a
-   * match, wallet-write and broadcast calls are allowed from then on. On a
-   * mismatch they stay refused and this throws `RpcChainGuardError`.
+   * match, wallet-write and broadcast calls are allowed; once the confirmation
+   * goes stale they re-run this check before they are sent. On a mismatch they
+   * stay refused and this throws `RpcChainGuardError`.
    */
   async confirmChain(options: CallOptions = {}): Promise<BlockchainInfo> {
     const info = await this.#single(requests.getBlockchainInfo(), options)
-    if (info.chain !== this.#expectedChain) {
-      this.#chain = { status: 'mismatch', actual: info.chain }
+    if (!this.#recordChain(info)) {
       throw new RpcChainGuardError('getblockchaininfo', 'mismatch', this.#expectedChain, info.chain)
     }
-    this.#chain = { status: 'confirmed' }
     return info
   }
 
@@ -322,7 +361,7 @@ export class QbitRpcClient {
       expectedChain: this.#expectedChain,
       capabilities: [...this.#capabilities],
       auth: this.#credentials.kind,
-      chainStatus: this.#chain.status,
+      chainStatus: this.chainStatus,
     }
   }
 
@@ -337,6 +376,53 @@ export class QbitRpcClient {
     return this.#single(build(), options)
   }
 
+  #chainNeedsCheck(): boolean {
+    const chain = this.#chain
+    return chain.status === 'invalidated' || (chain.status === 'confirmed' && this.#chainExpired(chain.at))
+  }
+
+  #chainExpired(at: number): boolean {
+    return performance.now() - at >= this.#chainCheckMaxAgeMs
+  }
+
+  /** Record what the node reported; true when it is the expected chain. */
+  #recordChain(info: BlockchainInfo): boolean {
+    this.#chain =
+      info.chain === this.#expectedChain
+        ? { status: 'confirmed', at: performance.now() }
+        : { status: 'mismatch', actual: info.chain }
+    return this.#chain.status === 'confirmed'
+  }
+
+  /** A sign the node may have restarted or been replaced: re-check the chain before the next guarded call. */
+  #invalidateChain(): void {
+    if (this.#chain.status === 'confirmed') this.#chain = { status: 'invalidated' }
+  }
+
+  /**
+   * Re-run the chain check inside a guarded call's operation, before its
+   * request is built into an exchange. Its failures are plain failures: the
+   * guarded request has not been sent.
+   */
+  async #recheckChain(method: string, attempt: AttemptContext): Promise<void> {
+    const check = requests.getBlockchainInfo()
+    const id = this.#nextId++
+    const body = stringifyRequest({ jsonrpc: '2.0', id, method: check.method, params: check.params })
+    let info: BlockchainInfo
+    try {
+      const text = await this.#exchange(check.method, body, attempt.signal, false, id)
+      const reply = this.#envelope(check.method, parseOrProtocolError(check.method, text), id, 'response')
+      if ('error' in reply) throw new Failure(reply.error, false, false)
+      info = validated(check.method, check, reply.result)
+    } catch (error) {
+      const failure = asFailure(check.method, error, attempt)
+      throw new Failure(failure.error, false, failure.retryable)
+    }
+    if (!this.#recordChain(info)) {
+      throw new Failure(new RpcChainGuardError(method, 'mismatch', this.#expectedChain, info.chain), false, false)
+    }
+  }
+
   #authorize(method: string, inBatch: boolean): MethodPolicy {
     const policy = methodPolicy(method)
     if (policy === undefined) throw new RpcCapabilityError(method, 'unknown_method')
@@ -346,14 +432,12 @@ export class QbitRpcClient {
     if (policy.capability !== 'read' && !this.#capabilities.has(policy.capability)) {
       throw new RpcCapabilityError(method, 'not_enabled', policy.capability)
     }
-    if (policy.capability === 'wallet-write' || policy.capability === 'broadcast') {
-      if (this.#chain.status !== 'confirmed') {
-        throw new RpcChainGuardError(
-          method,
-          this.#chain.status === 'mismatch' ? 'mismatch' : 'unconfirmed',
-          this.#expectedChain,
-          this.#chain.actual
-        )
+    if (guarded(policy)) {
+      // A stale confirmation is re-checked inside the call; these two refuse outright.
+      const chain = this.#chain
+      if (chain.status === 'unconfirmed') throw new RpcChainGuardError(method, 'unconfirmed', this.#expectedChain)
+      if (chain.status === 'mismatch') {
+        throw new RpcChainGuardError(method, 'mismatch', this.#expectedChain, chain.actual)
       }
     }
     return policy
@@ -365,6 +449,11 @@ export class QbitRpcClient {
     const id = this.#nextId++
     const body = stringifyRequest({ jsonrpc: '2.0', id, method, params: request.params })
     return this.#operation(method, options, policy.sideEffects ? 0 : this.#readRetries, async attempt => {
+      if (guarded(policy)) {
+        // Read a cookie first: a new one means qbitd restarted, so the chain is re-checked before this call.
+        if (this.#credentials.kind === 'cookie') await this.#authorization(method, attempt.signal)
+        if (this.#chainNeedsCheck()) await this.#recheckChain(method, attempt)
+      }
       try {
         const text = await this.#exchange(method, body, attempt.signal, policy.sideEffects, id)
         const reply = this.#envelope(method, parseOrProtocolError(method, text), id, 'response')
@@ -486,24 +575,22 @@ export class QbitRpcClient {
     sideEffects: boolean,
     id: number | undefined
   ): Promise<string> {
-    let authorization: string
+    const authorization = await this.#authorization(method, signal)
+    let reply
     try {
-      authorization = await abortable(this.#credentials.header(signal), signal)
+      reply = await this.#transport.send({
+        url: this.#endpoint.url,
+        authorization,
+        body,
+        signal,
+        maxResponseBytes: this.#maxResponseBytes,
+        freshConnection: sideEffects,
+      })
     } catch (error) {
-      if (signal.aborted) throw new ExchangeFailure('aborted', false)
-      if (error instanceof CookieReadFailure) {
-        throw new Failure(new RpcTransportError(method, 'credentials', { code: error.code }), false, true)
-      }
+      if (error instanceof ExchangeFailure && error.kind === 'network') this.#invalidateChain()
       throw error
     }
-    const reply = await this.#transport.send({
-      url: this.#endpoint.url,
-      authorization,
-      body,
-      signal,
-      maxResponseBytes: this.#maxResponseBytes,
-      freshConnection: sideEffects,
-    })
+    if (reply.status === 401) this.#invalidateChain()
     if (reply.status === 200) return reply.body
     // A JSON-RPC error reply for this request id under an HTTP error status
     // (JSON-RPC 1.x behaviour, passed through by a proxy) is still the node's
@@ -518,6 +605,24 @@ export class QbitRpcClient {
       throw new Failure(transportError, false, reply.status === 401 && this.#credentials.kind === 'cookie')
     }
     throw new Failure(protocolError(method, 'response', `HTTP 200, not ${reply.status}`), true, false)
+  }
+
+  /** The Authorization header for the next request. A changed cookie (qbitd restarted) makes the chain stale. */
+  async #authorization(method: string, signal: AbortSignal): Promise<string> {
+    let authorization: string
+    try {
+      authorization = await abortable(this.#credentials.header(signal), signal)
+    } catch (error) {
+      if (signal.aborted) throw new ExchangeFailure('aborted', false)
+      if (error instanceof CookieReadFailure) {
+        throw new Failure(new RpcTransportError(method, 'credentials', { code: error.code }), false, true)
+      }
+      throw error
+    }
+    const digest = createHash('sha256').update(authorization).digest('hex')
+    if (this.#authDigest !== undefined && digest !== this.#authDigest) this.#invalidateChain()
+    this.#authDigest = digest
+    return authorization
   }
 
   /** Validate one JSON-RPC 2.0 reply object. */
@@ -559,6 +664,10 @@ export class QbitRpcClient {
     }
     return { error: nodeError }
   }
+}
+
+function guarded(policy: MethodPolicy): boolean {
+  return policy.capability === 'wallet-write' || policy.capability === 'broadcast'
 }
 
 function legacyError(method: string, body: string, id: number): RpcError | undefined {

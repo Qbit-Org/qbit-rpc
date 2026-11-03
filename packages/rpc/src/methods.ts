@@ -1126,6 +1126,10 @@ function fundedPsbtOptions(value: unknown): Record<string, unknown> | undefined 
   if (o['feeRateBitsPerKvB'] !== undefined && (o['confTarget'] !== undefined || o['estimateMode'] !== undefined)) {
     throw new TypeError('options.feeRateBitsPerKvB excludes options.confTarget and options.estimateMode')
   }
+  // Key names as qbit Core v1.0.0's walletcreatefundedpsbt reads them. Its
+  // option type check also accepts some aliases it then ignores (for example
+  // subtract_fee_from_outputs), so each name here was checked against a live
+  // node: see test/regtest/smoke.test.ts.
   const out = compact<Record<string, unknown>>({
     add_inputs: opt(o['addInputs'], v => argBoolean(v, 'options.addInputs')),
     include_unsafe: opt(o['includeUnsafe'], v => argBoolean(v, 'options.includeUnsafe')),
@@ -1138,7 +1142,7 @@ function fundedPsbtOptions(value: unknown): Record<string, unknown> | undefined 
     fee_rate: opt(o['feeRateBitsPerKvB'], v =>
       rawDecimal(formatBitsPerVbyte(assertBits(v, 'options.feeRateBitsPerKvB')))
     ),
-    subtract_fee_from_outputs: opt(o['subtractFeeFromOutputs'], v => {
+    subtractFeeFromOutputs: opt(o['subtractFeeFromOutputs'], v => {
       if (!Array.isArray(v)) throw new TypeError('options.subtractFeeFromOutputs must be an array')
       return v.map((index, i) => argInteger(index, `options.subtractFeeFromOutputs[${i}]`, 0, 0x7fff_ffff))
     }),
@@ -1157,11 +1161,20 @@ function fundedPsbtOptions(value: unknown): Record<string, unknown> | undefined 
  * `QbitRpcClient.batch`; the client's methods of the same name use them too.
  */
 export const requests = {
-  /** Any allowlisted method, untyped: the result keeps every number as a `JsonNumber`. */
+  /**
+   * Any allowlisted method, untyped: the result keeps every number as a
+   * `JsonNumber`. For `sendrawtransaction` the txid is computed from the hex,
+   * as the typed method does, so an unknown outcome still names it.
+   */
   raw(method: string, params: readonly unknown[] = []): RpcRequest<unknown> {
     argString(method, 'method', { nonEmpty: true })
     if (!Array.isArray(params)) throw new TypeError('params must be an array')
-    return Object.freeze({ method, params: [...params], parse: (result: unknown) => result })
+    const parse = (result: unknown): unknown => result
+    const hexTx = params[0]
+    const txid = method === 'sendrawtransaction' && typeof hexTx === 'string' ? rawTransactionTxid(hexTx) : undefined
+    return Object.freeze(
+      txid === undefined ? { method, params: [...params], parse } : { method, params: [...params], parse, txid }
+    )
   },
 
   getBlockchainInfo: (): RpcRequest<BlockchainInfo> => request('getblockchaininfo', [], parseBlockchainInfo),

@@ -391,7 +391,7 @@ describe('wallet methods', () => {
         add_inputs: true,
         change_type: 'p2mr',
         lock_unspents: true,
-        subtract_fee_from_outputs: [0],
+        subtractFeeFromOutputs: [0],
         replaceable: true,
         conf_target: 6,
         estimate_mode: 'economical',
@@ -482,5 +482,54 @@ describe('wallet methods', () => {
     await invalid(rpc.getTransaction(HASH_A), 'result.txid')
     node.results({ gettransaction: JSON.stringify({ ...tx, details: [{ ...tx.details[0], category: 'gift' }] }) })
     await invalid(rpc.getTransaction(HASH_A), 'result.details[0].category')
+  })
+})
+
+describe('hex and base64 results', () => {
+  it.each(['zz', 'ABCD', 'abc', ' 00', '0x00'])('rejects %j as a raw transaction', async bad => {
+    node.results({ getrawtransaction: JSON.stringify(bad) })
+    await invalid(rpc.getRawTransaction(HASH_A), 'result')
+  })
+
+  it('rejects non-hex transaction fields in wallet and PSBT replies', async () => {
+    await confirm()
+    const tx = {
+      amount: 0,
+      confirmations: 1,
+      txid: HASH_A,
+      wtxid: HASH_A,
+      walletconflicts: [],
+      mempoolconflicts: [],
+      time: 1,
+      timereceived: 1,
+      'bip125-replaceable': 'no',
+      details: [],
+      hex: 'not-hex',
+      lastprocessedblock: { hash: HASH_A, height: 1 },
+    }
+    node.results({
+      gettransaction: JSON.stringify(tx),
+      finalizepsbt: '{"hex":"0G","complete":true}',
+      walletprocesspsbt: '{"psbt":"cHNidP8=","complete":true,"hex":"ABC"}',
+    })
+    await invalid(rpc.getTransaction(HASH_A), 'result.hex')
+    await invalid(rpc.finalizePsbt('cHNidP8='), 'result.hex')
+    await invalidAfterSideEffect(rpc.walletProcessPsbt('cHNidP8='), 'result.hex')
+  })
+
+  it.each(['not base64!', 'cHNidP8', 'cHNi=dP8', '', 'cHNidP8=='])('rejects %j as a PSBT', async bad => {
+    await confirm()
+    const psbt = JSON.stringify(bad)
+    node.results({
+      walletcreatefundedpsbt: `{"psbt":${psbt},"fee":0.00001000,"changepos":-1}`,
+      walletprocesspsbt: `{"psbt":${psbt},"complete":false}`,
+      finalizepsbt: `{"psbt":${psbt},"complete":false}`,
+    })
+    await invalidAfterSideEffect(
+      rpc.walletCreateFundedPsbt({ outputs: [{ address: 'rq1a', amountBits: 1n }] }),
+      'result.psbt'
+    )
+    await invalidAfterSideEffect(rpc.walletProcessPsbt('cHNidP8='), 'result.psbt')
+    await invalid(rpc.finalizePsbt('cHNidP8='), 'result.psbt')
   })
 })
