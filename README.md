@@ -126,14 +126,15 @@ All `@qbit-oss/rpc` errors extend `QbitRpcError`; recognize them with
 | `RpcUnknownOutcomeError` | A wallet-write or broadcast call may have been executed, but no valid reply arrived (timeout, abort, dropped connection, proxy 5xx, malformed or oversized reply). Never retried. | Reconcile before acting again: look up `txid` for a broadcast, re-read wallet state for a signing call. |
 | `RpcError` | The node answered with an error: `code` and `message` are the node's. | Handle by code, for example -26 rejected, -25 missing inputs, -27 already confirmed, -14 wrong passphrase, -28 node warming up. |
 | `RpcCapabilityError` | Refused before sending: capability not enabled, method not allowlisted, or not batchable. | A programming or configuration error. |
-| `RpcChainGuardError` | A wallet-write or broadcast call before `confirmChain()`, or after it found the wrong chain. | Call `confirmChain()`; on `mismatch`, check the URL. |
+| `RpcChainGuardError` | A wallet-write or broadcast call before `confirmChain()`, or after a chain check (yours, or the automatic re-check of a stale confirmation) found the wrong chain. Nothing was sent. | Call `confirmChain()`; on `mismatch`, check the URL. |
 | `RpcTransportError` | Connection failed, an HTTP status without a JSON-RPC reply (401 credentials, 403 `rpcallowip`), or the cookie file could not be read. | Retry reads later; fix configuration for 401/403. |
 | `RpcTimeoutError`, `RpcAbortedError` | The operation's deadline (`timeoutMs`) expired, or your `AbortSignal` fired. For side-effecting calls these arrive as the `cause` of an `RpcUnknownOutcomeError`. | Retry reads if appropriate. |
 | `RpcResponseError`, `RpcResponseTooLargeError` | The reply was not valid JSON-RPC, a result failed validation (`path` says where), or it passed `maxResponseBytes`. | Treat the node or proxy as misbehaving; do not guess the value. |
 
 `@qbit-oss/zmq` does not throw for bad input from the publisher: malformed
 messages, sequence gaps and socket failures arrive as `malformed`, `gap` and
-`reconnect` events, and `health()` reports `unknown` until a message arrives.
+`reconnect` events, and `health()` reports `unknown` until a message arrives
+and again as soon as the connection drops.
 
 ## What this MVP leaves out
 
@@ -147,8 +148,9 @@ messages, sequence gaps and socket failures arrive as `malformed`, `gap` and
 - No custom TLS options (CA bundles, client certificates) for HTTPS endpoints,
   no connection-count limits beyond 8 pooled sockets per client, and no proxy
   support.
-- The chain check is made once per client by `confirmChain()`; the client does
-  not re-check it later.
+- The chain guard compares the chain name only, not the genesis hash, and its
+  re-check is a separate request from the guarded call, so it cannot tell two
+  nodes of the same chain apart behind one URL.
 - `@qbit-oss/zmq` does not decode `rawblock` or `rawtx` bodies, and does not
   support CURVE authentication (qbitd does not offer it).
 - Browser support, and migrating existing services onto these packages.

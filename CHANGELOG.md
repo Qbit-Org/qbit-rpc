@@ -38,3 +38,22 @@ version. Nothing has been published yet: both are `0.0.0` and private.
   `unknown` until a message arrives, and clean `close()`.
 - Hashes are reported in the byte order qbitd sends, which is the RPC display
   order. The parser this was ported from reversed them a second time.
+
+### Review fixes
+
+- `walletCreateFundedPsbt` sends `subtractFeeFromOutputs` under the name qbit
+  Core reads. It sent `subtract_fee_from_outputs`, which the node accepts and
+  ignores, so the wallet paid fees meant to come out of the recipient's
+  output. Every option name sent to `walletcreatefundedpsbt` and `listunspent`
+  is now checked against a live node in the regtest smoke test.
+- The chain guard goes stale after `chainCheckMaxAgeMs` (default 10 s) or on a
+  connection error, HTTP 401 or cookie change, and wallet-write and broadcast
+  calls re-check the chain first, under their own deadline. `chainStatus` can
+  be `stale`.
+- `call('sendrawtransaction', ...)` reports the computed txid in an
+  `RpcUnknownOutcomeError`, as the typed method does.
+- `@qbit-oss/zmq`: health is `unknown` as soon as the connection drops, and the
+  socket is replaced; `staleAfterMs` defaults to 10 minutes; the first message
+  on each topic after a replacement is a gap; `maxMessageSize` defaults to
+  2,065,536 bytes; `rawblock` and `rawtx` bodies over 2,000,000 bytes are
+  malformed; `reconnect` events carry a `reason`.

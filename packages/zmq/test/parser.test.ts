@@ -144,3 +144,26 @@ describe('SequenceTracker', () => {
     expect(() => tracker.observe('hashtx', 1.5)).toThrow(RangeError)
   })
 })
+
+describe('size and uncertainty bounds', () => {
+  it('rejects raw bodies above qbit Core MAX_BLOCK_SERIALIZED_SIZE', () => {
+    expect(parseZmqMessage(msg('rawblock', Buffer.alloc(2_000_000)))).toMatchObject({ topic: 'rawblock' })
+    for (const topic of ['rawblock', 'rawtx']) {
+      expect(() => parseZmqMessage(msg(topic, Buffer.alloc(2_000_001)))).toThrow(
+        expect.objectContaining({ code: 'body_length', topic })
+      )
+    }
+  })
+
+  it('reports the next message on every tracked topic as a gap after markUncertain, even if consecutive', () => {
+    const tracker = new SequenceTracker()
+    tracker.observe('hashblock', 4)
+    tracker.observe('hashtx', 10)
+    tracker.markUncertain()
+    expect(tracker.observe('hashblock', 5)).toEqual({ topic: 'hashblock', expected: 5, received: 5 })
+    expect(tracker.observe('hashblock', 6)).toBeUndefined()
+    expect(tracker.observe('hashtx', 15)).toEqual({ topic: 'hashtx', expected: 11, received: 15 })
+    // A topic first seen after the mark only sets its baseline.
+    expect(tracker.observe('sequence', 0)).toBeUndefined()
+  })
+})

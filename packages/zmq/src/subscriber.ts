@@ -14,23 +14,54 @@ export interface ZmqSocket {
   subscribe(topic: string): void
   receive(): Promise<readonly Uint8Array[]>
   close(): void
+  /**
+   * Socket events (`zeromq`'s observer). When present, a `disconnect` makes
+   * the subscriber replace the socket: libzmq does not reconnect after it
+   * drops a peer for an oversized message, and messages published while
+   * disconnected are lost.
+   */
+  readonly events?: { on(type: 'disconnect', listener: () => void): unknown }
 }
 
-export type ZmqSocketFactory = () => ZmqSocket | Promise<ZmqSocket>
+export interface ZmqSocketSettings {
+  /** Largest inbound message part, in bytes; libzmq disconnects a peer that sends more. */
+  readonly maxMessageSize: number
+}
+
+/** Makes a socket; a custom factory should apply `settings` itself. */
+export type ZmqSocketFactory = (settings: ZmqSocketSettings) => ZmqSocket | Promise<ZmqSocket>
+
+/** qbit Core's `MAX_BLOCK_SERIALIZED_SIZE` (equal to `MAX_BLOCK_WEIGHT`, as there is no witness discount). */
+const MAX_BLOCK_BYTES = 2_000_000
+
+/**
+ * The default `maxMessageSize`: the largest block qbitd can publish on
+ * `rawblock`, plus 64 KiB of headroom.
+ */
+export const DEFAULT_MAX_MESSAGE_SIZE = MAX_BLOCK_BYTES + 65_536
+
+/** The default `staleAfterMs`: ten minutes, about ten block intervals. */
+export const DEFAULT_STALE_AFTER_MS = 600_000
 
 export interface QbitZmqSubscriberOptions {
   /** The publisher address, for example `tcp://127.0.0.1:28332` or `ipc:///run/qbitd/zmq.sock`. */
   readonly url: string
   /** Topics to subscribe to; each must be one qbitd publishes at `url`. */
   readonly topics: readonly ZmqTopic[]
-  /** Wait before replacing a failed socket. Default 1,000 ms. */
+  /** Wait before replacing a failed or disconnected socket. Default 1,000 ms. */
   readonly reconnectDelayMs?: number
   /**
-   * When set, `health()` reports `stale` once this long has passed since the
-   * last message. Pick it from the topic's expected rate: blocks arrive about
-   * once a minute, so `hashblock` alone needs several minutes.
+   * `health()` reports `stale` once this long has passed since the last
+   * message. Pick it from the topic's expected rate: blocks arrive about once
+   * a minute, so `hashblock` alone needs several minutes. Default 600,000 ms.
    */
   readonly staleAfterMs?: number
+  /**
+   * Largest inbound message part, in bytes. A larger one makes libzmq drop the
+   * connection, which the subscriber reports as a `reconnect`. Default
+   * {@link DEFAULT_MAX_MESSAGE_SIZE}, enough for `rawblock`.
+   */
+  readonly maxMessageSize?: number
   /** Socket source. Default: a `zeromq` `Subscriber`, loaded on first use. */
   readonly socketFactory?: ZmqSocketFactory
 }
@@ -48,16 +79,22 @@ export type ZmqEvent =
   | {
       readonly kind: 'reconnect'
       readonly attempt: number
+      /**
+       * `disconnected`: the connection to the publisher dropped (qbitd stopped
+       * or restarted, or sent a message over `maxMessageSize`). `failed`: a
+       * receive failed.
+       */
+      readonly reason: 'disconnected' | 'failed'
       /** The failed socket's error code, such as `EFSM`, when it had one. */
       readonly code?: string
     }
 
 /**
- * - `unknown`: no message has arrived since the subscriber (re)connected.
- *   Silence is not health: qbitd may be down, the address wrong, or the topic
- *   not enabled.
- * - `receiving`: a message arrived on the current socket, within
- *   `staleAfterMs` when that is set.
+ * - `unknown`: no message has arrived since the subscriber (re)connected, or
+ *   the connection has just dropped. Silence is not health: qbitd may be down,
+ *   the address wrong, or the topic not enabled.
+ * - `receiving`: a message arrived on the current socket within
+ *   `staleAfterMs`.
  * - `stale`: the last message is older than `staleAfterMs`.
  * - `closed`: `close()` was called.
  */
@@ -73,11 +110,17 @@ export interface ZmqHealth {
   readonly reconnects: number
 }
 
-/** Load `zeromq` lazily, so the parser works without the native addon. */
-export async function createZeromqSocket(): Promise<ZmqSocket> {
-  const zeromq = (await import('zeromq')) as unknown as { Subscriber?: new () => ZmqSocket }
+/** A `zeromq` `Subscriber` with `maxMessageSize` applied. `zeromq` loads lazily, so the parser works without the native addon. */
+export async function createZeromqSocket(
+  settings: ZmqSocketSettings = { maxMessageSize: DEFAULT_MAX_MESSAGE_SIZE }
+): Promise<ZmqSocket> {
+  const zeromq = (await import('zeromq')) as unknown as {
+    Subscriber?: new () => ZmqSocket & { maxMessageSize: number }
+  }
   if (typeof zeromq.Subscriber !== 'function') throw new Error('the zeromq module has no Subscriber export')
-  return new zeromq.Subscriber()
+  const socket = new zeromq.Subscriber()
+  socket.maxMessageSize = settings.maxMessageSize
+  return socket
 }
 
 function errorCode(error: unknown): string | undefined {
@@ -88,11 +131,12 @@ function errorCode(error: unknown): string | undefined {
 /**
  * Subscribes to qbitd's ZMQ notifications and yields parsed messages, gaps in
  * each topic's sequence counter, malformed messages and socket replacements.
- * ZeroMQ reconnects the underlying connection by itself; this replaces the
- * socket only when it fails. Counters are tracked across replacements, so
- * messages lost meanwhile surface as a gap. A gap is the signal to reconcile
- * over RPC (for blocks, `getbestblockhash` and walk back with
- * `getblockheader`): ZMQ is a wake-up, not a ledger.
+ * The socket is replaced when a receive fails or the connection drops.
+ * Counters are tracked across replacements, and the first message on each
+ * topic after one is always reported as a gap, since messages published
+ * meanwhile are lost and a restarted qbitd's counter can happen to line up.
+ * A gap is the signal to reconcile over RPC (for blocks, `getbestblockhash`
+ * and walk back with `getblockheader`): ZMQ is a wake-up, not a ledger.
  *
  * One consumer at a time: iterate it with `for await`.
  */
@@ -100,7 +144,8 @@ export class QbitZmqSubscriber implements AsyncIterable<ZmqEvent> {
   readonly #url: string
   readonly #topics: readonly ZmqTopic[]
   readonly #reconnectDelayMs: number
-  readonly #staleAfterMs: number | undefined
+  readonly #staleAfterMs: number
+  readonly #maxMessageSize: number
   readonly #socketFactory: ZmqSocketFactory
   readonly #tracker = new SequenceTracker()
   #socket: ZmqSocket | undefined
@@ -128,14 +173,17 @@ export class QbitZmqSubscriber implements AsyncIterable<ZmqEvent> {
     if (!Number.isSafeInteger(delay) || delay < 10 || delay > 60_000) {
       throw new RangeError('reconnectDelayMs must be an integer from 10 to 60000')
     }
-    const stale = options.staleAfterMs
-    if (stale !== undefined && (!Number.isSafeInteger(stale) || stale < 1)) {
-      throw new RangeError('staleAfterMs must be a positive integer')
+    const stale = options.staleAfterMs ?? DEFAULT_STALE_AFTER_MS
+    if (!Number.isSafeInteger(stale) || stale < 1) throw new RangeError('staleAfterMs must be a positive integer')
+    const maxMessageSize = options.maxMessageSize ?? DEFAULT_MAX_MESSAGE_SIZE
+    if (!Number.isSafeInteger(maxMessageSize) || maxMessageSize < 1024 || maxMessageSize > 0x7fff_ffff) {
+      throw new RangeError('maxMessageSize must be an integer from 1024 to 2147483647')
     }
     this.#url = options.url
     this.#topics = [...topics]
     this.#reconnectDelayMs = delay
     this.#staleAfterMs = stale
+    this.#maxMessageSize = maxMessageSize
     this.#socketFactory = options.socketFactory ?? createZeromqSocket
   }
 
@@ -144,7 +192,7 @@ export class QbitZmqSubscriber implements AsyncIterable<ZmqEvent> {
     let status: ZmqHealthStatus
     if (this.#closed) status = 'closed'
     else if (!this.#receivedOnSocket) status = 'unknown'
-    else if (this.#staleAfterMs !== undefined && now - this.#lastMessageAt! > this.#staleAfterMs) status = 'stale'
+    else if (now - this.#lastMessageAt! > this.#staleAfterMs) status = 'stale'
     else status = 'receiving'
     return {
       status,
@@ -168,11 +216,19 @@ export class QbitZmqSubscriber implements AsyncIterable<ZmqEvent> {
       while (!this.#closed) {
         let socket: ZmqSocket | undefined
         let failure: unknown
+        let disconnected = false
         try {
-          socket = await this.#socketFactory()
+          socket = await this.#socketFactory({ maxMessageSize: this.#maxMessageSize })
           if (this.#closed) break
-          this.#socket = socket
+          const current = socket
+          this.#socket = current
           this.#receivedOnSocket = false
+          current.events?.on('disconnect', () => {
+            if (this.#socket !== current || this.#closed) return
+            disconnected = true
+            this.#receivedOnSocket = false
+            current.close() // the pending receive rejects, and the loop replaces the socket
+          })
           socket.connect(this.#url)
           for (const topic of this.#topics) socket.subscribe(topic)
           while (!this.#closed) {
@@ -207,8 +263,10 @@ export class QbitZmqSubscriber implements AsyncIterable<ZmqEvent> {
         attempt += 1
         this.#counts.reconnects += 1
         this.#receivedOnSocket = false
-        const code = errorCode(failure)
-        yield code === undefined ? { kind: 'reconnect', attempt } : { kind: 'reconnect', attempt, code }
+        this.#tracker.markUncertain()
+        const reason = disconnected ? 'disconnected' : 'failed'
+        const code = disconnected ? undefined : errorCode(failure)
+        yield code === undefined ? { kind: 'reconnect', attempt, reason } : { kind: 'reconnect', attempt, reason, code }
         await this.#pause()
       }
     } finally {

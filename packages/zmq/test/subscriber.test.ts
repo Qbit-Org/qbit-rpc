@@ -1,7 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import { Publisher } from 'zeromq'
 
-import { QbitZmqSubscriber, type ZmqEvent, type ZmqSocket } from '../src'
+import {
+  createZeromqSocket,
+  DEFAULT_MAX_MESSAGE_SIZE,
+  DEFAULT_STALE_AFTER_MS,
+  QbitZmqSubscriber,
+  type ZmqEvent,
+  type ZmqSocket,
+  type ZmqSocketSettings,
+} from '../src'
 
 const HASH = '12'.repeat(32)
 const counter = (sequence: number): Buffer => {
@@ -43,6 +51,19 @@ class FakeSocket implements ZmqSocket {
   close(): void {
     this.closed = true
     this.#pending?.(Object.assign(new Error('Socket is closed'), { code: 'EAGAIN' }))
+  }
+}
+
+/** A fake socket with zeromq's `events.on('disconnect')`. */
+class EventfulFakeSocket extends FakeSocket {
+  readonly #listeners: (() => void)[] = []
+  readonly events = {
+    on: (_type: 'disconnect', listener: () => void): void => {
+      this.#listeners.push(listener)
+    },
+  }
+  disconnect(): void {
+    for (const listener of this.#listeners) listener()
   }
 }
 
@@ -94,9 +115,10 @@ describe('QbitZmqSubscriber with a fake socket', () => {
       'message',
     ])
     expect(events[2]).toEqual({ kind: 'gap', topic: 'hashblock', expected: 3, received: 5, missed: 2 })
-    expect(events[4]).toEqual({ kind: 'reconnect', attempt: 1, code: 'EFSM' })
-    // Messages lost while the socket was replaced show up as a gap.
-    expect(events[5]).toEqual({ kind: 'gap', topic: 'hashblock', expected: 6, received: 9, missed: 3 })
+    expect(events[4]).toEqual({ kind: 'reconnect', attempt: 1, reason: 'failed', code: 'EFSM' })
+    // Messages lost while the socket was replaced show up as a gap. How many is
+    // unknown: the publisher may have restarted meanwhile.
+    expect(events[5]).toEqual({ kind: 'gap', topic: 'hashblock', expected: 6, received: 9 })
     expect(events[7]).toMatchObject({ kind: 'malformed', error: { code: 'body_length' } })
     const message = events[0]
     expect(message?.kind === 'message' && message.message).toEqual({
@@ -132,7 +154,7 @@ describe('QbitZmqSubscriber with a fake socket', () => {
     const iterator = subscriber[Symbol.asyncIterator]()
     await take(iterator, 1)
     expect(subscriber.health().status).toBe('receiving')
-    expect((await take(iterator, 1))[0]).toEqual({ kind: 'reconnect', attempt: 1 })
+    expect((await take(iterator, 1))[0]).toEqual({ kind: 'reconnect', attempt: 1, reason: 'failed' })
     expect(subscriber.health().status).toBe('unknown')
     expect(subscriber.health().lastMessageAt).toBeTypeOf('number')
     const pending = iterator.next()
@@ -191,6 +213,82 @@ describe('QbitZmqSubscriber with a fake socket', () => {
   })
 })
 
+describe('QbitZmqSubscriber connection loss and limits', () => {
+  it('reports unknown at once when the connection drops, replaces the socket, and flags the next message as a gap', async () => {
+    const first = new EventfulFakeSocket([hashblock(7)])
+    const second = new EventfulFakeSocket([hashblock(8)])
+    const sockets = [first, second]
+    const subscriber = new QbitZmqSubscriber({
+      url: 'tcp://127.0.0.1:1',
+      topics: ['hashblock'],
+      reconnectDelayMs: 10,
+      socketFactory: () => sockets.shift()!,
+    })
+    const iterator = subscriber[Symbol.asyncIterator]()
+    await take(iterator, 1)
+    expect(subscriber.health().status).toBe('receiving')
+    const pending = iterator.next()
+    first.disconnect() // qbitd stopped: zeromq would otherwise reconnect silently
+    expect(subscriber.health().status).toBe('unknown')
+    expect((await pending).value).toEqual({ kind: 'reconnect', attempt: 1, reason: 'disconnected' })
+    expect(first.closed).toBe(true)
+    // The counter follows on, but messages may have been lost: still a gap.
+    expect(await take(iterator, 2)).toEqual([
+      { kind: 'gap', topic: 'hashblock', expected: 8, received: 8 },
+      expect.objectContaining({ kind: 'message' }),
+    ])
+    const done = iterator.next()
+    subscriber.close()
+    await done
+  })
+
+  it('goes stale by default, without staleAfterMs', async () => {
+    const subscriber = new QbitZmqSubscriber({
+      url: 'tcp://127.0.0.1:1',
+      topics: ['hashblock'],
+      socketFactory: () => new FakeSocket([hashblock(1)]),
+    })
+    const iterator = subscriber[Symbol.asyncIterator]()
+    await take(iterator, 1)
+    const at = subscriber.health().lastMessageAt!
+    expect(subscriber.health(at + DEFAULT_STALE_AFTER_MS).status).toBe('receiving')
+    expect(subscriber.health(at + DEFAULT_STALE_AFTER_MS + 1).status).toBe('stale')
+    const done = iterator.next()
+    subscriber.close()
+    await done
+  })
+
+  it('caps the inbound message size: default, configured, and passed to a custom factory', async () => {
+    expect(DEFAULT_MAX_MESSAGE_SIZE).toBe(2_065_536)
+    const defaults = (await createZeromqSocket()) as ZmqSocket & { maxMessageSize: number }
+    expect(defaults.maxMessageSize).toBe(DEFAULT_MAX_MESSAGE_SIZE)
+    defaults.close()
+    const custom = (await createZeromqSocket({ maxMessageSize: 4096 })) as ZmqSocket & { maxMessageSize: number }
+    expect(custom.maxMessageSize).toBe(4096)
+    custom.close()
+
+    const seen: ZmqSocketSettings[] = []
+    const subscriber = new QbitZmqSubscriber({
+      url: 'tcp://127.0.0.1:1',
+      topics: ['rawblock'],
+      maxMessageSize: 3_000_000,
+      socketFactory: settings => {
+        seen.push(settings)
+        return new FakeSocket([])
+      },
+    })
+    const pending = subscriber[Symbol.asyncIterator]().next()
+    await new Promise(resolve => setImmediate(resolve))
+    expect(seen).toEqual([{ maxMessageSize: 3_000_000 }])
+    subscriber.close()
+    await pending
+    const base = { url: 'tcp://127.0.0.1:1', topics: ['rawtx'] as const }
+    for (const maxMessageSize of [0, 1023, 1.5, Number.NaN, 2 ** 31]) {
+      expect(() => new QbitZmqSubscriber({ ...base, maxMessageSize })).toThrow(RangeError)
+    }
+  })
+})
+
 describe('QbitZmqSubscriber over loopback with zeromq', () => {
   it('receives qbit-format messages from a real publisher and detects a gap', async () => {
     const publisher = new Publisher()
@@ -240,5 +338,90 @@ describe('QbitZmqSubscriber over loopback with zeromq', () => {
       publisher.close()
     }
     expect(subscriber.health().status).toBe('closed')
+  })
+
+  /** Collect events in the background; returns the list and a stop function. */
+  function collect(subscriber: QbitZmqSubscriber): { events: ZmqEvent[]; stop: () => Promise<void> } {
+    const events: ZmqEvent[] = []
+    const iterator = subscriber[Symbol.asyncIterator]()
+    const reading = (async () => {
+      for (;;) {
+        const next = await iterator.next()
+        if (next.done) return
+        events.push(next.value)
+      }
+    })()
+    return {
+      events,
+      stop: async () => {
+        subscriber.close()
+        await reading
+      },
+    }
+  }
+
+  async function publishUntilReceived(publisher: Publisher, events: ZmqEvent[], first: number): Promise<number> {
+    let next = first
+    const start = events.length
+    const deadline = Date.now() + 5000
+    while (!events.slice(start).some(event => event.kind === 'message') && Date.now() < deadline) {
+      await publisher.send(hashblock(next++))
+      await new Promise(resolve => setTimeout(resolve, 20))
+    }
+    await new Promise(resolve => setTimeout(resolve, 100))
+    return next
+  }
+
+  it('reports unknown when the publisher dies, and a gap after it restarts with a counter that lines up', async () => {
+    let publisher = new Publisher()
+    await publisher.bind('tcp://127.0.0.1:0')
+    const url = publisher.lastEndpoint!
+    const subscriber = new QbitZmqSubscriber({ url, topics: ['hashblock'], reconnectDelayMs: 50 })
+    const { events, stop } = collect(subscriber)
+    try {
+      const next = await publishUntilReceived(publisher, events, 0)
+      expect(subscriber.health().status).toBe('receiving')
+      publisher.close() // qbitd stops
+      await expect.poll(() => subscriber.health().status, { timeout: 5000 }).toBe('unknown')
+      expect(events.some(e => e.kind === 'reconnect' && e.reason === 'disconnected')).toBe(true)
+      // qbitd restarts; its counter happens to continue where the old one stopped.
+      publisher = new Publisher()
+      await publisher.bind(url)
+      const before = events.length
+      await publishUntilReceived(publisher, events, next)
+      const gaps = events.slice(before).filter(e => e.kind === 'gap')
+      expect(gaps[0]).toMatchObject({ kind: 'gap', topic: 'hashblock' })
+      expect(gaps[0]).not.toHaveProperty('missed')
+      expect(subscriber.health().status).toBe('receiving')
+    } finally {
+      await stop()
+      publisher.close()
+    }
+  })
+
+  it('drops an oversized message instead of buffering it, and recovers', async () => {
+    const publisher = new Publisher()
+    await publisher.bind('tcp://127.0.0.1:0')
+    const subscriber = new QbitZmqSubscriber({
+      url: publisher.lastEndpoint!,
+      topics: ['hashblock', 'rawtx'],
+      reconnectDelayMs: 50,
+      maxMessageSize: 4096,
+    })
+    const { events, stop } = collect(subscriber)
+    try {
+      const next = await publishUntilReceived(publisher, events, 0)
+      await publisher.send([Buffer.from('rawtx'), Buffer.alloc(8192, 1), counter(0)])
+      await expect
+        .poll(() => events.some(e => e.kind === 'reconnect' && e.reason === 'disconnected'), { timeout: 5000 })
+        .toBe(true)
+      const before = events.length
+      await publishUntilReceived(publisher, events, next)
+      expect(events.some(e => e.kind === 'message' && e.message.topic === 'rawtx')).toBe(false)
+      expect(events.slice(before).some(e => e.kind === 'message' && e.message.topic === 'hashblock')).toBe(true)
+    } finally {
+      await stop()
+      publisher.close()
+    }
   })
 })

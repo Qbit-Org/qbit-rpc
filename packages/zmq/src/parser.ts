@@ -52,9 +52,11 @@ export class ZmqFrameError extends Error {
 }
 
 // The smallest serializations: an 80-byte header plus a transaction count,
-// and version, input count, output count and locktime.
+// and version, input count, output count and locktime. Neither can exceed
+// qbit Core's MAX_BLOCK_SERIALIZED_SIZE.
 const MIN_RAW_BLOCK = 81
 const MIN_RAW_TX = 10
+const MAX_RAW_BODY = 2_000_000
 
 const LABELS = {
   0x43: 'block_connected',
@@ -90,7 +92,7 @@ export function parseZmqMessage(frames: readonly Uint8Array[]): ZmqMessage {
     }
     case 'rawblock':
     case 'rawtx': {
-      if (body.byteLength < (topic === 'rawblock' ? MIN_RAW_BLOCK : MIN_RAW_TX)) {
+      if (body.byteLength < (topic === 'rawblock' ? MIN_RAW_BLOCK : MIN_RAW_TX) || body.byteLength > MAX_RAW_BODY) {
         throw new ZmqFrameError('body_length', topic)
       }
       return { topic, sequence, bytes: Uint8Array.from(body) }
@@ -134,6 +136,7 @@ export interface SequenceGap {
  */
 export class SequenceTracker {
   readonly #last = new Map<ZmqTopic, number>()
+  readonly #uncertain = new Set<ZmqTopic>()
 
   observe(topic: ZmqTopic, sequence: number): SequenceGap | undefined {
     if (!Number.isInteger(sequence) || sequence < 0 || sequence > 0xffff_ffff) {
@@ -143,6 +146,7 @@ export class SequenceTracker {
     this.#last.set(topic, sequence)
     if (last === undefined) return undefined
     const expected = (last + 1) >>> 0
+    if (this.#uncertain.delete(topic)) return { topic, expected, received: sequence }
     if (sequence === expected) return undefined
     const forward = (sequence - expected) >>> 0
     return forward < 0x8000_0000
@@ -150,8 +154,18 @@ export class SequenceTracker {
       : { topic, expected, received: sequence }
   }
 
+  /**
+   * Messages may have been lost on every tracked topic (the connection
+   * dropped): the next message on each is a gap without `missed`, even if its
+   * counter follows on, since a restarted publisher's counter can line up.
+   */
+  markUncertain(): void {
+    for (const topic of this.#last.keys()) this.#uncertain.add(topic)
+  }
+
   /** Forget every baseline, so the next message on each topic starts afresh. */
   reset(): void {
     this.#last.clear()
+    this.#uncertain.clear()
   }
 }
