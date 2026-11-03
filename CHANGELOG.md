@@ -50,6 +50,16 @@ version. Nothing has been published yet: both are `0.0.0` and private.
   connection error, HTTP 401 or cookie change, and wallet-write and broadcast
   calls re-check the chain first, under their own deadline. `chainStatus` can
   be `stale`.
+- Wallet-write and broadcast calls evaluate the chain guard after their last
+  await, as the request is handed to the transport, so a mismatch recorded
+  while one read its cookie, re-checked the chain or waited to re-check
+  refuses it; only a `confirmChain()` begun after a mismatch clears it. They read the
+  cookie once per attempt and send the re-check and the call with that header;
+  a confirmation counts only for calls with the cookie it was made with. A
+  chain check answered after a connection error or HTTP 401 elsewhere, or
+  after a mismatch, changes nothing: the call (or `confirmChain()`) checks
+  again after `retryDelayMs`, up to three checks, then fails with the new
+  `RpcChainGuardError` reason `stale`, having sent nothing.
 - `call('sendrawtransaction', ...)` reports the computed txid in an
   `RpcUnknownOutcomeError`, as the typed method does.
 - `@qbit-oss/zmq`: health is `unknown` as soon as the connection drops, and the

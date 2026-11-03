@@ -124,9 +124,11 @@ export type ChainStatus = 'unconfirmed' | 'confirmed' | 'stale' | 'mismatch'
 
 type ChainState =
   | { readonly status: 'unconfirmed' }
-  | { readonly status: 'confirmed'; readonly at: number }
+  /** `digest`: of the Authorization header the check was sent with; a call with another one checks again. */
+  | { readonly status: 'confirmed'; readonly at: number; readonly digest: string }
   | { readonly status: 'invalidated' }
-  | { readonly status: 'mismatch'; readonly actual: string }
+  /** `doubt`: `#doubts` once it was recorded, to tell a check sent before it from one sent after. */
+  | { readonly status: 'mismatch'; readonly actual: string; readonly doubt: number }
 
 const DEFAULT_TIMEOUT_MS = 30_000
 const DEFAULT_MAX_RESPONSE_BYTES = 16 * 1024 * 1024
@@ -136,6 +138,8 @@ const MAX_RETRY_DELAY_MS = 10_000
 const MAX_BATCH = 1000
 const RPC_IN_WARMUP = -28
 const MAX_NODE_MESSAGE = 1000
+/** Chain checks one guarded attempt or `confirmChain()` runs while each answer is doubted. */
+const MAX_CHAIN_CHECKS = 3
 
 const TIMEOUT = Symbol('timeout')
 
@@ -177,8 +181,17 @@ export class QbitRpcClient {
   readonly #chainCheckMaxAgeMs: number
   readonly #transport = new HttpTransport()
   #chain: ChainState = { status: 'unconfirmed' }
-  /** A digest of the last Authorization header sent: a change means the cookie rotated. */
+  /**
+   * Counts signs that the node may have changed (a connection error, an HTTP
+   * 401) and chain mismatches. A chain check that saw it change while in
+   * flight cannot record a confirmation.
+   */
+  #doubts = 0
+  /** A digest of the newest Authorization header read: another one than a confirmation's means the cookie rotated. */
   #authDigest: string | undefined
+  /** Cookie reads in the order they started, so one that finishes late cannot roll `#authDigest` back. */
+  #authReads = 0
+  #authDigestRead = 0
   #nextId = 1
 
   constructor(options: QbitRpcClientOptions) {
@@ -221,7 +234,9 @@ export class QbitRpcClient {
   get chainStatus(): ChainStatus {
     const chain = this.#chain
     if (chain.status === 'invalidated') return 'stale'
-    if (chain.status === 'confirmed' && this.#chainExpired(chain.at)) return 'stale'
+    if (chain.status === 'confirmed' && (this.#chainExpired(chain.at) || chain.digest !== this.#authDigest)) {
+      return 'stale'
+    }
     return chain.status
   }
 
@@ -229,14 +244,32 @@ export class QbitRpcClient {
    * Call `getblockchaininfo` and compare its `chain` with `expectedChain`. On a
    * match, wallet-write and broadcast calls are allowed; once the confirmation
    * goes stale they re-run this check before they are sent. On a mismatch they
-   * stay refused and this throws `RpcChainGuardError`.
+   * stay refused and this throws `RpcChainGuardError`, as it does when any
+   * check finds a mismatch while this call runs (its cookie read, checks,
+   * waits and retries included). An answer that a connection error or an
+   * HTTP 401 elsewhere may postdate is checked again, after `retryDelayMs`, up
+   * to three checks per attempt; then this throws `reason: 'stale'` (retried
+   * like a read under `readRetries`) and changes nothing.
    */
   async confirmChain(options: CallOptions = {}): Promise<BlockchainInfo> {
-    const info = await this.#single(requests.getBlockchainInfo(), options)
-    if (!this.#recordChain(info)) {
-      throw new RpcChainGuardError('getblockchaininfo', 'mismatch', this.#expectedChain, info.chain)
-    }
-    return info
+    const method = 'getblockchaininfo'
+    // A mismatch recorded after this point is newer than this call: it stands, and this call throws it.
+    const started = this.#doubts
+    return this.#operation(method, options, this.#readRetries, async attempt => {
+      try {
+        const authorization = await this.#authorization(method, attempt.signal)
+        let info: BlockchainInfo | undefined
+        for (let checks = 0; info === undefined || this.#chainNeedsCheck(method, authorization, checks, started);) {
+          if (checks > 0) await this.#pause(method, attempt)
+          this.#refuseMismatchSince(method, started)
+          info = await this.#checkChain(attempt, authorization, started)
+          checks += 1
+        }
+        return info
+      } catch (error) {
+        throw asFailure(method, error, attempt)
+      }
+    })
   }
 
   /**
@@ -409,51 +442,125 @@ export class QbitRpcClient {
     return this.#single(build(), options)
   }
 
-  #chainNeedsCheck(): boolean {
-    const chain = this.#chain
-    return chain.status === 'invalidated' || (chain.status === 'confirmed' && this.#chainExpired(chain.at))
-  }
-
   #chainExpired(at: number): boolean {
     return performance.now() - at >= this.#chainCheckMaxAgeMs
   }
 
-  /** Record what the node reported; true when it is the expected chain. */
-  #recordChain(info: BlockchainInfo): boolean {
-    this.#chain =
-      info.chain === this.#expectedChain
-        ? { status: 'confirmed', at: performance.now() }
-        : { status: 'mismatch', actual: info.chain }
-    return this.#chain.status === 'confirmed'
+  /**
+   * Record what a chain check sent with `digest` reported. `since` is
+   * `#doubts` when its request was sent: if something cast doubt on the node
+   * since then, the answer may predate it, so a match changes nothing. A mismatch
+   * answer always stands: only a `confirmChain()` that began after it was
+   * recorded (`clearsBefore`, its starting `#doubts`) can replace it with a
+   * match.
+   */
+  #recordChain(info: BlockchainInfo, since: number, digest: string, clearsBefore: number | undefined): void {
+    const chain = this.#chain
+    if (info.chain !== this.#expectedChain) {
+      this.#doubts += 1
+      this.#chain = { status: 'mismatch', actual: info.chain, doubt: this.#doubts }
+    } else if (
+      this.#doubts === since &&
+      (chain.status !== 'mismatch' || (clearsBefore !== undefined && chain.doubt <= clearsBefore))
+    ) {
+      this.#chain = { status: 'confirmed', at: performance.now(), digest }
+    }
   }
 
   /** A sign the node may have restarted or been replaced: re-check the chain before the next guarded call. */
   #invalidateChain(): void {
+    this.#doubts += 1
     if (this.#chain.status === 'confirmed') this.#chain = { status: 'invalidated' }
   }
 
+  /** The refusal of a guarded call while the chain is unconfirmed or another one. */
+  #chainRefusal(method: string): RpcChainGuardError | undefined {
+    const chain = this.#chain
+    if (chain.status === 'unconfirmed') return new RpcChainGuardError(method, 'unconfirmed', this.#expectedChain)
+    if (chain.status === 'mismatch')
+      return new RpcChainGuardError(method, 'mismatch', this.#expectedChain, chain.actual)
+    return undefined
+  }
+
   /**
-   * Re-run the chain check inside a guarded call's operation, before its
-   * request is built into an exchange. Its failures are plain failures: the
-   * guarded request has not been sent.
+   * Whether a call sent with `authorization` must check the chain before it
+   * goes on, after `checks` checks in this attempt. A confirmation counts for
+   * the cookie it was made with, and, once this attempt has checked, however
+   * old it is. Throws the guard's refusal, and `stale` (retryable) once
+   * MAX_CHAIN_CHECKS checks have each been doubted. `confirming` is set for
+   * `confirmChain()`, to `#doubts` when it began: it always checks, and is
+   * refused only by a mismatch found since then.
    */
-  async #recheckChain(method: string, attempt: AttemptContext): Promise<void> {
+  #chainNeedsCheck(method: string, authorization: Authorization, checks: number, confirming?: number): boolean {
+    const chain = this.#chain
+    if (confirming === undefined) {
+      const refusal = this.#chainRefusal(method)
+      if (refusal !== undefined) throw new Failure(refusal, false, false)
+    } else {
+      this.#refuseMismatchSince(method, confirming)
+    }
+    const fresh =
+      checks > 0 || (confirming === undefined && chain.status === 'confirmed' && !this.#chainExpired(chain.at))
+    if (chain.status === 'confirmed' && chain.digest === authorization.digest && fresh) return false
+    if (checks >= MAX_CHAIN_CHECKS) {
+      throw new Failure(new RpcChainGuardError(method, 'stale', this.#expectedChain), false, true)
+    }
+    return true
+  }
+
+  /** `confirmChain()`'s refusal: a mismatch recorded since it began (`#doubts` was `started`). */
+  #refuseMismatchSince(method: string, started: number): void {
+    const chain = this.#chain
+    if (chain.status === 'mismatch' && chain.doubt > started) {
+      throw new Failure(new RpcChainGuardError(method, 'mismatch', this.#expectedChain, chain.actual), false, false)
+    }
+  }
+
+  /**
+   * Wait `retryDelayMs` (at most 10 s) before checking the chain again. A wait
+   * that would pass the deadline ends the attempt at once with the retryable
+   * `stale` refusal; an abort ends it unsent, reported like a failed check,
+   * under `getblockchaininfo`.
+   */
+  async #pause(method: string, attempt: AttemptContext): Promise<void> {
+    const delay = Math.min(this.#retryDelayMs, MAX_RETRY_DELAY_MS)
+    if (performance.now() + delay >= attempt.deadline) {
+      throw new Failure(new RpcChainGuardError(method, 'stale', this.#expectedChain), false, true)
+    }
+    try {
+      await sleep(delay, attempt.signal)
+    } catch {
+      throw asFailure('getblockchaininfo', new ExchangeFailure('aborted', false), attempt)
+    }
+  }
+
+  /**
+   * One chain check, sent with `authorization` (the header of the call it
+   * guards), and recorded; `clearsBefore` for `confirmChain()`'s, see
+   * `#recordChain`. Its failures are plain failures: a guarded request has
+   * not been sent.
+   */
+  async #checkChain(
+    attempt: AttemptContext,
+    authorization: Authorization,
+    clearsBefore: number | undefined
+  ): Promise<BlockchainInfo> {
     const check = requests.getBlockchainInfo()
     const id = this.#nextId++
     const body = stringifyRequest({ jsonrpc: '2.0', id, method: check.method, params: check.params })
+    const since = this.#doubts
     let info: BlockchainInfo
     try {
-      const text = await this.#exchange(check.method, body, attempt.signal, false, id)
+      const text = await this.#exchange(check.method, body, attempt.signal, false, id, authorization.header)
       const reply = this.#envelope(check.method, parseOrProtocolError(check.method, text), id, 'response')
-      if ('error' in reply) throw new Failure(reply.error, false, false)
+      if ('error' in reply) throw new Failure(reply.error, false, reply.error.code === RPC_IN_WARMUP)
       info = validated(check.method, check, reply.result)
     } catch (error) {
       const failure = asFailure(check.method, error, attempt)
       throw new Failure(failure.error, false, failure.retryable)
     }
-    if (!this.#recordChain(info)) {
-      throw new Failure(new RpcChainGuardError(method, 'mismatch', this.#expectedChain, info.chain), false, false)
-    }
+    this.#recordChain(info, since, authorization.digest, clearsBefore)
+    return info
   }
 
   #authorize(method: string, inBatch: boolean): MethodPolicy {
@@ -466,12 +573,9 @@ export class QbitRpcClient {
       throw new RpcCapabilityError(method, 'not_enabled', policy.capability)
     }
     if (guarded(policy)) {
-      // A stale confirmation is re-checked inside the call; these two refuse outright.
-      const chain = this.#chain
-      if (chain.status === 'unconfirmed') throw new RpcChainGuardError(method, 'unconfirmed', this.#expectedChain)
-      if (chain.status === 'mismatch') {
-        throw new RpcChainGuardError(method, 'mismatch', this.#expectedChain, chain.actual)
-      }
+      // Refuse before reading a cookie; the call decides again just before it is sent.
+      const refusal = this.#chainRefusal(method)
+      if (refusal !== undefined) throw refusal
     }
     return policy
   }
@@ -482,13 +586,22 @@ export class QbitRpcClient {
     const id = this.#nextId++
     const body = stringifyRequest({ jsonrpc: '2.0', id, method, params: request.params })
     return this.#operation(method, options, policy.sideEffects ? 0 : this.#readRetries, async attempt => {
-      if (guarded(policy)) {
-        // Read a cookie first: a new one means qbitd restarted, so the chain is re-checked before this call.
-        if (this.#credentials.kind === 'cookie') await this.#authorization(method, attempt.signal)
-        if (this.#chainNeedsCheck()) await this.#recheckChain(method, attempt)
-      }
       try {
-        const text = await this.#exchange(method, body, attempt.signal, policy.sideEffects, id)
+        // One cookie read per attempt: the chain check and the call are sent
+        // with that header, and a new cookie (qbitd restarted) means a check.
+        const authorization = await this.#authorization(method, attempt.signal)
+        if (guarded(policy)) {
+          // Decide after the last await: a mismatch or doubt recorded meanwhile is honoured.
+          for (let checks = 0; this.#chainNeedsCheck(method, authorization, checks); checks += 1) {
+            if (checks > 0) {
+              await this.#pause(method, attempt)
+              // Decide again after the wait: a mismatch recorded meanwhile refuses the call.
+              if (!this.#chainNeedsCheck(method, authorization, checks)) break
+            }
+            await this.#checkChain(attempt, authorization, undefined)
+          }
+        }
+        const text = await this.#exchange(method, body, attempt.signal, policy.sideEffects, id, authorization.header)
         const reply = this.#envelope(method, parseOrProtocolError(method, text), id, 'response')
         if ('error' in reply) {
           throw new Failure(reply.error, false, !policy.sideEffects && reply.error.code === RPC_IN_WARMUP)
@@ -517,7 +630,8 @@ export class QbitRpcClient {
     return this.#operation(label, options, this.#readRetries, async attempt => {
       let text: string
       try {
-        text = await this.#exchange(label, body, attempt.signal, false, undefined)
+        const authorization = await this.#authorization(label, attempt.signal)
+        text = await this.#exchange(label, body, attempt.signal, false, undefined, authorization.header)
       } catch (error) {
         throw asFailure(label, error, attempt)
       }
@@ -576,7 +690,12 @@ export class QbitRpcClient {
     try {
       for (let tries = 0; ; tries += 1) {
         try {
-          return await attempt({ signal: controller.signal, timeoutMs, maxResponseBytes: this.#maxResponseBytes })
+          return await attempt({
+            signal: controller.signal,
+            deadline,
+            timeoutMs,
+            maxResponseBytes: this.#maxResponseBytes,
+          })
         } catch (error) {
           if (!(error instanceof Failure)) throw error
           const delay = Math.min(this.#retryDelayMs * 2 ** tries, MAX_RETRY_DELAY_MS)
@@ -599,16 +718,18 @@ export class QbitRpcClient {
   /**
    * One HTTP exchange. Returns the body of a 200 reply; anything else throws a
    * Failure or ExchangeFailure. `id` is the single request's id, or undefined
-   * for a batch.
+   * for a batch. The request is handed to the transport before the first
+   * await, so nothing recorded after a guard decision made just before the
+   * call can slip in between; nothing recorded after that can recall it.
    */
   async #exchange(
     method: string,
     body: string,
     signal: AbortSignal,
     sideEffects: boolean,
-    id: number | undefined
+    id: number | undefined,
+    authorization: string
   ): Promise<string> {
-    const authorization = await this.#authorization(method, signal)
     let reply
     try {
       reply = await this.#transport.send({
@@ -640,11 +761,12 @@ export class QbitRpcClient {
     throw new Failure(protocolError(method, 'response', `HTTP 200, not ${reply.status}`), true, false)
   }
 
-  /** The Authorization header for the next request. A changed cookie (qbitd restarted) makes the chain stale. */
-  async #authorization(method: string, signal: AbortSignal): Promise<string> {
-    let authorization: string
+  /** The Authorization header for one attempt, and its digest: a new cookie (qbitd restarted) makes the chain stale. */
+  async #authorization(method: string, signal: AbortSignal): Promise<Authorization> {
+    const read = ++this.#authReads
+    let header: string
     try {
-      authorization = await abortable(this.#credentials.header(signal), signal)
+      header = await abortable(this.#credentials.header(signal), signal)
     } catch (error) {
       if (signal.aborted) throw new ExchangeFailure('aborted', false)
       if (error instanceof CookieReadFailure) {
@@ -652,10 +774,12 @@ export class QbitRpcClient {
       }
       throw error
     }
-    const digest = createHash('sha256').update(authorization).digest('hex')
-    if (this.#authDigest !== undefined && digest !== this.#authDigest) this.#invalidateChain()
-    this.#authDigest = digest
-    return authorization
+    const digest = createHash('sha256').update(header).digest('hex')
+    if (read > this.#authDigestRead) {
+      this.#authDigest = digest
+      this.#authDigestRead = read
+    }
+    return { header, digest }
   }
 
   /** Validate one JSON-RPC 2.0 reply object. */
@@ -749,9 +873,17 @@ function validated<T>(method: string, request: RpcRequest<T>, result: unknown): 
   }
 }
 
+/** An attempt's Authorization header, and its digest for comparing it with a confirmation's. */
+interface Authorization {
+  readonly header: string
+  readonly digest: string
+}
+
 interface AttemptContext {
   /** Fires at the operation's deadline (reason TIMEOUT) or when the caller aborts (the caller's reason). */
   readonly signal: AbortSignal
+  /** The operation's deadline, on the `performance.now()` clock. */
+  readonly deadline: number
   readonly timeoutMs: number
   readonly maxResponseBytes: number
 }

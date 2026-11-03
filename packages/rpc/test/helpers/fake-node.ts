@@ -128,6 +128,10 @@ export class FakeNode {
   }
 }
 
+/** The HTTP Basic Authorization header for `user:password`, as the client sends it. */
+export const basicAuth = (user: string, password: string): string =>
+  `Basic ${Buffer.from(`${user}:${password}`).toString('base64')}`
+
 export const HASH_A = 'a'.repeat(64)
 export const HASH_B = 'b'.repeat(64)
 

@@ -68,6 +68,26 @@ chain, the call is refused and so is every later one until `confirmChain()`
 matches again. `rpc.chainStatus` is `unconfirmed`, `confirmed`, `stale` or
 `mismatch`.
 
+The guard decides after a call's last wait, as it hands the request to the
+transport: a mismatch recorded by another check while the call read its
+cookie, ran its re-check or waited between re-checks still refuses it. (Once handed over, the request is
+sent; nothing recorded after that can recall it.) A guarded call reads the
+cookie once per attempt and sends its re-check and itself with that header: a
+confirmation counts only for calls with the cookie it was made with, and if
+qbitd restarts after the read, the node rejects the call with HTTP 401 instead
+of running it.
+
+A check whose answer arrives after a connection error or an HTTP 401 on any
+call may predate it, so it changes nothing: the guarded call (or
+`confirmChain()`) waits `retryDelayMs` (at most 10 s, and never past the
+deadline) and checks again, up to three checks
+per attempt, and then fails with `RpcChainGuardError` `reason: 'stale'`,
+nothing sent; try again later. So `confirmChain()` resolves only once a check
+made with the cookie it read confirmed the chain, and an unconfirmed client
+stays refused until then. An answer reporting another chain always stands:
+only a `confirmChain()` begun after it can clear it, and one that sees a
+mismatch recorded while it runs throws it.
+
 The check and the call are separate requests. Behind a load balancer or DNS
 name that can switch nodes, they can reach different nodes: point the client
 at one node.
