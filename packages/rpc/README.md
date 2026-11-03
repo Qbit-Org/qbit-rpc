@@ -41,9 +41,9 @@ Every method, typed or through `call()`, must be on the allowlist
 
 | Capability | Methods |
 | --- | --- |
-| none (read) | `getblockchaininfo`, `getnetworkinfo`, `getbestblockhash`, `getblockhash`, `getblockheader`, `getrawtransaction`, `getconfirmationtarget`, `estimatesmartfee`, `validateaddress`, `verifydatapqchash`; untyped: `getblockcount`, `getblock`, `getchaintips`, `getmempoolinfo`, `getrawmempool`, `getmempoolentry`, `gettxout`, `decoderawtransaction`, `decodepsbt`, `analyzepsbt`, `getorphanmetrics`, `getarchivepeers`, `getindexinfo`, `getzmqnotifications`, `uptime` |
-| `wallet-read` | `getwalletinfo`, `gettransaction`, `listunspent`; untyped: `getbalances`, `listtransactions`, `listsinceblock`, `getaddressinfo`, `listwallets`, `listlockunspent` |
-| `wallet-write` | `walletcreatefundedpsbt`, `walletprocesspsbt`, `finalizepsbt`, `walletpassphrase`, `walletlock`; untyped: `getnewaddress`, `getrawchangeaddress`, `lockunspent` |
+| none (read) | `getblockchaininfo`, `getnetworkinfo`, `getbestblockhash`, `getblockcount`, `getblockhash`, `getblockheader`, `getrawtransaction`, `getmempoolentry`, `gettxout`, `getconfirmationtarget`, `estimatesmartfee`, `validateaddress`, `verifydatapqchash`; untyped: `getblock`, `getchaintips`, `getmempoolinfo`, `getrawmempool`, `decoderawtransaction`, `decodepsbt`, `analyzepsbt`, `getorphanmetrics`, `getarchivepeers`, `getindexinfo`, `getzmqnotifications`, `uptime` |
+| `wallet-read` | `getwalletinfo`, `gettransaction`, `listunspent`, `getaddressinfo`, `listlockunspent`; untyped: `getbalances`, `listtransactions`, `listsinceblock`, `listwallets` |
+| `wallet-write` | `walletcreatefundedpsbt`, `walletprocesspsbt`, `finalizepsbt`, `walletpassphrase`, `walletlock`, `getrawchangeaddress`, `lockunspent`; untyped: `getnewaddress` |
 | `broadcast` | `testmempoolaccept`, `sendrawtransaction` |
 
 `sendmany`, `sendtoaddress`, `send`, `sendall`, `bumpfee` and `psbtbumpfee` are
@@ -85,9 +85,12 @@ offending value.
 | `getBlockchainInfo()` | `BlockchainInfo`, including `p2mrValidationWeight` and `futureBlockTime` |
 | `getNetworkInfo()` | `NetworkInfo`; `relayFeeBitsPerKvB`, `incrementalFeeBitsPerKvB` |
 | `getBestBlockHash()`, `getBlockHash(height)` | block hash |
+| `getBlockCount()` | the tip's height |
 | `getBlockHeader(hash)` | `BlockHeader`; checks the hash, `versionHex` and genesis linkage |
 | `getRawTransaction(txid, { blockHash? })` | hex |
 | `getRawTransactionVerbose(txid, { blockHash? })` | `DecodedTransaction`, output values as `valueBits` |
+| `getMempoolEntry(txid)` | `MempoolEntry`: sizes, `depends`, `spentBy`, fees as `baseBits` and so on; `RpcError` -5 when not in the mempool |
+| `getTxOut(txid, vout, { includeMempool? })` | `TxOut` with `valueBits` and `coinbase`, or `null` when spent or unknown |
 | `getConfirmationTarget(valueBits, { securityLevel?, mergeMiningPct?, btcHashrate? })` | `ConfirmationTarget` (the node's float `value_qbt` echo is dropped) |
 | `estimateSmartFee(confTarget, { mode? })` | `{ feeRateBitsPerKvB?, errors?, blocks }` |
 | `validateAddress(address)` | `AddressValidation`, a union on `isValid` |
@@ -97,17 +100,40 @@ offending value.
 | `getWalletInfo()` | `WalletInfo`, including `pqcKeyValidation` |
 | `getTransaction(txid)` | `WalletTransaction`; signed `amountBits` and `feeBits` |
 | `listUnspent(options?)` | `UnspentOutput[]` |
+| `getAddressInfo(address)` | `AddressInfo` with the PQC usage fields; checks the address |
+| `listLockUnspent()` | `Outpoint[]` (`{ txid, vout }`) |
 | `walletCreateFundedPsbt({ inputs?, outputs, locktime?, options?, bip32derivs?, version? })` | `{ psbt, feeBits, changePos }` |
 | `walletProcessPsbt(psbt, { sign?, sighashType?, bip32derivs?, finalize? })` | `ProcessedPsbt` with the PQC usage fields |
 | `finalizePsbt(psbt, { extract? })` | `{ psbt?, hex?, complete }` |
 | `walletPassphrase(passphrase, timeoutSeconds)`, `walletLock()` | nothing |
+| `getRawChangeAddress({ addressType? })` | a new change address |
+| `lockUnspent(unlock, outputs, { persistent? })` | `true` |
 
-`ProcessedPsbt` carries qbit Core's PQC signature-budget fields when local PQC
-keys signed: `pqcKeyStates` (per key: `pubkey`, `pqcSignatureCount`,
+`AddressInfo` and `ProcessedPsbt` carry qbit Core's PQC signature-budget
+fields: for the keys of one of the wallet's addresses (`getaddressinfo`, absent
+for other addresses), or for the local keys that signed (`walletprocesspsbt`).
+They are `pqcKeyStates` (per key: `pubkey`, `pqcSignatureCount`,
 `pqcSignatureLimit`, `pqcSignaturesRemaining`, `pqcLimitState`),
-`pqcOverallLimitState`, the four single-key fields when exactly one key signed,
-and `warnings`. `pqcLimitState` is `normal`, `warning`, `critical` or
-`exhausted`. qbit Core v1.0.0's `getwalletinfo` does not report these counts.
+`pqcOverallLimitState`, and the four single-key fields when exactly one key is
+involved; `ProcessedPsbt` adds `warnings`. `pqcLimitState` is `normal`,
+`warning`, `critical` or `exhausted`. A key's limit is 2^30 signatures. qbit
+Core v1.0.0's `getwalletinfo` does not report these counts.
+
+`lockUnspent(false, outputs)` locks outputs against automatic coin selection
+and `lockUnspent(true, outputs)` unlocks them. The locks live in memory and
+are gone after a node restart unless `persistent: true` is passed when
+locking. The node checks every output first: one that is unknown, spent,
+already locked (locking) or not locked (unlocking) rejects the whole call with
+`RpcError` -8 and changes nothing. `outputs` must not be empty, since qbit Core
+reads an empty list as "do nothing"; to unlock everything, use
+`call('lockunspent', [true])`. `getRawChangeAddress` takes a key from the
+change keypool. Both are side-effecting wallet-write calls.
+
+`QbitRpcClient` satisfies the `CoreRpc` interface of the qbit Core wallet
+adapter in `qbit-payments` with no wrapper (`test/core-rpc.test.ts` checks a
+copy of it). Scope the client to the wallet (`wallet`), enable `wallet-read`,
+`wallet-write` and `broadcast`, and call `confirmChain()` before handing it
+over.
 
 Arguments are checked before sending; invalid ones reject with `TypeError` or
 `RangeError` and nothing is sent.

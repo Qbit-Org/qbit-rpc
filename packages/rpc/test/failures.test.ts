@@ -124,6 +124,8 @@ describe('unknown outcomes after a side effect may have happened', () => {
     ['walletpassphrase', (rpc: QbitRpcClient) => rpc.walletPassphrase('pw', 10)],
     ['walletlock', (rpc: QbitRpcClient) => rpc.walletLock()],
     ['call(lockunspent)', (rpc: QbitRpcClient) => rpc.call('lockunspent', [false])],
+    ['lockunspent', (rpc: QbitRpcClient) => rpc.lockUnspent(false, [{ txid: HASH_A, vout: 0 }])],
+    ['getrawchangeaddress', (rpc: QbitRpcClient) => rpc.getRawChangeAddress({ addressType: 'p2mr' })],
   ])('treats a dropped reply to %s as unknown', async (_name, run) => {
     const rpc = await confirmed({ readRetries: 3 })
     node.handler = (_request, response) => response.socket?.destroy()

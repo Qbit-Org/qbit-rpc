@@ -26,6 +26,7 @@ import {
   string,
   uint32,
   warnings,
+  type JsonObject,
 } from './validate'
 
 /**
@@ -422,14 +423,17 @@ export type TransactionInput =
 export interface TransactionOutput {
   readonly valueBits: bigint
   readonly n: number
-  readonly scriptPubKey: {
-    readonly asm: string
-    readonly desc: string
-    readonly hex: string
-    readonly address?: string
-    /** Output type, for example `witness_v2_p2mr` or `nulldata`. */
-    readonly type: string
-  }
+  readonly scriptPubKey: ScriptPubKey
+}
+
+/** A decoded output script, as `getrawtransaction` and `gettxout` report it. */
+export interface ScriptPubKey {
+  readonly asm: string
+  readonly desc: string
+  readonly hex: string
+  readonly address?: string
+  /** Output type, for example `witness_v2_p2mr` or `nulldata`. */
+  readonly type: string
 }
 
 function parseInput(value: unknown, path: string): TransactionInput {
@@ -452,20 +456,23 @@ function parseInput(value: unknown, path: string): TransactionInput {
   })
 }
 
+function parseScriptPubKey(value: unknown, path: string): ScriptPubKey {
+  const spk = object(value, path)
+  return compact<ScriptPubKey>({
+    asm: field(spk, 'asm', path, string),
+    desc: field(spk, 'desc', path, string),
+    hex: field(spk, 'hex', path, hex()),
+    address: optional(spk, 'address', path, string),
+    type: field(spk, 'type', path, string),
+  })
+}
+
 function parseOutput(value: unknown, path: string): TransactionOutput {
   const out = object(value, path)
-  const spk = field(out, 'scriptPubKey', path, object)
-  const sp = `${path}.scriptPubKey`
   return {
     valueBits: field(out, 'value', path, amount),
     n: field(out, 'n', path, uint32),
-    scriptPubKey: compact<TransactionOutput['scriptPubKey']>({
-      asm: field(spk, 'asm', sp, string),
-      desc: field(spk, 'desc', sp, string),
-      hex: field(spk, 'hex', sp, hex()),
-      address: optional(spk, 'address', sp, string),
-      type: field(spk, 'type', sp, string),
-    }),
+    scriptPubKey: field(out, 'scriptPubKey', path, parseScriptPubKey),
   }
 }
 
@@ -495,6 +502,94 @@ function parseDecodedTransaction(requestedTxid: string): (value: unknown) => Dec
     })
     return tx
   }
+}
+
+/** `getmempoolentry`. Sizes are in vbytes; qbit Core does not discount witness data. */
+export interface MempoolEntry {
+  readonly vsize: number
+  readonly weight: number
+  /** Unix time the transaction entered this node's mempool. */
+  readonly time: number
+  /** The block height when it entered. */
+  readonly height: number
+  /** In-mempool descendants and ancestors, this transaction included. */
+  readonly descendantCount: number
+  readonly descendantSize: number
+  readonly ancestorCount: number
+  readonly ancestorSize: number
+  readonly wtxid: string
+  readonly fees: {
+    readonly baseBits: bigint
+    /** These three include `prioritisetransaction` deltas, so they can be negative. */
+    readonly modifiedBits: bigint
+    readonly ancestorBits: bigint
+    readonly descendantBits: bigint
+  }
+  /** txids of the mempool transactions this one spends. */
+  readonly depends: readonly string[]
+  /** txids of the mempool transactions spending its outputs. */
+  readonly spentBy: readonly string[]
+  /** Deprecated by qbit Core, which still reports it in v1.0.0. */
+  readonly bip125Replaceable?: boolean
+  /** True until a peer has acknowledged the initial broadcast. */
+  readonly unbroadcast: boolean
+}
+
+function parseMempoolEntry(value: unknown): MempoolEntry {
+  const o = object(value, R)
+  const f = field(o, 'fees', R, object)
+  const fp = `${R}.fees`
+  const count = integer(1, Number.MAX_SAFE_INTEGER)
+  const txids = (v: unknown, p: string): string[] => array(v, p, hash)
+  return compact<MempoolEntry>({
+    vsize: field(o, 'vsize', R, nonNegativeInteger),
+    weight: field(o, 'weight', R, nonNegativeInteger),
+    time: field(o, 'time', R, nonNegativeInteger),
+    height: field(o, 'height', R, nonNegativeInteger),
+    descendantCount: field(o, 'descendantcount', R, count),
+    descendantSize: field(o, 'descendantsize', R, nonNegativeInteger),
+    ancestorCount: field(o, 'ancestorcount', R, count),
+    ancestorSize: field(o, 'ancestorsize', R, nonNegativeInteger),
+    wtxid: field(o, 'wtxid', R, hash),
+    fees: {
+      baseBits: field(f, 'base', fp, amount),
+      modifiedBits: field(f, 'modified', fp, signedAmount),
+      ancestorBits: field(f, 'ancestor', fp, signedAmount),
+      descendantBits: field(f, 'descendant', fp, signedAmount),
+    },
+    depends: field(o, 'depends', R, txids),
+    spentBy: field(o, 'spentby', R, txids),
+    bip125Replaceable: optional(o, 'bip125-replaceable', R, boolean),
+    unbroadcast: field(o, 'unbroadcast', R, boolean),
+  })
+}
+
+/** `gettxout`: an unspent output. */
+export interface TxOut {
+  /** The tip the answer was computed at. */
+  readonly bestBlock: string
+  /** 0 for an output of a mempool transaction. */
+  readonly confirmations: number
+  readonly valueBits: bigint
+  readonly scriptPubKey: ScriptPubKey
+  readonly coinbase: boolean
+}
+
+function parseTxOut(value: unknown): TxOut | null {
+  if (value === null) return null
+  const o = object(value, R)
+  const out: TxOut = {
+    bestBlock: field(o, 'bestblock', R, hash),
+    confirmations: field(o, 'confirmations', R, nonNegativeInteger),
+    valueBits: field(o, 'value', R, amount),
+    scriptPubKey: field(o, 'scriptPubKey', R, parseScriptPubKey),
+    coinbase: field(o, 'coinbase', R, boolean),
+  }
+  // A coinbase transaction is never in the mempool.
+  if (out.coinbase && out.confirmations === 0) {
+    throw new ResultIssue(`${R}.confirmations`, 'at least 1 for a coinbase output')
+  }
+  return out
 }
 
 /** Security levels `getconfirmationtarget` models: 1, 3, 6 and 60 Bitcoin confirmations. */
@@ -723,6 +818,62 @@ function parseMempoolAcceptance(rawTxs: readonly string[]): (value: unknown) => 
       }
     })
     return entries
+  }
+}
+
+// ---------------------------------------------------------------------------
+// PQC signature budgets
+// ---------------------------------------------------------------------------
+
+export type PqcLimitState = 'normal' | 'warning' | 'critical' | 'exhausted'
+const PQC_LIMIT_STATES: readonly PqcLimitState[] = ['normal', 'warning', 'critical', 'exhausted']
+
+/** Signature-budget state of one local PQC key that took part in a response. */
+export interface PqcKeyState {
+  readonly pubkey: string
+  readonly pqcSignatureCount: number
+  readonly pqcSignatureLimit: number
+  readonly pqcSignaturesRemaining: number
+  readonly pqcLimitState: PqcLimitState
+}
+
+/**
+ * The PQC usage fields qbit Core adds to a response that involves local PQC
+ * keys: the keys that signed (`walletprocesspsbt`) or an address's keys
+ * (`getaddressinfo`). `pqcKeyStates` lists every key; the four single-key
+ * fields are only present when exactly one key is involved. Treat `critical`
+ * and `exhausted` as operational events.
+ */
+export interface PqcUsage {
+  readonly pqcKeyStates?: readonly PqcKeyState[]
+  readonly pqcOverallLimitState?: PqcLimitState
+  readonly pqcSignatureCount?: number
+  readonly pqcSignatureLimit?: number
+  readonly pqcSignaturesRemaining?: number
+  readonly pqcLimitState?: PqcLimitState
+}
+
+/** The PQC usage fields of a result object; absent ones stay undefined, for `compact`. */
+function pqcUsage(o: JsonObject): { [K in keyof PqcUsage]: PqcUsage[K] | undefined } {
+  const limitState = oneOf(PQC_LIMIT_STATES)
+  return {
+    pqcKeyStates: optional(o, 'pqc_key_states', R, (v, p) =>
+      array(v, p, (entry, ep) => {
+        const k = object(entry, ep)
+        return {
+          pubkey: field(k, 'pubkey', ep, hex(32)),
+          pqcSignatureCount: field(k, 'pqc_signature_count', ep, uint32),
+          pqcSignatureLimit: field(k, 'pqc_signature_limit', ep, uint32),
+          pqcSignaturesRemaining: field(k, 'pqc_signatures_remaining', ep, uint32),
+          pqcLimitState: field(k, 'pqc_limit_state', ep, limitState),
+        }
+      })
+    ),
+    pqcOverallLimitState: optional(o, 'pqc_overall_limit_state', R, limitState),
+    pqcSignatureCount: optional(o, 'pqc_signature_count', R, uint32),
+    pqcSignatureLimit: optional(o, 'pqc_signature_limit', R, uint32),
+    pqcSignaturesRemaining: optional(o, 'pqc_signatures_remaining', R, uint32),
+    pqcLimitState: optional(o, 'pqc_limit_state', R, limitState),
   }
 }
 
@@ -968,6 +1119,64 @@ export interface ListUnspentOptions {
   readonly includeImmatureCoinbase?: boolean
 }
 
+/**
+ * `getaddressinfo`. For an address of this wallet, `desc` is present and the
+ * PQC fields report the signature budgets of its keys.
+ */
+export interface AddressInfo extends PqcUsage {
+  /** As the node encodes it: a bech32 address in lowercase. */
+  readonly address: string
+  readonly scriptPubKey: string
+  readonly isMine: boolean
+  /** Whether the wallet knows how to spend coins sent here, ignoring a lack of private keys. */
+  readonly solvable: boolean
+  readonly desc?: string
+  readonly parentDesc?: string
+  readonly isScript?: boolean
+  readonly isChange: boolean
+  readonly isWitness: boolean
+  readonly witnessVersion?: number
+  readonly witnessProgram?: string
+  readonly labels: readonly string[]
+}
+
+function parseAddressInfo(requestedAddress: string): (value: unknown) => AddressInfo {
+  return value => {
+    const o = object(value, R)
+    const info = compact<AddressInfo>({
+      address: field(o, 'address', R, string),
+      scriptPubKey: field(o, 'scriptPubKey', R, hex()),
+      isMine: field(o, 'ismine', R, boolean),
+      solvable: field(o, 'solvable', R, boolean),
+      desc: optional(o, 'desc', R, string),
+      parentDesc: optional(o, 'parent_desc', R, string),
+      isScript: optional(o, 'isscript', R, boolean),
+      isChange: field(o, 'ischange', R, boolean),
+      isWitness: field(o, 'iswitness', R, boolean),
+      witnessVersion: optional(o, 'witness_version', R, integer(0, 16)),
+      witnessProgram: optional(o, 'witness_program', R, hex()),
+      labels: field(o, 'labels', R, strings),
+      ...pqcUsage(o),
+    })
+    // The node lowercases a bech32 address it was given in uppercase.
+    if (info.address.toLowerCase() !== requestedAddress.toLowerCase()) {
+      throw new ResultIssue(`${R}.address`, 'the requested address')
+    }
+    return info
+  }
+}
+
+/** A transaction output: its txid and output index. */
+export interface Outpoint {
+  readonly txid: string
+  readonly vout: number
+}
+
+function parseOutpoint(value: unknown, path: string): Outpoint {
+  const o = object(value, path)
+  return { txid: field(o, 'txid', path, hash), vout: field(o, 'vout', path, uint32) }
+}
+
 // ---------------------------------------------------------------------------
 // Wallet write
 // ---------------------------------------------------------------------------
@@ -1021,33 +1230,6 @@ function parseFundedPsbt(value: unknown): FundedPsbt {
   }
 }
 
-export type PqcLimitState = 'normal' | 'warning' | 'critical' | 'exhausted'
-const PQC_LIMIT_STATES: readonly PqcLimitState[] = ['normal', 'warning', 'critical', 'exhausted']
-
-/** Signature-budget state of one local PQC key that took part in a signing response. */
-export interface PqcKeyState {
-  readonly pubkey: string
-  readonly pqcSignatureCount: number
-  readonly pqcSignatureLimit: number
-  readonly pqcSignaturesRemaining: number
-  readonly pqcLimitState: PqcLimitState
-}
-
-/**
- * The PQC usage fields qbit Core adds to signing responses when local PQC keys
- * signed. `pqcKeyStates` lists every key; the four single-key fields are only
- * present when exactly one key signed. Treat `critical` and `exhausted` as
- * operational events.
- */
-export interface PqcUsage {
-  readonly pqcKeyStates?: readonly PqcKeyState[]
-  readonly pqcOverallLimitState?: PqcLimitState
-  readonly pqcSignatureCount?: number
-  readonly pqcSignatureLimit?: number
-  readonly pqcSignaturesRemaining?: number
-  readonly pqcLimitState?: PqcLimitState
-}
-
 /** `walletprocesspsbt`. */
 export interface ProcessedPsbt extends PqcUsage {
   readonly psbt: string
@@ -1060,28 +1242,11 @@ export interface ProcessedPsbt extends PqcUsage {
 
 function parseProcessedPsbt(value: unknown): ProcessedPsbt {
   const o = object(value, R)
-  const limitState = oneOf(PQC_LIMIT_STATES)
   return compact<ProcessedPsbt>({
     psbt: field(o, 'psbt', R, base64),
     complete: field(o, 'complete', R, boolean),
     hex: optional(o, 'hex', R, hex()),
-    pqcKeyStates: optional(o, 'pqc_key_states', R, (v, p) =>
-      array(v, p, (entry, ep) => {
-        const k = object(entry, ep)
-        return {
-          pubkey: field(k, 'pubkey', ep, hex(32)),
-          pqcSignatureCount: field(k, 'pqc_signature_count', ep, uint32),
-          pqcSignatureLimit: field(k, 'pqc_signature_limit', ep, uint32),
-          pqcSignaturesRemaining: field(k, 'pqc_signatures_remaining', ep, uint32),
-          pqcLimitState: field(k, 'pqc_limit_state', ep, limitState),
-        }
-      })
-    ),
-    pqcOverallLimitState: optional(o, 'pqc_overall_limit_state', R, limitState),
-    pqcSignatureCount: optional(o, 'pqc_signature_count', R, uint32),
-    pqcSignatureLimit: optional(o, 'pqc_signature_limit', R, uint32),
-    pqcSignaturesRemaining: optional(o, 'pqc_signatures_remaining', R, uint32),
-    pqcLimitState: optional(o, 'pqc_limit_state', R, limitState),
+    ...pqcUsage(o),
     warnings: optional(o, 'warnings', R, warnings),
   })
 }
@@ -1115,6 +1280,12 @@ function parseFinalizedPsbt(value: unknown): FinalizedPsbt {
 }
 
 const parseNull = (value: unknown): null => nullValue(value, R)
+
+/** An address the wallet returns: bech32 or base58 characters only. */
+function parseAddress(value: unknown): string {
+  if (typeof value !== 'string' || !/^[0-9A-Za-z]+$/.test(value)) throw new ResultIssue(R, 'an address')
+  return value
+}
 
 // ---------------------------------------------------------------------------
 // Request builders
@@ -1180,6 +1351,8 @@ export const requests = {
   getBlockchainInfo: (): RpcRequest<BlockchainInfo> => request('getblockchaininfo', [], parseBlockchainInfo),
   getNetworkInfo: (): RpcRequest<NetworkInfo> => request('getnetworkinfo', [], parseNetworkInfo),
   getBestBlockHash: (): RpcRequest<string> => request('getbestblockhash', [], v => hash(v, R)),
+  /** The height of the active chain's tip; the genesis block is 0. */
+  getBlockCount: (): RpcRequest<number> => request('getblockcount', [], v => nonNegativeInteger(v, R)),
   getBlockHash: (height: number): RpcRequest<string> =>
     request('getblockhash', [argInteger(height, 'height', 0, 0x7fff_ffff)], v => hash(v, R)),
   getBlockHeader(blockHash: string): RpcRequest<BlockHeader> {
@@ -1203,6 +1376,26 @@ export const requests = {
       'getrawtransaction',
       [requested, 1, opt(o['blockHash'], v => argHash(v, 'options.blockHash'))],
       parseDecodedTransaction(requested)
+    )
+  },
+  /** Rejects with `RpcError` code -5 when the transaction is not in the mempool. */
+  getMempoolEntry: (txid: string): RpcRequest<MempoolEntry> =>
+    request('getmempoolentry', [argHash(txid, 'txid')], parseMempoolEntry),
+  /**
+   * An unspent output, or null when it is spent or does not exist. With
+   * `includeMempool` (the node's default, true), outputs of mempool
+   * transactions are found and outputs spent in the mempool are not.
+   */
+  getTxOut(txid: string, vout: number, options?: { readonly includeMempool?: boolean }): RpcRequest<TxOut | null> {
+    const o = argOptions(options, 'options')
+    return request(
+      'gettxout',
+      [
+        argHash(txid, 'txid'),
+        argInteger(vout, 'vout', 0, 0x7fff_ffff),
+        opt(o['includeMempool'], v => argBoolean(v, 'options.includeMempool')),
+      ],
+      parseTxOut
     )
   },
   getConfirmationTarget(
@@ -1326,6 +1519,13 @@ export const requests = {
       v => array(v, R, parseUnspent)
     )
   },
+  /** Checks that the reply is about `address`. Rejects with `RpcError` code -5 for an address invalid on this network. */
+  getAddressInfo(address: string): RpcRequest<AddressInfo> {
+    const requested = argString(address, 'address', { nonEmpty: true })
+    return request('getaddressinfo', [requested], parseAddressInfo(requested))
+  },
+  /** The outputs `lockUnspent` or `walletCreateFundedPsbt`'s `lockUnspents` locked, persistent or not. */
+  listLockUnspent: (): RpcRequest<Outpoint[]> => request('listlockunspent', [], v => array(v, R, parseOutpoint)),
 
   walletCreateFundedPsbt(args: WalletCreateFundedPsbtArgs): RpcRequest<FundedPsbt> {
     const a = argOptions(args, 'args')
@@ -1408,4 +1608,53 @@ export const requests = {
       parseNull
     ),
   walletLock: (): RpcRequest<null> => request('walletlock', [], parseNull),
+  /**
+   * A new address from the wallet's internal (change) keypool. Launch chains
+   * offer only `p2mr`. An unknown or unavailable type rejects with `RpcError`
+   * code -5. On regtest, a wallet encrypted at creation rejects with code -12
+   * unless `addressType` is `p2mr` or the node runs with `-changetype=p2mr`.
+   */
+  getRawChangeAddress(options?: { readonly addressType?: string }): RpcRequest<string> {
+    const o = argOptions(options, 'options')
+    return request(
+      'getrawchangeaddress',
+      [opt(o['addressType'], v => argString(v, 'options.addressType', { nonEmpty: true }))],
+      parseAddress
+    )
+  },
+  /**
+   * Lock (`unlock` false) or unlock (`unlock` true) wallet outputs against
+   * automatic coin selection. Locks are kept in memory and gone after a node
+   * restart, unless `persistent` is set when locking. The node checks every
+   * output first and rejects with `RpcError` code -8, changing nothing, when one
+   * is unknown, spent, already locked (locking) or not locked (unlocking).
+   * `outputs` must not be empty: to unlock every output, use
+   * `call('lockunspent', [true])`.
+   */
+  lockUnspent(
+    unlock: boolean,
+    outputs: readonly Outpoint[],
+    options?: { readonly persistent?: boolean }
+  ): RpcRequest<boolean> {
+    const unlocking = argBoolean(unlock, 'unlock')
+    if (!Array.isArray(outputs) || outputs.length === 0) {
+      throw new RangeError('outputs must be a non-empty array of { txid, vout }')
+    }
+    const o = argOptions(options, 'options')
+    return request(
+      'lockunspent',
+      [
+        unlocking,
+        outputs.map((output: unknown, i) => {
+          const p = argOptions(output, `outputs[${i}]`)
+          return {
+            txid: argHash(p['txid'], `outputs[${i}].txid`),
+            vout: argInteger(p['vout'], `outputs[${i}].vout`, 0, 0x7fff_ffff),
+          }
+        }),
+        opt(o['persistent'], v => argBoolean(v, 'options.persistent')),
+      ],
+      v => boolean(v, R)
+    )
+  },
 }

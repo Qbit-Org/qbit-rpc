@@ -25,6 +25,7 @@ import {
 import { assertLosslessJsonSupport, JsonNumber, parseJsonLossless, stringifyRequest } from './json'
 import {
   requests,
+  type AddressInfo,
   type AddressValidation,
   type BlockchainInfo,
   type BlockHeader,
@@ -37,12 +38,15 @@ import {
   type FundedPsbt,
   type ListUnspentOptions,
   type MempoolAcceptance,
+  type MempoolEntry,
   type NetworkInfo,
+  type Outpoint,
   type ProcessedPsbt,
   type RpcRequest,
   type SecurityLevel,
   type SighashType,
   type SmartFeeEstimate,
+  type TxOut,
   type UnspentOutput,
   type WalletCreateFundedPsbtArgs,
   type WalletInfo,
@@ -266,6 +270,9 @@ export class QbitRpcClient {
   getBestBlockHash(options?: CallOptions): Promise<string> {
     return this.#single(requests.getBestBlockHash(), options)
   }
+  getBlockCount(options?: CallOptions): Promise<number> {
+    return this.#single(requests.getBlockCount(), options)
+  }
   getBlockHash(height: number, options?: CallOptions): Promise<string> {
     return this.#lazy(() => requests.getBlockHash(height), options)
   }
@@ -280,6 +287,16 @@ export class QbitRpcClient {
     options?: { readonly blockHash?: string } & CallOptions
   ): Promise<DecodedTransaction> {
     return this.#lazy(() => requests.getRawTransactionVerbose(txid, options), options)
+  }
+  getMempoolEntry(txid: string, options?: CallOptions): Promise<MempoolEntry> {
+    return this.#lazy(() => requests.getMempoolEntry(txid), options)
+  }
+  getTxOut(
+    txid: string,
+    vout: number,
+    options?: { readonly includeMempool?: boolean } & CallOptions
+  ): Promise<TxOut | null> {
+    return this.#lazy(() => requests.getTxOut(txid, vout, options), options)
   }
   getConfirmationTarget(
     valueBits: bigint,
@@ -324,6 +341,12 @@ export class QbitRpcClient {
   listUnspent(options?: ListUnspentOptions & CallOptions): Promise<UnspentOutput[]> {
     return this.#lazy(() => requests.listUnspent(options), options)
   }
+  getAddressInfo(address: string, options?: CallOptions): Promise<AddressInfo> {
+    return this.#lazy(() => requests.getAddressInfo(address), options)
+  }
+  listLockUnspent(options?: CallOptions): Promise<Outpoint[]> {
+    return this.#single(requests.listLockUnspent(), options)
+  }
   walletCreateFundedPsbt(args: WalletCreateFundedPsbtArgs, options?: CallOptions): Promise<FundedPsbt> {
     return this.#lazy(() => requests.walletCreateFundedPsbt(args), options)
   }
@@ -346,6 +369,16 @@ export class QbitRpcClient {
   }
   walletLock(options?: CallOptions): Promise<void> {
     return this.#single(requests.walletLock(), options).then(() => undefined)
+  }
+  getRawChangeAddress(options?: { readonly addressType?: string } & CallOptions): Promise<string> {
+    return this.#lazy(() => requests.getRawChangeAddress(options), options)
+  }
+  lockUnspent(
+    unlock: boolean,
+    outputs: readonly Outpoint[],
+    options?: { readonly persistent?: boolean } & CallOptions
+  ): Promise<boolean> {
+    return this.#lazy(() => requests.lockUnspent(unlock, outputs, options), options)
   }
 
   /** Close pooled keep-alive connections. The client stays usable; later calls open new ones. */

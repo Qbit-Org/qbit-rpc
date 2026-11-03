@@ -215,6 +215,145 @@ describe('chain methods', () => {
     await expect(rpc.getConfirmationTarget(1n, { securityLevel: 'extreme' as never })).rejects.toThrow(RangeError)
   })
 
+  it('getblockcount returns the tip height and rejects anything but a non-negative integer', async () => {
+    node.results({ getblockcount: '1010' })
+    expect(await rpc.getBlockCount()).toBe(1010)
+    expect(params()).toEqual([])
+    for (const bad of ['-1', '10.5', '"10"', '1e3', 'null']) {
+      node.results({ getblockcount: bad })
+      await invalid(rpc.getBlockCount(), 'result')
+    }
+  })
+
+  // As qbit Core v1.0.0 returns it on regtest.
+  const mempoolEntry = {
+    vsize: 3860,
+    weight: 3860,
+    time: 1793687308,
+    height: 1010,
+    descendantcount: 1,
+    descendantsize: 3860,
+    ancestorcount: 1,
+    ancestorsize: 3860,
+    wtxid: HASH_B,
+    fees: { base: 0.00007722, modified: 0.00007722, ancestor: 0.00007722, descendant: 0.00007722 },
+    depends: [],
+    spentby: [HASH_A],
+    'bip125-replaceable': true,
+    unbroadcast: true,
+  }
+
+  it('getmempoolentry maps sizes, relatives and fees in bits', async () => {
+    node.results({ getmempoolentry: JSON.stringify(mempoolEntry) })
+    expect(await rpc.getMempoolEntry(HASH_A.toUpperCase())).toEqual({
+      vsize: 3860,
+      weight: 3860,
+      time: 1793687308,
+      height: 1010,
+      descendantCount: 1,
+      descendantSize: 3860,
+      ancestorCount: 1,
+      ancestorSize: 3860,
+      wtxid: HASH_B,
+      fees: { baseBits: 7722n, modifiedBits: 7722n, ancestorBits: 7722n, descendantBits: 7722n },
+      depends: [],
+      spentBy: [HASH_A],
+      bip125Replaceable: true,
+      unbroadcast: true,
+    })
+    expect(params()).toEqual([HASH_A])
+
+    // Fee deltas can make the modified fees negative, never the base fee.
+    const fees = (changes: Record<string, number>): string =>
+      JSON.stringify({ ...mempoolEntry, fees: { ...mempoolEntry.fees, ...changes } })
+    node.results({ getmempoolentry: fees({ modified: -0.00001 }) })
+    expect((await rpc.getMempoolEntry(HASH_A)).fees.modifiedBits).toBe(-1000n)
+    node.results({ getmempoolentry: fees({ base: -0.00001 }) })
+    await invalid(rpc.getMempoolEntry(HASH_A), 'result.fees.base')
+    node.results({ getmempoolentry: fees({ descendant: 0.000000001 }) })
+    await invalid(rpc.getMempoolEntry(HASH_A), 'result.fees.descendant')
+
+    const { 'bip125-replaceable': _deprecated, ...current } = mempoolEntry
+    node.results({ getmempoolentry: JSON.stringify(current) })
+    expect(await rpc.getMempoolEntry(HASH_A)).not.toHaveProperty('bip125Replaceable')
+    const malformed: [Record<string, unknown>, string][] = [
+      [{ ancestorcount: 0 }, 'result.ancestorcount'],
+      [{ vsize: -1 }, 'result.vsize'],
+      [{ wtxid: 'ab' }, 'result.wtxid'],
+      [{ depends: ['not-a-txid'] }, 'result.depends[0]'],
+      [{ spentby: null }, 'result.spentby'],
+      [{ unbroadcast: 'yes' }, 'result.unbroadcast'],
+      [{ fees: null }, 'result.fees'],
+    ]
+    for (const [change, path] of malformed) {
+      node.results({ getmempoolentry: JSON.stringify({ ...mempoolEntry, ...change }) })
+      await invalid(rpc.getMempoolEntry(HASH_A), path)
+    }
+    node.rpc(() => ({ error: { code: -5, message: 'Transaction not in mempool' } }))
+    await expect(rpc.getMempoolEntry(HASH_A)).rejects.toMatchObject({ code: -5, method: 'getmempoolentry' })
+    const sent = node.requests.length
+    await expect(rpc.getMempoolEntry('zz')).rejects.toThrow(TypeError)
+    expect(node.requests).toHaveLength(sent)
+  })
+
+  // As qbit Core v1.0.0 returns it on regtest.
+  const txOut = {
+    bestblock: HASH_B,
+    confirmations: 1003,
+    value: 210,
+    scriptPubKey: {
+      asm: `2 ${'11'.repeat(32)}`,
+      desc: `rawmr(${'11'.repeat(32)})#ta6x5d6k`,
+      hex: `5220${'11'.repeat(32)}`,
+      address: 'qbrt1zzyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygsqxjqt8',
+      type: 'witness_v2_p2mr',
+    },
+    coinbase: true,
+  }
+
+  it('gettxout returns the output with its value in bits, or null when spent', async () => {
+    node.results({ gettxout: JSON.stringify(txOut).replace('"value":210', '"value":210.00000000') })
+    expect(await rpc.getTxOut(HASH_A.toUpperCase(), 0)).toEqual({
+      bestBlock: HASH_B,
+      confirmations: 1003,
+      valueBits: 21_000_000_000n,
+      scriptPubKey: txOut.scriptPubKey,
+      coinbase: true,
+    })
+    expect(params()).toEqual([HASH_A, 0])
+    await rpc.getTxOut(HASH_A, 7, { includeMempool: false })
+    expect(params()).toEqual([HASH_A, 7, false])
+    node.results({ gettxout: 'null' })
+    expect(await rpc.getTxOut(HASH_A, 0, { includeMempool: true })).toBeNull()
+    expect(params()).toEqual([HASH_A, 0, true])
+
+    const malformed: [Record<string, unknown>, string][] = [
+      [{ confirmations: 0 }, 'result.confirmations'], // a coinbase output is never in the mempool
+      [{ confirmations: -1, coinbase: false }, 'result.confirmations'],
+      [{ value: 0.000000001 }, 'result.value'],
+      [{ value: -1 }, 'result.value'],
+      [{ bestblock: HASH_B.toUpperCase() }, 'result.bestblock'],
+      [{ scriptPubKey: { ...txOut.scriptPubKey, hex: 'zz' } }, 'result.scriptPubKey.hex'],
+      [{ coinbase: 'no' }, 'result.coinbase'],
+    ]
+    for (const [change, path] of malformed) {
+      node.results({ gettxout: JSON.stringify({ ...txOut, ...change }) })
+      await invalid(rpc.getTxOut(HASH_A, 0), path)
+    }
+    node.results({ gettxout: JSON.stringify({ ...txOut, confirmations: 0, coinbase: false }) })
+    expect(await rpc.getTxOut(HASH_A, 0)).toMatchObject({ confirmations: 0, coinbase: false })
+    node.results({ gettxout: 'false' })
+    await invalid(rpc.getTxOut(HASH_A, 0), 'result')
+
+    const sent = node.requests.length
+    await expect(rpc.getTxOut(HASH_A, -1)).rejects.toThrow(RangeError)
+    await expect(rpc.getTxOut(HASH_A, 1.5)).rejects.toThrow(RangeError)
+    await expect(rpc.getTxOut(HASH_A, 2 ** 31)).rejects.toThrow(RangeError)
+    await expect(rpc.getTxOut('zz', 0)).rejects.toThrow(TypeError)
+    await expect(rpc.getTxOut(HASH_A, 0, { includeMempool: 'yes' as never })).rejects.toThrow(TypeError)
+    expect(node.requests).toHaveLength(sent)
+  })
+
   it('estimatesmartfee returns bits per kvB or the node errors', async () => {
     node.results({ estimatesmartfee: '{"feerate":0.00001000,"blocks":2}' })
     expect(await rpc.estimateSmartFee(6, { mode: 'conservative' })).toEqual({ feeRateBitsPerKvB: 1000n, blocks: 2 })
@@ -440,6 +579,230 @@ describe('wallet methods', () => {
     await expect(rpc.walletPassphrase('x', -1)).rejects.toThrow(RangeError)
     node.results({ walletlock: 'true' })
     await invalidAfterSideEffect(rpc.walletLock(), 'result')
+  })
+
+  // A wallet-owned P2MR address, as qbit Core v1.0.0 reports it on regtest.
+  const ADDRESS = 'qbrt1zhst9fr02wm72702a34cu3xp43w59ekrg6z4vm9e9u56edf3r5ncsaz6cs7'
+  const keyState = {
+    pubkey: HASH_A,
+    pqc_signature_count: 0,
+    pqc_signature_limit: 1073741824,
+    pqc_signatures_remaining: 1073741824,
+    pqc_limit_state: 'normal',
+  }
+  const addressInfo = {
+    address: ADDRESS,
+    scriptPubKey: `5220${'bc'.repeat(32)}`,
+    ismine: true,
+    solvable: true,
+    desc: `mr(pk(${HASH_A}))#d67txqyn`,
+    iswatchonly: false,
+    isscript: true,
+    iswitness: true,
+    witness_version: 2,
+    witness_program: 'bc'.repeat(32),
+    ischange: false,
+    labels: [''],
+    pqc_key_states: [keyState],
+    pqc_overall_limit_state: 'normal',
+    pqc_signature_count: 0,
+    pqc_signature_limit: 1073741824,
+    pqc_signatures_remaining: 1073741824,
+    pqc_limit_state: 'normal',
+  }
+
+  it('getaddressinfo surfaces the PQC signature budget of the address keys', async () => {
+    node.results({ getaddressinfo: JSON.stringify(addressInfo) })
+    expect(await rpc.getAddressInfo(ADDRESS)).toEqual({
+      address: ADDRESS,
+      scriptPubKey: `5220${'bc'.repeat(32)}`,
+      isMine: true,
+      solvable: true,
+      desc: `mr(pk(${HASH_A}))#d67txqyn`,
+      isScript: true,
+      isChange: false,
+      isWitness: true,
+      witnessVersion: 2,
+      witnessProgram: 'bc'.repeat(32),
+      labels: [''],
+      pqcKeyStates: [
+        {
+          pubkey: HASH_A,
+          pqcSignatureCount: 0,
+          pqcSignatureLimit: 1073741824,
+          pqcSignaturesRemaining: 1073741824,
+          pqcLimitState: 'normal',
+        },
+      ],
+      pqcOverallLimitState: 'normal',
+      pqcSignatureCount: 0,
+      pqcSignatureLimit: 1073741824,
+      pqcSignaturesRemaining: 1073741824,
+      pqcLimitState: 'normal',
+    })
+    expect(params()).toEqual([ADDRESS])
+    // The node answers an uppercase bech32 address in lowercase.
+    expect((await rpc.getAddressInfo(ADDRESS.toUpperCase())).address).toBe(ADDRESS)
+    expect(params()).toEqual([ADDRESS.toUpperCase()])
+
+    // Two keys: the single-key fields are absent.
+    const second = { ...keyState, pubkey: HASH_B, pqc_signature_count: 805306368, pqc_signatures_remaining: 268435456 }
+    const {
+      pqc_signature_count: _count,
+      pqc_signature_limit: _limit,
+      pqc_signatures_remaining: _remaining,
+      pqc_limit_state: _state,
+      ...twoKeys
+    } = addressInfo
+    node.results({
+      getaddressinfo: JSON.stringify({
+        ...twoKeys,
+        pqc_key_states: [keyState, { ...second, pqc_limit_state: 'critical' }],
+        pqc_overall_limit_state: 'critical',
+      }),
+    })
+    const multi = await rpc.getAddressInfo(ADDRESS)
+    expect(multi.pqcOverallLimitState).toBe('critical')
+    expect(multi.pqcKeyStates?.[1]).toMatchObject({ pubkey: HASH_B, pqcSignaturesRemaining: 268435456 })
+    expect(multi).not.toHaveProperty('pqcSignatureCount')
+
+    // An address the wallet does not know: no descriptor, no PQC fields.
+    const foreign = {
+      address: ADDRESS,
+      scriptPubKey: addressInfo.scriptPubKey,
+      ismine: false,
+      solvable: false,
+      iswatchonly: false,
+      isscript: true,
+      iswitness: true,
+      witness_version: 2,
+      witness_program: addressInfo.witness_program,
+      ischange: false,
+      labels: [],
+    }
+    node.results({ getaddressinfo: JSON.stringify(foreign) })
+    const unknown = await rpc.getAddressInfo(ADDRESS)
+    expect(unknown).toMatchObject({ isMine: false, solvable: false, labels: [] })
+    expect(Object.keys(unknown).some(key => key.startsWith('pqc') || key === 'desc')).toBe(false)
+  })
+
+  it('getaddressinfo rejects a reply about another address or with malformed PQC fields', async () => {
+    const malformed: [Record<string, unknown>, string][] = [
+      [{ address: 'qbrt1zother' }, 'result.address'],
+      [{ ismine: 'true' }, 'result.ismine'],
+      [{ ischange: undefined }, 'result.ischange'],
+      [{ scriptPubKey: 'not hex' }, 'result.scriptPubKey'],
+      [{ witness_version: 17 }, 'result.witness_version'],
+      [{ labels: [1] }, 'result.labels[0]'],
+      [{ pqc_key_states: [{ ...keyState, pqc_limit_state: 'depleted' }] }, 'result.pqc_key_states[0].pqc_limit_state'],
+      [{ pqc_key_states: [{ ...keyState, pubkey: 'ab' }] }, 'result.pqc_key_states[0].pubkey'],
+      [
+        { pqc_key_states: [{ ...keyState, pqc_signatures_remaining: -1 }] },
+        'result.pqc_key_states[0].pqc_signatures_remaining',
+      ],
+      [{ pqc_key_states: {} }, 'result.pqc_key_states'],
+      [{ pqc_overall_limit_state: 'fine' }, 'result.pqc_overall_limit_state'],
+      [{ pqc_signature_count: 4294967296 }, 'result.pqc_signature_count'],
+    ]
+    for (const [change, path] of malformed) {
+      node.results({ getaddressinfo: JSON.stringify({ ...addressInfo, ...change }) })
+      await invalid(rpc.getAddressInfo(ADDRESS), path)
+    }
+    node.rpc(() => ({ error: { code: -5, message: 'Invalid or unsupported Segwit (Bech32) or Base58 encoding.' } }))
+    await expect(rpc.getAddressInfo('qb1zqqqs')).rejects.toMatchObject({ code: -5 })
+    const sent = node.requests.length
+    await expect(rpc.getAddressInfo('')).rejects.toThrow(TypeError)
+    await expect(rpc.getAddressInfo(1 as never)).rejects.toThrow(TypeError)
+    expect(node.requests).toHaveLength(sent)
+  })
+
+  it('listlockunspent returns outpoints', async () => {
+    node.results({ listlockunspent: `[{"txid":"${HASH_A}","vout":0},{"txid":"${HASH_B}","vout":4294967295}]` })
+    expect(await rpc.listLockUnspent()).toEqual([
+      { txid: HASH_A, vout: 0 },
+      { txid: HASH_B, vout: 4294967295 },
+    ])
+    expect(params()).toEqual([])
+    node.results({ listlockunspent: '[]' })
+    expect(await rpc.listLockUnspent()).toEqual([])
+    const malformed: [string, string][] = [
+      [`[{"txid":"${HASH_A}","vout":-1}]`, 'result[0].vout'],
+      [`[{"txid":"${HASH_A.toUpperCase()}","vout":0}]`, 'result[0].txid'],
+      [`[{"txid":"${HASH_A}"}]`, 'result[0].vout'],
+      ['{}', 'result'],
+    ]
+    for (const [reply, path] of malformed) {
+      node.results({ listlockunspent: reply })
+      await invalid(rpc.listLockUnspent(), path)
+    }
+  })
+
+  it('getrawchangeaddress sends the address type and checks the address', async () => {
+    await confirm()
+    node.results({ getrawchangeaddress: JSON.stringify(ADDRESS) })
+    expect(await rpc.getRawChangeAddress()).toBe(ADDRESS)
+    expect(params()).toEqual([])
+    expect(await rpc.getRawChangeAddress({ addressType: 'p2mr' })).toBe(ADDRESS)
+    expect(params()).toEqual(['p2mr'])
+    for (const bad of ['""', '"qbrt1z with space"', '5', 'null']) {
+      node.results({ getrawchangeaddress: bad })
+      await invalidAfterSideEffect(rpc.getRawChangeAddress(), 'result')
+    }
+    node.rpc(() => ({ error: { code: -5, message: "Unknown address type 'bogus'" } }))
+    await expect(rpc.getRawChangeAddress({ addressType: 'bogus' })).rejects.toMatchObject({ code: -5 })
+    const sent = node.requests.length
+    await expect(rpc.getRawChangeAddress({ addressType: '' })).rejects.toThrow(TypeError)
+    await expect(rpc.getRawChangeAddress({ addressType: 2 as never })).rejects.toThrow(TypeError)
+    expect(node.requests).toHaveLength(sent)
+  })
+
+  it('lockunspent sends outpoints positionally with the persistent flag', async () => {
+    await confirm()
+    node.results({ lockunspent: 'true' })
+    expect(await rpc.lockUnspent(false, [{ txid: HASH_A.toUpperCase(), vout: 1 }])).toBe(true)
+    expect(params()).toEqual([false, [{ txid: HASH_A, vout: 1 }]])
+    await rpc.lockUnspent(
+      false,
+      [
+        { txid: HASH_A, vout: 1 },
+        { txid: HASH_B, vout: 0 },
+      ],
+      { persistent: true }
+    )
+    expect(params()).toEqual([
+      false,
+      [
+        { txid: HASH_A, vout: 1 },
+        { txid: HASH_B, vout: 0 },
+      ],
+      true,
+    ])
+    // Only txid and vout go out, whatever else the caller's objects hold.
+    const outpoint = Object.assign({ txid: HASH_A, vout: 1 }, { amountBits: 5n })
+    await rpc.lockUnspent(true, [outpoint])
+    expect(params()).toEqual([true, [{ txid: HASH_A, vout: 1 }]])
+    node.results({ lockunspent: 'false' })
+    expect(await rpc.lockUnspent(true, [outpoint])).toBe(false)
+    for (const bad of ['null', '"true"', '1']) {
+      node.results({ lockunspent: bad })
+      await invalidAfterSideEffect(rpc.lockUnspent(true, [outpoint]), 'result')
+    }
+    node.rpc(() => ({ error: { code: -8, message: 'Invalid parameter, output already locked' } }))
+    await expect(rpc.lockUnspent(false, [outpoint])).rejects.toMatchObject({ code: -8, method: 'lockunspent' })
+
+    const sent = node.requests.length
+    const refused: [() => Promise<unknown>, typeof TypeError | typeof RangeError][] = [
+      [() => rpc.lockUnspent(true, []), RangeError],
+      [() => rpc.lockUnspent(true, 'all' as never), RangeError],
+      [() => rpc.lockUnspent('false' as never, [outpoint]), TypeError],
+      [() => rpc.lockUnspent(false, [{ txid: 'zz', vout: 0 }]), TypeError],
+      [() => rpc.lockUnspent(false, [{ txid: HASH_A, vout: -1 }]), RangeError],
+      [() => rpc.lockUnspent(false, [{ txid: HASH_A, vout: 2 ** 31 }]), RangeError],
+      [() => rpc.lockUnspent(false, [null as never]), TypeError],
+      [() => rpc.lockUnspent(false, [outpoint], { persistent: 'yes' as never }), TypeError],
+    ]
+    for (const [run, type] of refused) await expect(run()).rejects.toThrow(type)
+    expect(node.requests).toHaveLength(sent)
   })
 
   it('gettransaction checks the txid and categories', async () => {

@@ -144,7 +144,7 @@ and again as soon as the connection drops.
   `sendtoaddress`, `send`, `sendall` and `bumpfee` are excluded on purpose:
   they sign and broadcast in one step.
 - `getwalletinfo` in qbit Core v1.0.0 has no per-key PQC signature counts; they
-  appear on `walletprocesspsbt` replies (and `getaddressinfo` through `call()`).
+  appear on `walletprocesspsbt` and `getaddressinfo` replies.
 - No custom TLS options (CA bundles, client certificates) for HTTPS endpoints,
   no connection-count limits beyond 8 pooled sockets per client, and no proxy
   support.

@@ -57,3 +57,16 @@ version. Nothing has been published yet: both are `0.0.0` and private.
   on each topic after a replacement is a gap; `maxMessageSize` defaults to
   2,065,536 bytes; `rawblock` and `rawtx` bodies over 2,000,000 bytes are
   malformed; `reconnect` events carry a `reason`.
+
+### Wallet and chain methods for the payout adapter
+
+- Typed, validated methods for the calls qbit-payments' qbit Core wallet
+  adapter makes, so `QbitRpcClient` satisfies its `CoreRpc` interface with no
+  wrapper: `getblockcount`, `getmempoolentry` and `gettxout` (read),
+  `getaddressinfo` and `listlockunspent` (wallet-read), `getrawchangeaddress`
+  and `lockunspent` (wallet-write, side-effecting: never retried, unknown
+  outcome when the reply is lost). Amounts are bits; `getaddressinfo` carries
+  the PQC signature-budget fields. Parameters and results were checked against
+  a qbit Core v1.0.0 regtest node, and the smoke test drives each method.
+- `lockUnspent` refuses an empty list of outputs, which qbit Core would read as
+  "do nothing".

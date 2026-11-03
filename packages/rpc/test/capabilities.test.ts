@@ -1,6 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { QbitRpcClient, requests, RpcCapabilityError, RpcChainGuardError, type Capability } from '../src'
+import {
+  METHOD_POLICIES,
+  QbitRpcClient,
+  requests,
+  RpcCapabilityError,
+  RpcChainGuardError,
+  type Capability,
+} from '../src'
 import { blockchainInfoJson, FakeNode, HASH_A, TX_HEX } from './helpers/fake-node'
 
 let node: FakeNode
@@ -38,7 +45,11 @@ describe('capabilities', () => {
       [rpc.getWalletInfo(), 'wallet-read'],
       [rpc.listUnspent(), 'wallet-read'],
       [rpc.getTransaction(HASH_A), 'wallet-read'],
+      [rpc.getAddressInfo('qbrt1zaddress'), 'wallet-read'],
+      [rpc.listLockUnspent(), 'wallet-read'],
       [rpc.walletLock(), 'wallet-write'],
+      [rpc.getRawChangeAddress({ addressType: 'p2mr' }), 'wallet-write'],
+      [rpc.lockUnspent(false, [{ txid: HASH_A, vout: 0 }]), 'wallet-write'],
       [rpc.walletPassphrase('secret passphrase', 10), 'wallet-write'],
       [rpc.walletProcessPsbt('cHNidP8='), 'wallet-write'],
       [rpc.finalizePsbt('cHNidP8='), 'wallet-write'],
@@ -77,7 +88,13 @@ describe('capabilities', () => {
     const error = await refusal(rpc.batch([requests.getBestBlockHash(), requests.walletLock()]))
     expect(error.reason).toBe('not_batchable')
     expect((await refusal(rpc.batch([requests.testMempoolAccept([TX_HEX])]))).reason).toBe('not_batchable')
+    expect((await refusal(rpc.batch([requests.getRawChangeAddress()]))).reason).toBe('not_batchable')
+    const lock = requests.lockUnspent(true, [{ txid: HASH_A, vout: 0 }])
+    expect((await refusal(rpc.batch([requests.listLockUnspent(), lock]))).reason).toBe('not_batchable')
     expect((await refusal(client().batch([requests.getWalletInfo()]))).reason).toBe('not_enabled')
+    expect((await refusal(client().batch([requests.getBlockCount(), requests.listLockUnspent()]))).reason).toBe(
+      'not_enabled'
+    )
     expect(node.requests).toHaveLength(before)
   })
 
@@ -85,6 +102,68 @@ describe('capabilities', () => {
     node.results({ getbestblockhash: JSON.stringify(HASH_A), listwallets: '["w"]' })
     expect(await client().getBestBlockHash()).toBe(HASH_A)
     expect(await client(['wallet-read']).call('listwallets')).toEqual(['w'])
+  })
+
+  it('treats getblockcount, getmempoolentry and gettxout as reads, and the wallet methods by what they change', async () => {
+    node.results({
+      getblockcount: '7',
+      getmempoolentry: JSON.stringify({
+        vsize: 1,
+        weight: 1,
+        time: 1,
+        height: 1,
+        descendantcount: 1,
+        descendantsize: 1,
+        ancestorcount: 1,
+        ancestorsize: 1,
+        wtxid: HASH_A,
+        fees: { base: 0, modified: 0, ancestor: 0, descendant: 0 },
+        depends: [],
+        spentby: [],
+        'bip125-replaceable': false,
+        unbroadcast: false,
+      }),
+      gettxout: 'null',
+      listlockunspent: '[]',
+    })
+    const reader = client()
+    expect(await reader.getBlockCount()).toBe(7)
+    expect((await reader.getMempoolEntry(HASH_A)).unbroadcast).toBe(false)
+    expect(await reader.getTxOut(HASH_A, 0)).toBeNull()
+    const [count, out] = await reader.batch([requests.getBlockCount(), requests.getTxOut(HASH_A, 1)])
+    expect([count, out]).toEqual([
+      { ok: true, value: 7 },
+      { ok: true, value: null },
+    ])
+    expect(await client(['wallet-read']).listLockUnspent()).toEqual([])
+    // A wallet reader may not take change keys or lock coins.
+    const walletReader = client(['wallet-read'])
+    for (const promise of [
+      walletReader.getRawChangeAddress(),
+      walletReader.lockUnspent(true, [{ txid: HASH_A, vout: 0 }]),
+    ]) {
+      expect((await refusal(promise)).required).toBe('wallet-write')
+    }
+    const policies = Object.fromEntries(
+      [
+        'getblockcount',
+        'getmempoolentry',
+        'gettxout',
+        'getaddressinfo',
+        'listlockunspent',
+        'getrawchangeaddress',
+        'lockunspent',
+      ].map(method => [method, METHOD_POLICIES[method]])
+    )
+    expect(policies).toEqual({
+      getblockcount: { capability: 'read', sideEffects: false },
+      getmempoolentry: { capability: 'read', sideEffects: false },
+      gettxout: { capability: 'read', sideEffects: false },
+      getaddressinfo: { capability: 'wallet-read', sideEffects: false },
+      listlockunspent: { capability: 'wallet-read', sideEffects: false },
+      getrawchangeaddress: { capability: 'wallet-write', sideEffects: true },
+      lockunspent: { capability: 'wallet-write', sideEffects: true },
+    })
   })
 
   it('rejects unknown capability names at construction', () => {
@@ -95,7 +174,13 @@ describe('capabilities', () => {
 describe('chain guard', () => {
   it('refuses wallet-write and broadcast until confirmChain() matches, then allows them', async () => {
     const rpc = client(['wallet-write', 'broadcast'])
-    for (const promise of [rpc.walletLock(), rpc.sendRawTransaction(TX_HEX), rpc.call('lockunspent', [true])]) {
+    for (const promise of [
+      rpc.walletLock(),
+      rpc.sendRawTransaction(TX_HEX),
+      rpc.call('lockunspent', [true]),
+      rpc.lockUnspent(false, [{ txid: HASH_A, vout: 0 }]),
+      rpc.getRawChangeAddress(),
+    ]) {
       const error = await promise.then(
         () => expect.fail('expected a refusal'),
         (e: unknown) => e

@@ -21,7 +21,7 @@ export interface MethodPolicy {
   /** `read` needs no capability. */
   readonly capability: 'read' | Capability
   /**
-   * True when a call can change state (sign, lock coins, unlock, broadcast).
+   * True when a call can change state (sign, lock coins, take a keypool key, unlock, broadcast).
    * Such a call is never retried, and a failure after the request may have
    * reached the node is an `RpcUnknownOutcomeError`.
    */
@@ -55,14 +55,14 @@ export const METHOD_POLICIES: Readonly<Record<string, MethodPolicy>> = Object.fr
   estimatesmartfee: READ,
   validateaddress: READ,
   verifydatapqchash: READ,
-  // Further reads, untyped: use call().
   getblockcount: READ,
+  getmempoolentry: READ,
+  gettxout: READ,
+  // Further reads, untyped: use call().
   getblock: READ,
   getchaintips: READ,
   getmempoolinfo: READ,
   getrawmempool: READ,
-  getmempoolentry: READ,
-  gettxout: READ,
   decoderawtransaction: READ,
   decodepsbt: READ,
   analyzepsbt: READ,
@@ -80,12 +80,13 @@ export const METHOD_POLICIES: Readonly<Record<string, MethodPolicy>> = Object.fr
   getwalletinfo: WALLET_READ,
   gettransaction: WALLET_READ,
   listunspent: WALLET_READ,
+  getaddressinfo: WALLET_READ,
+  listlockunspent: WALLET_READ,
+  // Untyped.
   getbalances: WALLET_READ,
   listtransactions: WALLET_READ,
   listsinceblock: WALLET_READ,
-  getaddressinfo: WALLET_READ,
   listwallets: WALLET_READ,
-  listlockunspent: WALLET_READ,
 
   walletcreatefundedpsbt: WALLET_WRITE,
   walletprocesspsbt: WALLET_WRITE,
@@ -93,9 +94,10 @@ export const METHOD_POLICIES: Readonly<Record<string, MethodPolicy>> = Object.fr
   finalizepsbt: { capability: 'wallet-write', sideEffects: false },
   walletpassphrase: WALLET_WRITE,
   walletlock: WALLET_WRITE,
-  getnewaddress: WALLET_WRITE,
   getrawchangeaddress: WALLET_WRITE,
   lockunspent: WALLET_WRITE,
+  // Untyped.
+  getnewaddress: WALLET_WRITE,
 })
 
 export function methodPolicy(method: string): MethodPolicy | undefined {
