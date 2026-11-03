@@ -6,7 +6,7 @@ import { inspect } from 'node:util'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { QbitRpcClient, QbitRpcError, RpcTransportError, RpcUnknownOutcomeError } from '../src'
-import { blockchainInfoJson, FakeNode, HASH_A } from './helpers/fake-node'
+import { basicAuth, blockchainInfoJson, FakeNode, HASH_A } from './helpers/fake-node'
 
 let node: FakeNode
 let dir: string
@@ -21,9 +21,6 @@ afterEach(async () => {
   await rm(dir, { recursive: true, force: true })
 })
 
-const basic = (user: string, password: string): string =>
-  `Basic ${Buffer.from(`${user}:${password}`).toString('base64')}`
-
 describe('basic credentials', () => {
   it('sends HTTP Basic credentials and JSON-RPC 2.0 headers', async () => {
     const rpc = new QbitRpcClient({
@@ -33,7 +30,7 @@ describe('basic credentials', () => {
     })
     await rpc.getBestBlockHash()
     const [request] = node.requests
-    expect(request!.headers.authorization).toBe(basic('alice', 'p@ss:w0rd'))
+    expect(request!.headers.authorization).toBe(basicAuth('alice', 'p@ss:w0rd'))
     expect(request!.headers['content-type']).toBe('application/json')
     expect(JSON.parse(request!.body)).toEqual({ jsonrpc: '2.0', id: 1, method: 'getbestblockhash', params: [] })
   })
@@ -137,8 +134,8 @@ describe('cookie authentication', () => {
     await writeFile(cookieFile, '__cookie__:second\n')
     await rpc.getBestBlockHash()
     expect(node.requests.map(request => request.headers.authorization)).toEqual([
-      basic('__cookie__', 'first'),
-      basic('__cookie__', 'second'),
+      basicAuth('__cookie__', 'first'),
+      basicAuth('__cookie__', 'second'),
     ])
   })
 
@@ -175,7 +172,7 @@ describe('cookie authentication', () => {
       retryDelayMs: 0,
     })
     expect(await rpc.getBestBlockHash()).toBe(HASH_A)
-    expect(node.requests[1]!.headers.authorization).toBe(basic('__cookie__', 'fresh'))
+    expect(node.requests[1]!.headers.authorization).toBe(basicAuth('__cookie__', 'fresh'))
   })
 })
 

@@ -72,19 +72,24 @@ brand(RpcCapabilityError, 'RpcCapabilityError')
 /**
  * A wallet-write or broadcast call was refused because the node's chain has
  * not been confirmed (`reason: 'unconfirmed'`), or {@link QbitRpcClient.confirmChain}
- * found a different chain (`reason: 'mismatch'`).
+ * found a different chain (`reason: 'mismatch'`), or every chain check it ran
+ * was overtaken by a connection error, an HTTP 401 or another check, which
+ * cast doubt on its answer (`reason: 'stale'`). Nothing was sent; `stale` is
+ * worth retrying later.
  */
 export class RpcChainGuardError extends QbitRpcError {
-  readonly reason: 'unconfirmed' | 'mismatch'
+  readonly reason: 'unconfirmed' | 'mismatch' | 'stale'
   readonly expected: QbitChain
   /** The chain the node reported, for `mismatch`. */
   readonly actual?: string
 
-  constructor(method: string, reason: 'unconfirmed' | 'mismatch', expected: QbitChain, actual?: string) {
+  constructor(method: string, reason: 'unconfirmed' | 'mismatch' | 'stale', expected: QbitChain, actual?: string) {
     super(
       reason === 'unconfirmed'
         ? `RPC method ${method} refused: call confirmChain() first to check the node is on ${expected}`
-        : `RPC method ${method} refused: the node reports chain '${actual}', expected '${expected}'`,
+        : reason === 'mismatch'
+          ? `RPC method ${method} refused: the node reports chain '${actual}', expected '${expected}'`
+          : `RPC method ${method} refused: its chain checks kept being overtaken by connection errors, HTTP 401s or other checks; try again`,
       method
     )
     this.reason = reason
