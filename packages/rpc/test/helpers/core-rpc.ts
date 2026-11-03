@@ -1,6 +1,6 @@
 // A verbatim copy of the `CoreRpc` interface the qbit Core wallet adapter in
 // Qbit-Org/qbit-payments takes (packages/payments/src/core-wallet/rpc.ts at
-// 23bac9e), with `Outpoint` copied in from its src/tx.ts. test/core-rpc.test.ts
+// 8030b00), with `Outpoint` copied in from its src/tx.ts. test/core-rpc.test.ts
 // proves `QbitRpcClient` satisfies it without a wrapper. Refresh it when the
 // adapter changes.
 
@@ -163,7 +163,7 @@ export interface CoreMempoolAcceptance {
  * connection, an abort) means the outcome of a call with side effects is
  * unknown, and the adapter treats it so.
  *
- * Methods `QbitRpcClient` at `09eac4a` reaches only through `call()`:
+ * Methods `QbitRpcClient` at `8ad6854` reaches only through `call()`:
  * `getBlockCount`, `getMempoolEntry`, `getTxOut`, `getAddressInfo`,
  * `getRawChangeAddress`, `lockUnspent` and `listLockUnspent`.
  */
