@@ -968,6 +968,7 @@ function parseWalletInfo(value: unknown): WalletInfo {
 }
 
 export type WalletTxCategory = 'send' | 'receive' | 'generate' | 'immature' | 'orphan'
+const WALLET_TX_CATEGORIES: readonly WalletTxCategory[] = ['send', 'receive', 'generate', 'immature', 'orphan']
 
 /** `gettransaction`. Amounts are signed bits: sends and fees are negative. */
 export interface WalletTransaction {
@@ -1039,7 +1040,7 @@ function parseWalletTransaction(requestedTxid: string): (value: unknown) => Wall
           const d = object(entry, ep)
           return compact<WalletTransaction['details'][number]>({
             address: optional(d, 'address', ep, string),
-            category: field(d, 'category', ep, oneOf(['send', 'receive', 'generate', 'immature', 'orphan'] as const)),
+            category: field(d, 'category', ep, oneOf(WALLET_TX_CATEGORIES)),
             amountBits: field(d, 'amount', ep, signedAmount),
             label: optional(d, 'label', ep, string),
             vout: field(d, 'vout', ep, uint32),
@@ -1177,6 +1178,220 @@ function parseOutpoint(value: unknown, path: string): Outpoint {
   return { txid: field(o, 'txid', path, hash), vout: field(o, 'vout', path, uint32) }
 }
 
+/**
+ * One `listsinceblock` or `listtransactions` entry: one output of a wallet
+ * transaction, seen from one side. A payment to the wallet itself is a `send`
+ * and a `receive` entry for the same `vout`. Amounts are signed bits.
+ */
+export interface WalletHistoryEntry {
+  /** Absent for an output with no address, such as OP_RETURN. */
+  readonly address?: string
+  readonly category: WalletTxCategory
+  /** At most 0 for `send` (0 for OP_RETURN); at least 0 for every other category. */
+  readonly amountBits: bigint
+  /** The address book label of `address`; `''` is the default label. Absent when the address has no entry. */
+  readonly label?: string
+  readonly vout: number
+  /**
+   * Only on `send` entries, and always on them. All outputs minus this wallet's
+   * inputs, repeated on each of the transaction's `send` entries, so do not sum
+   * it per entry. When every input is this wallet's, that is the fee, negative;
+   * with inputs from other wallets it is not the fee, and it can be positive.
+   */
+  readonly feeBits?: bigint
+  /**
+   * The wallet abandoned the transaction (its inputs can be spent again), or its
+   * coinbase was orphaned. At 0 confirmations, `listSinceBlock` lists it on
+   * every call until it is mined after all (it confirms, `abandoned` false), a
+   * conflict is mined (negative `confirmations`), or the orphaned block is
+   * reconnected. An entry that stops being listed may have gone either way:
+   * `getTransaction` tells which.
+   */
+  readonly abandoned: boolean
+  /** Only on entries that receive: the descriptors of the output's script. Can be empty. */
+  readonly parentDescs?: readonly string[]
+  /** 0 when unconfirmed. Negative when the transaction conflicted that many blocks ago. */
+  readonly confirmations: number
+  /** True for a coinbase transaction. */
+  readonly generated?: boolean
+  /** Whether the wallet would spend from it. Present exactly when `confirmations` is 0 or negative. */
+  readonly trusted?: boolean
+  /** The block holding the transaction. This and the next three are present exactly when `confirmations` is above 0. */
+  readonly blockHash?: string
+  readonly blockHeight?: number
+  /** The transaction's position in that block. */
+  readonly blockIndex?: number
+  /** That block's header time, Unix seconds, as the miner set it. */
+  readonly blockTime?: number
+  readonly txid: string
+  readonly wtxid: string
+  /** txids of wallet transactions spending the same inputs. */
+  readonly walletConflicts: readonly string[]
+  /** On a replaced transaction's entries. Its replacement is listed too, so do not count both. */
+  readonly replacedByTxid?: string
+  readonly replacesTxid?: string
+  /** txids of mempool transactions that conflict with this one or an ancestor. */
+  readonly mempoolConflicts: readonly string[]
+  readonly to?: string
+  /** The wallet's own time for the transaction, Unix seconds. Not a block time. */
+  readonly time: number
+  /** When this wallet first recorded the transaction, by the node's clock, Unix seconds. */
+  readonly timeReceived: number
+  readonly comment?: string
+  readonly bip125Replaceable: 'yes' | 'no' | 'unknown'
+}
+
+function parseHistoryEntry(value: unknown, path: string): WalletHistoryEntry {
+  const o = object(value, path)
+  const entry = compact<WalletHistoryEntry>({
+    address: optional(o, 'address', path, parseAddress),
+    category: field(o, 'category', path, oneOf(WALLET_TX_CATEGORIES)),
+    amountBits: field(o, 'amount', path, signedAmount),
+    label: optional(o, 'label', path, string),
+    vout: field(o, 'vout', path, uint32),
+    feeBits: optional(o, 'fee', path, signedAmount),
+    abandoned: field(o, 'abandoned', path, boolean),
+    parentDescs: optional(o, 'parent_descs', path, strings),
+    confirmations: field(o, 'confirmations', path, anyInteger),
+    generated: optional(o, 'generated', path, boolean),
+    trusted: optional(o, 'trusted', path, boolean),
+    blockHash: optional(o, 'blockhash', path, hash),
+    blockHeight: optional(o, 'blockheight', path, nonNegativeInteger),
+    blockIndex: optional(o, 'blockindex', path, nonNegativeInteger),
+    blockTime: optional(o, 'blocktime', path, nonNegativeInteger),
+    txid: field(o, 'txid', path, hash),
+    wtxid: field(o, 'wtxid', path, hash),
+    walletConflicts: field(o, 'walletconflicts', path, (v, p) => array(v, p, hash)),
+    replacedByTxid: optional(o, 'replaced_by_txid', path, hash),
+    replacesTxid: optional(o, 'replaces_txid', path, hash),
+    mempoolConflicts: field(o, 'mempoolconflicts', path, (v, p) => array(v, p, hash)),
+    to: optional(o, 'to', path, string),
+    time: field(o, 'time', path, nonNegativeInteger),
+    timeReceived: field(o, 'timereceived', path, nonNegativeInteger),
+    comment: optional(o, 'comment', path, string),
+    bip125Replaceable: field(o, 'bip125-replaceable', path, oneOf(['yes', 'no', 'unknown'] as const)),
+  })
+  const isSend = entry.category === 'send'
+  if (isSend ? entry.amountBits > 0n : entry.amountBits < 0n) {
+    throw new ResultIssue(
+      `${path}.amount`,
+      isSend ? 'at most 0 for a send entry' : `at least 0 for a ${entry.category} entry`
+    )
+  }
+  if (isSend !== (entry.feeBits !== undefined)) throw new ResultIssue(`${path}.fee`, 'a fee exactly on send entries')
+  const placement = [entry.blockHash, entry.blockHeight, entry.blockIndex, entry.blockTime]
+  const placed = placement.every(part => part !== undefined)
+  if (!placed && placement.some(part => part !== undefined)) {
+    throw new ResultIssue(`${path}.blockhash`, 'blockhash, blockheight, blockindex and blocktime together')
+  }
+  if (placed !== entry.confirmations > 0) {
+    throw new ResultIssue(`${path}.confirmations`, 'above 0 exactly when the entry names its block')
+  }
+  if (placed === (entry.trusted !== undefined)) {
+    throw new ResultIssue(`${path}.trusted`, 'present exactly when confirmations is 0 or negative')
+  }
+  return entry
+}
+
+const historyEntries = (v: unknown, p: string): WalletHistoryEntry[] => array(v, p, parseHistoryEntry)
+
+/**
+ * `listsinceblock`'s parameters. Its sixth, `label` (only incoming entries
+ * paying to that label), is not typed here; it is reachable through `call()`.
+ */
+export interface ListSinceBlockOptions {
+  /** List from the block after this one, or from the fork point when it left the active chain. Default: the whole history. */
+  readonly blockHash?: string
+  /** Which block `lastBlock` names, counted back from the tip (1 is the tip). It filters nothing. Default 1. */
+  readonly targetConfirmations?: number
+  /** qbit Core v1.0.0 accepts this and ignores it: a wallet's watch-only entries are always listed. */
+  readonly includeWatchOnly?: boolean
+  /** Whether to return `removed`. Default true. */
+  readonly includeRemoved?: boolean
+  /** Also list change outputs, each as a `send` and a `receive` entry. Default false. */
+  readonly includeChange?: boolean
+}
+
+/** `listsinceblock`. */
+export interface SinceBlockHistory {
+  /**
+   * Every entry of a later block and every entry at 0 confirmations, plus the
+   * `send` entries of a transaction a later block conflicted. qbit Core leaves a
+   * conflicted transaction's `receive` entries out: to undo a credit, use
+   * `removed` and `getTransaction`, which reports negative `confirmations`.
+   */
+  readonly transactions: readonly WalletHistoryEntry[]
+  /**
+   * Entries of the blocks between `blockHash` and the fork point, when that
+   * block left the active chain, as they are now: 0 `confirmations` back in the
+   * mempool, positive with the new block when mined again, negative when a
+   * conflict was mined instead. Absent only when `includeRemoved` was false.
+   */
+  readonly removed?: readonly WalletHistoryEntry[]
+  /** Pass this as the next call's `blockHash`. */
+  readonly lastBlock: string
+}
+
+function parseSinceBlock(includeRemoved: boolean | undefined): (value: unknown) => SinceBlockHistory {
+  return value => {
+    const o = object(value, R)
+    const history = compact<SinceBlockHistory>({
+      transactions: field(o, 'transactions', R, historyEntries),
+      removed: optional(o, 'removed', R, historyEntries),
+      lastBlock: field(o, 'lastblock', R, hash),
+    })
+    // A reply without the reorg list it was asked for must not read as "nothing removed".
+    if ((history.removed !== undefined) !== (includeRemoved !== false)) {
+      throw new ResultIssue(`${R}.removed`, includeRemoved === false ? 'no removed array' : 'a removed array')
+    }
+    return history
+  }
+}
+
+export interface ListTransactionsOptions {
+  /** Only incoming entries paying to addresses with this label. `*`, the default, lists everything. */
+  readonly label?: string
+  /** At most this many entries, the newest ones. Default 10. */
+  readonly count?: number
+  /** Skip this many of the newest entries first. Default 0. `count + skip` must be at most 2,147,483,647. */
+  readonly skip?: number
+  /** qbit Core v1.0.0 accepts this and ignores it: a wallet's watch-only entries are always listed. */
+  readonly includeWatchOnly?: boolean
+}
+
+/**
+ * `getbalances`, in bits. qbit Core v1.0.0 has no `watchonly` section: a wallet
+ * without private keys reports what it watches under `mine`.
+ */
+export interface WalletBalances {
+  readonly mine: {
+    /** Confirmed outputs, and unconfirmed ones the wallet created. */
+    readonly trustedBits: bigint
+    /** Outputs others created that are still in the mempool. */
+    readonly untrustedPendingBits: bigint
+    readonly immatureBits: bigint
+    /** Only for a wallet with `avoid_reuse` set, where 0n is a real zero. */
+    readonly usedBits?: bigint
+  }
+  /** The block these balances were computed at. */
+  readonly lastProcessedBlock: LastProcessedBlock
+}
+
+function parseBalances(value: unknown): WalletBalances {
+  const o = object(value, R)
+  const m = field(o, 'mine', R, object)
+  const mp = `${R}.mine`
+  return {
+    mine: compact<WalletBalances['mine']>({
+      trustedBits: field(m, 'trusted', mp, amount),
+      untrustedPendingBits: field(m, 'untrusted_pending', mp, amount),
+      immatureBits: field(m, 'immature', mp, amount),
+      usedBits: optional(m, 'used', mp, amount),
+    }),
+    lastProcessedBlock: field(o, 'lastprocessedblock', R, parseLastProcessedBlock),
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Wallet write
 // ---------------------------------------------------------------------------
@@ -1282,8 +1497,8 @@ function parseFinalizedPsbt(value: unknown): FinalizedPsbt {
 const parseNull = (value: unknown): null => nullValue(value, R)
 
 /** An address the wallet returns: bech32 or base58 characters only. */
-function parseAddress(value: unknown): string {
-  if (typeof value !== 'string' || !/^[0-9A-Za-z]+$/.test(value)) throw new ResultIssue(R, 'an address')
+function parseAddress(value: unknown, path = R): string {
+  if (typeof value !== 'string' || !/^[0-9A-Za-z]+$/.test(value)) throw new ResultIssue(path, 'an address')
   return value
 }
 
@@ -1526,6 +1741,47 @@ export const requests = {
   },
   /** The outputs `lockUnspent` or `walletCreateFundedPsbt`'s `lockUnspents` locked, persistent or not. */
   listLockUnspent: (): RpcRequest<Outpoint[]> => request('listlockunspent', [], v => array(v, R, parseOutpoint)),
+  /**
+   * Wallet activity since a block; see {@link SinceBlockHistory}. Rejects with
+   * `RpcError` code -5 for a block the node does not know.
+   */
+  listSinceBlock(options?: ListSinceBlockOptions): RpcRequest<SinceBlockHistory> {
+    const o = argOptions(options, 'options')
+    const includeRemoved = opt(o['includeRemoved'], v => argBoolean(v, 'options.includeRemoved'))
+    return request(
+      'listsinceblock',
+      [
+        opt(o['blockHash'], v => argHash(v, 'options.blockHash')),
+        opt(o['targetConfirmations'], v => argInteger(v, 'options.targetConfirmations', 1, 0x7fff_ffff)),
+        opt(o['includeWatchOnly'], v => argBoolean(v, 'options.includeWatchOnly')),
+        includeRemoved,
+        opt(o['includeChange'], v => argBoolean(v, 'options.includeChange')),
+      ],
+      parseSinceBlock(includeRemoved)
+    )
+  },
+  /** The wallet's newest entries, oldest of them first. Change outputs and a conflicted transaction's `receive` entries are not listed. */
+  listTransactions(options?: ListTransactionsOptions): RpcRequest<WalletHistoryEntry[]> {
+    const o = argOptions(options, 'options')
+    const count = opt(o['count'], v => argInteger(v, 'options.count', 0, 0x7fff_ffff))
+    const skip = opt(o['skip'], v => argInteger(v, 'options.skip', 0, 0x7fff_ffff))
+    // qbit Core adds the two as 32-bit integers, with its default count of 10 when count is left out.
+    if ((count ?? 10) + (skip ?? 0) > 0x7fff_ffff) {
+      throw new RangeError('options.count + options.skip must be at most 2147483647')
+    }
+    return request(
+      'listtransactions',
+      [
+        // qbit Core refuses an empty label here (-8): only `*` or a label name.
+        opt(o['label'], v => argString(v, 'options.label', { nonEmpty: true })),
+        count,
+        skip,
+        opt(o['includeWatchOnly'], v => argBoolean(v, 'options.includeWatchOnly')),
+      ],
+      v => historyEntries(v, R)
+    )
+  },
+  getBalances: (): RpcRequest<WalletBalances> => request('getbalances', [], parseBalances),
 
   walletCreateFundedPsbt(args: WalletCreateFundedPsbtArgs): RpcRequest<FundedPsbt> {
     const a = argOptions(args, 'args')
@@ -1619,6 +1875,29 @@ export const requests = {
     return request(
       'getrawchangeaddress',
       [opt(o['addressType'], v => argString(v, 'options.addressType', { nonEmpty: true }))],
+      parseAddress
+    )
+  },
+  /**
+   * A new receiving address from the wallet's external keypool, listed under
+   * `label` (the default label, `''`, when left out; qbit Core reserves `*`).
+   * Launch chains offer only `p2mr`. An unknown or unavailable type rejects with
+   * `RpcError` code -5, and a wallet with no keys with code -4. On regtest, a
+   * wallet encrypted at creation rejects with code -12 unless `addressType` is
+   * `p2mr`.
+   */
+  getNewAddress(options?: { readonly label?: string; readonly addressType?: string }): RpcRequest<string> {
+    const o = argOptions(options, 'options')
+    return request(
+      'getnewaddress',
+      [
+        opt(o['label'], v => {
+          const label = argString(v, 'options.label')
+          if (label === '*') throw new RangeError('options.label must not be *')
+          return label
+        }),
+        opt(o['addressType'], v => argString(v, 'options.addressType', { nonEmpty: true })),
+      ],
       parseAddress
     )
   },

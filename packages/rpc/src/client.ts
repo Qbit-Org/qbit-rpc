@@ -36,6 +36,8 @@ import {
   type FeeEstimateMode,
   type FinalizedPsbt,
   type FundedPsbt,
+  type ListSinceBlockOptions,
+  type ListTransactionsOptions,
   type ListUnspentOptions,
   type MempoolAcceptance,
   type MempoolEntry,
@@ -45,10 +47,13 @@ import {
   type RpcRequest,
   type SecurityLevel,
   type SighashType,
+  type SinceBlockHistory,
   type SmartFeeEstimate,
   type TxOut,
   type UnspentOutput,
+  type WalletBalances,
   type WalletCreateFundedPsbtArgs,
+  type WalletHistoryEntry,
   type WalletInfo,
   type WalletTransaction,
 } from './methods'
@@ -380,6 +385,15 @@ export class QbitRpcClient {
   listLockUnspent(options?: CallOptions): Promise<Outpoint[]> {
     return this.#single(requests.listLockUnspent(), options)
   }
+  listSinceBlock(options?: ListSinceBlockOptions & CallOptions): Promise<SinceBlockHistory> {
+    return this.#lazy(() => requests.listSinceBlock(options), options)
+  }
+  listTransactions(options?: ListTransactionsOptions & CallOptions): Promise<WalletHistoryEntry[]> {
+    return this.#lazy(() => requests.listTransactions(options), options)
+  }
+  getBalances(options?: CallOptions): Promise<WalletBalances> {
+    return this.#single(requests.getBalances(), options)
+  }
   walletCreateFundedPsbt(args: WalletCreateFundedPsbtArgs, options?: CallOptions): Promise<FundedPsbt> {
     return this.#lazy(() => requests.walletCreateFundedPsbt(args), options)
   }
@@ -405,6 +419,9 @@ export class QbitRpcClient {
   }
   getRawChangeAddress(options?: { readonly addressType?: string } & CallOptions): Promise<string> {
     return this.#lazy(() => requests.getRawChangeAddress(options), options)
+  }
+  getNewAddress(options?: { readonly label?: string; readonly addressType?: string } & CallOptions): Promise<string> {
+    return this.#lazy(() => requests.getNewAddress(options), options)
   }
   lockUnspent(
     unlock: boolean,
