@@ -5,6 +5,67 @@ version. Nothing has been published yet: both are `0.0.0` and private.
 
 ## Unreleased: initial MVP
 
+### Breaking: the error API
+
+Settled before `0.1.0`: a property name has one type across both packages' error
+classes and the `@qbit-oss/zmq` events, and a side-effecting call rejects with a
+documented "not sent" error or `RpcUnknownOutcomeError`, never with a bare error
+about another method.
+
+- `RpcError.code` is now `RpcError.rpcCode`. `code` is a string wherever it remains
+  (`RpcTransportError`, `ZmqFrameError`, `ZmqSetupError`, a `reconnect` event). The
+  compiler cannot catch this where an error is `unknown` or cast, so search for it:
+  `error.code === -5` is never true again, and `typeof error.code === 'number'`
+  takes every node answer for no answer.
+
+  ```ts
+  if (RpcError.is(error) && error.code === -5) // before
+  if (RpcError.is(error) && error.rpcCode === -5) // now
+  const code = (error as { rpcCode?: unknown }).rpcCode // a structural check, now
+  ```
+
+- `RpcChainGuardError.expected` and `.actual` are now `.expectedChain` and
+  `.actualChain`, like `expectedGenesisHash` beside them: `expected` was a chain name
+  there and a counter on a `gap` event.
+- A failed chain re-check before a wallet-write or broadcast call rejects with
+  `RpcChainGuardError` `reason: 'check_failed'`, with `method` the call's and the
+  failure as `cause`. It used to be a bare `RpcTimeoutError`, `RpcAbortedError`,
+  `RpcTransportError`, `RpcError`, `RpcResponseError` or
+  `RpcResponseTooLargeError` about `getblockchaininfo` or `getblockhash`.
+  `confirmChain()`, which is that check, still throws those as they are.
+
+  ```ts
+  // before: a re-check's -28 looked like the node's answer to the call
+  if (RpcError.is(error) && error.code === -28) wait()
+  // now
+  if (RpcChainGuardError.is(error) && error.reason === 'check_failed') {
+    // nothing was sent; error.cause is the failure, with its own type
+    if (RpcError.is(error.cause) && error.cause.rpcCode === -28) wait()
+  }
+  ```
+
+- Code that takes `name === 'RpcChainGuardError'` to mean "another chain" must read
+  `reason === 'mismatch'`: `check_failed` is a node that could not be checked.
+- `RpcChainGuardError`'s constructor takes `(method, reason, expectedChain, {
+  actualChain?, mismatch?, cause? })` in place of `(method, reason, expected, actual?,
+  mismatch?)`.
+- A request's `parse` that throws anything rejects with `RpcResponseError` (`reason:
+  'validation'`, `path: 'result'`) with the thrown value as `cause`, for a single call
+  and as a batch entry's own error; after a side-effecting call, as the `cause` of an
+  `RpcUnknownOutcomeError`. It used to reject with the thrown value, and to reject the
+  whole batch. Catch `RpcResponseError`, and read `cause`, where you caught your own
+  exception. The built-in validators' failures are unchanged. A `batch()` entry
+  without a `parse` function is a `TypeError`, and nothing is sent.
+- `reconnect.code` is typed `ZmqReconnectCode`, a union of the codes libzmq raises
+  here that stays open for any other string. Every string is still accepted, but an
+  exhaustive `switch` should keep a `default`.
+
+Added, and not breaking: `ZmqFrameError.is()`, with a `Symbol.for` brand as on
+`ZmqSetupError`, for an error from the package's other build; the types
+`RpcChainGuardReason` and `ZmqReconnectCode`; and one table of errors in each
+package's README, which a test keeps equal to the code. The error tables that were
+in the repository README and the `@qbit-oss/zmq` connection section moved into those.
+
 ### @qbit-oss/rpc
 
 - `QbitRpcClient` for qbit Core v1.0.0 JSON-RPC over HTTP(S), with `/wallet/<name>`

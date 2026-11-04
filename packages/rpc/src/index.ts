@@ -21,7 +21,7 @@ export {
   RpcTransportError,
   RpcUnknownOutcomeError,
 } from './errors'
-export type { ChainCheck, ChainMismatch, RpcCapabilityRefusal } from './errors'
+export type { ChainCheck, ChainMismatch, RpcCapabilityRefusal, RpcChainGuardReason } from './errors'
 export { BITS_PER_QBT, MAX_MONEY_BITS, formatQbt, parseQbt } from './amount'
 export { JsonNumber } from './json'
 export { requests } from './methods'

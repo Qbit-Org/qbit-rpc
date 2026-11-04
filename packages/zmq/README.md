@@ -96,7 +96,8 @@ counter that qbitd keeps per topic. `parseZmqMessage(frames)` returns:
 Hashes are hex in the order RPC shows them; qbitd already sends them that way.
 Anything else (wrong frame count, unknown topic, wrong body length for the
 topic, unknown label, counter not 4 bytes) throws `ZmqFrameError` with a
-`code`. The subscriber turns those into `malformed` events and keeps going.
+`code` (see [Errors](#errors)). The subscriber turns those into `malformed`
+events and keeps going.
 
 ## Gaps
 
@@ -143,27 +144,19 @@ drops (`reason: 'disconnected'`: qbitd stopped or restarted) or a receive fails
 (`reason: 'failed'`), yielding a `reconnect` event, waiting `reconnectDelayMs`
 (default 1 s) and starting again. A failure to make or connect the socket is
 retried the same way (`reason: 'failed'`, with the error's `code`), unless it
-is one of those below. A node that is down from the start is not a failure:
+is a `ZmqSetupError`. A node that is down from the start is not a failure:
 libzmq keeps retrying the TCP connection itself, no `reconnect` is yielded,
 health stays `unknown`, and messages arrive once qbitd listens. `close()`
 closes the socket and ends the iteration at once, also during that wait;
 breaking out of `for await` closes the socket too. One consumer at a time.
 
 A failure that retrying cannot fix ends the iteration instead: the iteration
-throws a `ZmqSetupError` with a `code` and the original error as `cause`, no
-`reconnect` is yielded for it, the socket is closed, and the subscriber is
-closed:
-
-| `code` | When |
-| --- | --- |
-| `module_load` | `zeromq` or its native addon cannot be loaded, at the first iteration; or a custom `socketFactory` throws `MODULE_NOT_FOUND`, `ERR_MODULE_NOT_FOUND` or `ERR_DLOPEN_FAILED` |
-| `invalid_address` | the socket's `connect()` throws `EINVAL`, or `ENAMETOOLONG` for an `ipc://` path too long for a Unix socket (over 107 bytes on Linux) |
-| `unsupported_protocol` | `connect()` throws `EPROTONOSUPPORT`: this libzmq lacks the transport |
+throws a `ZmqSetupError` with a `code` (see [Errors](#errors)) and the original
+error as `cause`, no `reconnect` is yielded for it, the socket is closed, and the
+subscriber is closed.
 
 A custom `socketFactory` can throw a `ZmqSetupError` itself to stop instead of
 being retried. If `close()` comes first, the iteration ends without an error.
-Test for it with `ZmqSetupError.is(error)`, which also recognises one from the
-package's other build (CommonJS or ESM), where `instanceof` does not.
 
 `maxMessageSize` (default `DEFAULT_MAX_MESSAGE_SIZE`, 2,065,536 bytes: qbit's
 2,000,000-byte block limit plus headroom) caps each inbound message part.
@@ -175,3 +168,39 @@ messages.
 
 qbitd's ZMQ publisher has no authentication: keep it on loopback or a private
 network.
+
+## Errors
+
+Recognize an error with `ZmqFrameError.is(error)` or `ZmqSetupError.is(error)`,
+which also recognise one from the package's other build (CommonJS or ESM), where
+`instanceof` does not. Every `code` here is a string, on the errors and the event
+alike, and a `malformed` event's `error` is a `ZmqFrameError`.
+
+| Error | Value | Meaning | What to do |
+| --- | --- | --- | --- |
+| `ZmqFrameError` | `code: 'frame_count'` | The message does not have three frames. | From the subscriber, a `malformed` event: it keeps going. Treat many as a publisher that is not qbitd. |
+| `ZmqFrameError` | `code: 'topic'` | The first frame is not a topic qbit Core publishes. | As for `frame_count`. |
+| `ZmqFrameError` | `code: 'body_length'` | The body has the wrong length for its topic. | As for `frame_count`. |
+| `ZmqFrameError` | `code: 'label'` | A `sequence` body has an unknown label. | As for `frame_count`. |
+| `ZmqFrameError` | `code: 'sequence_length'` | The counter frame is not 4 bytes. | As for `frame_count`. |
+| `ZmqSetupError` | `code: 'module_load'` | `zeromq` or its native addon cannot be loaded, at the first iteration; or a custom `socketFactory` throws `MODULE_NOT_FOUND`, `ERR_MODULE_NOT_FOUND` or `ERR_DLOPEN_FAILED`. | Install `zeromq` with the prebuilt addon for this platform, or build it. |
+| `ZmqSetupError` | `code: 'invalid_address'` | The socket's `connect()` throws `EINVAL`, or `ENAMETOOLONG` for an `ipc://` path too long for a Unix socket (over 107 bytes on Linux). | Fix the url. |
+| `ZmqSetupError` | `code: 'unsupported_protocol'` | `connect()` throws `EPROTONOSUPPORT`: this libzmq lacks the transport. | Use one it supports, such as `tcp://`. |
+| `reconnect` event | `reason: 'disconnected'` | The connection to the publisher dropped: qbitd stopped or restarted, or sent a message over `maxMessageSize`. No `code`. | Nothing: the socket is replaced. The next message on each topic is a `gap`. |
+| `reconnect` event | `reason: 'failed'` | Making, connecting or receiving on the socket failed, with `code` when the error had one. | Nothing unless it repeats: the socket is replaced. See the codes below. |
+| `reconnect` event | `code: 'EMFILE'` | Out of file descriptors, or of libzmq sockets: making the socket failed. | Raise the limit, or close what holds them. |
+| `reconnect` event | `code: 'EMTHREAD'` | libzmq has no I/O thread for `connect()`. | Give `zeromq`'s context at least one (`ioThreads`, 1 by default). |
+| `reconnect` event | `code: 'EFAULT'` | `zeromq`'s context is closed: making the socket failed. | Do not close the context while subscribing. |
+| `reconnect` event | `code: 'ETERM'` | `zeromq`'s context is being terminated, as at process exit. | Stop subscribing. |
+| `reconnect` event | `code: 'EINVAL'` | Making or subscribing the socket refused a value. From `connect()` it is `invalid_address` above instead. | Check a custom `socketFactory`. |
+| `reconnect` event | `code: 'EINTR'` | A signal interrupted a subscribe. | Nothing unless it repeats. |
+| `reconnect` event | `code: 'EAGAIN'` | A receive could not finish, as when something else closed the socket during it. | Check a custom `socketFactory` that shares its socket. |
+| `reconnect` event | `code: 'EBADF'` | The socket was closed before `connect()` or a receive. | As for `EAGAIN`. |
+| `reconnect` event | `code: 'ENOTSOCK'` | The socket was closed before a subscribe. | As for `EAGAIN`. |
+| `reconnect` event | `code: 'EBUSY'` | Another receive was in progress on the socket, or a bind or unbind. | As for `EAGAIN`. |
+
+A `reconnect` event's `code` is typed `ZmqReconnectCode`: these values and any other
+string, since it is whatever code the failed call's error had, passed on as it is. A
+custom `socketFactory` can raise others, and libzmq may too. The `EMFILE`, `EAGAIN`,
+`EBADF`, `ENOTSOCK` and `EBUSY` rows were observed on `zeromq` 6.5.0; the others come
+from libzmq's documentation for these calls.

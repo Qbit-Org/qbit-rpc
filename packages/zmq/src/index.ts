@@ -12,6 +12,7 @@ export type {
   ZmqEvent,
   ZmqHealth,
   ZmqHealthStatus,
+  ZmqReconnectCode,
   ZmqSetupErrorCode,
   ZmqSocket,
   ZmqSocketFactory,

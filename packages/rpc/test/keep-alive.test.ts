@@ -195,7 +195,7 @@ describe('a pooled connection the node closed', () => {
     dropNextReused()
     const error = await failure(run(rpc))
     expect(RpcChainGuardError.is(error)).toBe(true)
-    expect(error).toMatchObject({ reason: 'mismatch', method, expected: 'regtest', actual: 'main' })
+    expect(error).toMatchObject({ reason: 'mismatch', method, expectedChain: 'regtest', actualChain: 'main' })
     expect(methods()).toEqual([method, ...CHECK])
     expect(rpc.chainStatus).toBe('mismatch')
   })
@@ -230,20 +230,26 @@ describe('a pooled connection the node closed', () => {
     dropNextReused()
     const error = await failure(run(rpc))
     expect(RpcChainGuardError.is(error)).toBe(true)
-    expect(error).toMatchObject({ reason: 'mismatch', method, actual: 'main' })
+    expect(error).toMatchObject({ reason: 'mismatch', method, actualChain: 'main' })
     expect(methods()).toEqual([...CHECK, ...CHECK])
   })
 
-  it.each(SIDE_EFFECTS)('fails %s plainly, unsent, when the second re-check fails too', async (_method, run) => {
-    // readRetries does not apply: this is the one extra attempt and no more.
-    const rpc = await pooled({ chainCheckMaxAgeMs: 0, readRetries: 3 })
-    dropWhen(() => true)
-    const error = await failure(run(rpc))
-    expect(RpcTransportError.is(error)).toBe(true)
-    expect(RpcUnknownOutcomeError.is(error)).toBe(false)
-    expect(error).toMatchObject({ reason: 'network', method: 'getblockchaininfo' })
-    expect(methods()).toEqual([...CHECK, ...CHECK])
-  })
+  it.each(SIDE_EFFECTS)(
+    'refuses %s as check_failed, unsent, when the second re-check fails too',
+    async (method, run) => {
+      // readRetries does not apply: this is the one extra attempt and no more.
+      const rpc = await pooled({ chainCheckMaxAgeMs: 0, readRetries: 3 })
+      dropWhen(() => true)
+      const error = await failure(run(rpc))
+      expect(RpcChainGuardError.is(error)).toBe(true)
+      expect(RpcUnknownOutcomeError.is(error)).toBe(false)
+      expect(error).toMatchObject({ reason: 'check_failed', method })
+      const { cause } = error as RpcChainGuardError
+      expect(RpcTransportError.is(cause)).toBe(true)
+      expect(cause).toMatchObject({ reason: 'network', method: 'getblockchaininfo' })
+      expect(methods()).toEqual([...CHECK, ...CHECK])
+    }
+  )
 
   it('never sends a side-effecting request again, whatever marks its failure', async () => {
     const rpc = await pooled({ readRetries: 3 })

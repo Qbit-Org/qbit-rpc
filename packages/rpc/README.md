@@ -73,9 +73,10 @@ that reports no challenge differs). Until a check has matched all three, or
 after one found any of them different, they throw `RpcChainGuardError`
 (`reason: 'unconfirmed'` or `'mismatch'`) without sending anything. On
 `mismatch`, `differs` lists what differed (`chain`, `genesis_hash`,
-`signet_challenge`), `actual`, `actualGenesisHash` and `actualSignetChallenge`
-hold what the node reported, `expectedGenesisHash` and
-`expectedSignetChallenge` what the client expects, and the message names each
+`signet_challenge`), `actualChain`, `actualGenesisHash` and
+`actualSignetChallenge` hold what the node reported, `expectedChain`,
+`expectedGenesisHash` and `expectedSignetChallenge` what the client expects,
+and the message names each
 difference. A chain name or challenge that differs is recorded as a `mismatch`
 even when the `getblockhash 0` reply failed; `actualGenesisHash` is then
 absent. A malformed constructor value is a `TypeError`, as is
@@ -111,13 +112,23 @@ then succeeded on another attempt), an HTTP 401, or a changed cookie (qbitd
 writes a new one each time it starts). A wallet-write or broadcast call made
 while it is stale first runs the check again, under the call's own deadline
 and in the same attempt, with no timer of its own. If that check fails, the
-call fails without being sent (a plain error, never an unknown outcome; the
-error names `getblockchaininfo`, or `getblockhash` for an error or an invalid
-reply to that request), unless the chain name or challenge already differed,
-which is a mismatch. If it finds another chain, genesis block or signet
+call is refused without being sent, with `RpcChainGuardError` `reason:
+'check_failed'`, never an unknown outcome. Its `method` is the call's, and its
+`cause` is what failed: an `RpcTimeoutError`, `RpcAbortedError`,
+`RpcTransportError`, `RpcError`, `RpcResponseError` or
+`RpcResponseTooLargeError` about `getblockchaininfo`, or `getblockhash` for an
+error or an invalid reply to that request. Nothing was sent, so calling again
+is safe; `cause` tells whether soon is any use (a timeout, a dropped connection
+or -28 warming up usually pass, an HTTP 403 does not). `check_failed` keeps
+those failures' retry rules: `finalizepsbt` and `testmempoolaccept`, which have
+no side effects, are retried under `readRetries`. A mismatch is not a failed
+check: a chain name or challenge that differs is a `mismatch` even when the rest
+of the reply failed, and so is a mismatch another check records while the
+re-check fails. If the check finds another chain, genesis block or signet
 challenge, the call is refused and so is every later one until `confirmChain()`
 matches again. `rpc.chainStatus` is `unconfirmed`, `confirmed`, `stale` or
-`mismatch`.
+`mismatch`. `confirmChain()` is a read and the check itself, so it throws what
+failed as it is, never `check_failed`.
 
 The guard decides after a call's last wait, as it hands the request to the
 transport: a mismatch recorded by another check while the call read its
@@ -153,7 +164,8 @@ Results are validated field by field (hashes, hex, integer ranges, enums,
 amounts) and returned with camelCase names; fields the node adds beyond these
 are dropped (use `call()` for the raw reply). A result that does not validate
 throws `RpcResponseError` with `reason: 'validation'` and the `path` of the
-offending value.
+offending value. After a side-effecting call the node has acted, so that error
+is the `cause` of an `RpcUnknownOutcomeError`.
 
 | Method | Returns |
 | --- | --- |
@@ -347,7 +359,8 @@ under `mine`. `lastProcessedBlock` is the block the balances were computed at.
 adapter in `qbit-payments` with no wrapper (`test/core-rpc.test.ts` checks a
 copy of it). Scope the client to the wallet (`wallet`), enable `wallet-read`,
 `wallet-write` and `broadcast`, and call `confirmChain()` before handing it
-over.
+over. The adapter must read a node's error code from `rpcCode`, as the copy here
+does: reading `code`, it would take every node error for an unknown outcome.
 
 Arguments are checked before sending; invalid ones reject with `TypeError` or
 `RangeError` and nothing is sent. A number argument of `-0` is sent as `0`.
@@ -398,15 +411,58 @@ bits; the 210,000,000 QBT cap is 2.1e16 bits, above 2^53). Fee rates are
 
 ## Failure model
 
-| Situation | Read methods | Side-effecting methods (`sendrawtransaction`, wallet-write except `finalizepsbt`) |
-| --- | --- | --- |
-| Refused locally (capability, allowlist, chain guard, bad argument) | throws, nothing sent | throws, nothing sent |
-| Connection refused, DNS failure, TLS failure, cookie unreadable | `RpcTransportError` | `RpcTransportError` (provably not sent) |
-| Node error object | `RpcError` | `RpcError` |
-| HTTP 401/403/404 and other 3xx/4xx | `RpcTransportError` | `RpcTransportError` (rejected before execution) |
-| Timeout or abort while waiting for a request slot | `RpcTimeoutError`, `RpcAbortedError` | `RpcTimeoutError`, `RpcAbortedError` (provably not sent) |
-| HTTP 503 `Work queue depth exceeded` with `directNode` set | `RpcTransportError` | `RpcTransportError` (rejected before execution) |
-| Timeout, abort, dropped connection, any other HTTP 5xx, malformed, invalid or oversized reply after the request was sent | the matching error | `RpcUnknownOutcomeError`, with that error as `cause` and, for `sendrawtransaction` (typed or through `call()`), the `txid` |
+All these errors extend `QbitRpcError`. Recognize them with `X.is(error)`, which
+also works across the CommonJS and ESM builds. A side-effecting method is
+`sendrawtransaction` or any wallet-write method except `finalizepsbt`. A read
+method gets the error that happened; a side-effecting one gets it only where the
+last column says it was definitely not run, and otherwise an
+`RpcUnknownOutcomeError` with that error as `cause`. `method` is always the call
+you made, or in `cause` the request that failed.
+
+| Error | Value | Meaning | If the call has side effects | What to do |
+| --- | --- | --- | --- | --- |
+| `QbitRpcError` | | The base class of the others, never thrown itself. | | Recognize any of them with `QbitRpcError.is(error)`. |
+| `RpcCapabilityError` | `reason: 'not_enabled'` | The method's capability (`required`) is not enabled. | Not sent | A configuration error. |
+| `RpcCapabilityError` | `reason: 'unknown_method'` | The method is not on the allowlist. | Not sent | A programming error. |
+| `RpcCapabilityError` | `reason: 'not_batchable'` | A method other than a read in `batch()`. | Not sent | A programming error. |
+| `RpcChainGuardError` | `reason: 'unconfirmed'` | A wallet-write or broadcast call before `confirmChain()` succeeded. | Not sent | Call `confirmChain()`. |
+| `RpcChainGuardError` | `reason: 'mismatch'` | A chain check (yours, or the automatic re-check) found another chain, genesis block or signet challenge; `differs` says which. | Not sent | Check the URL, or set `expectedGenesisHash` or `expectedSignetChallenge` for a node with other chain parameters or a custom signet, then call `confirmChain()`. |
+| `RpcChainGuardError` | `reason: 'stale'` | Every chain check the call ran was overtaken by a connection error, an HTTP 401 or another check. | Not sent | Try again later. |
+| `RpcChainGuardError` | `reason: 'check_failed'` | The chain re-check before the call failed; `cause` is the failure. | Not sent | Safe to call again; `cause` tells whether soon is any use. |
+| `RpcError` | | The node answered with an error: `rpcCode` and `message` are the node's. | The node's answer: not an unknown outcome | Handle by `rpcCode`, for example -26 rejected, -25 missing inputs, -27 already confirmed, -14 wrong passphrase, -28 node warming up. |
+| `RpcTransportError` | `reason: 'network'` | The connection failed; `code` is the system's, such as `ECONNREFUSED`. | Not sent when no connection was made (refused, DNS, TLS); once one exists, an unknown outcome | Retry reads later. |
+| `RpcTransportError` | `reason: 'http_status'` | An HTTP status without a JSON-RPC reply, `status`: 401 credentials; 403 `rpcallowip`, or an `-rpcwhitelist` that does not allow a method sent (the chain check needs `getblockhash` too). | Not run for 3xx and 4xx, and for `Work queue depth exceeded` with `directNode`; any other 5xx is an unknown outcome | Retry reads later; fix configuration for 401 and 403. |
+| `RpcTransportError` | `reason: 'credentials'` | The cookie file could not be read; `code` says why, such as `ENOENT`, or `EMALFORMED`, `ETOOBIG` or `EREAD` from this package. | Not sent | Check the cookie file. |
+| `RpcTimeoutError` | | The operation's deadline (`timeoutMs`) expired. | Not sent when it expired waiting for a slot, reading the cookie or before a connection was made; during the re-check it is the `cause` of `check_failed`; after that, an unknown outcome | Retry reads if appropriate. |
+| `RpcAbortedError` | | Your `AbortSignal` fired; `cause` is its reason. | As for `RpcTimeoutError` | Your own decision to stop. |
+| `RpcResponseTooLargeError` | | The reply passed `maxResponseBytes`, `limitBytes`. | Unknown outcome | Treat the node or proxy as misbehaving; do not guess the value. |
+| `RpcResponseError` | `reason: 'protocol'` | The reply was not valid JSON-RPC; `path` says where. | Unknown outcome | Treat the node or proxy as misbehaving; do not guess the value. |
+| `RpcResponseError` | `reason: 'validation'` | A result failed validation; `path` says where. For a [custom `parse`](#batches) that threw, `path` is `result` and `cause` is what it threw. | Unknown outcome | Treat the node or proxy as misbehaving; do not guess the value. |
+| `RpcUnknownOutcomeError` | | The call may have been executed, but no valid reply arrived; `cause` is the failure and, for `sendrawtransaction` (typed or through `call()`), `txid` the computed txid. Never retried. | Unknown outcome | Reconcile before acting again: look up `txid` for a broadcast, re-read wallet state for a signing call. |
+
+A bad argument or option is a `TypeError` or `RangeError`, and nothing is sent.
+
+**Before a side-effecting call is sent.** Each of these rejects without sending it,
+with `method` the call's, so any error other than an `RpcUnknownOutcomeError` or a
+node's `RpcError` means it did not run:
+
+- the capability check: `RpcCapabilityError`;
+- the guard's first decision, and its last after any wait: `RpcChainGuardError`
+  `unconfirmed` or `mismatch`;
+- a signal already aborted: `RpcAbortedError`;
+- the wait for a request slot: `RpcTimeoutError` or `RpcAbortedError`;
+- the cookie read: `RpcTransportError` `credentials`, or `RpcTimeoutError` or
+  `RpcAbortedError`;
+- the chain re-check, and a wait before checking again that is cut short:
+  `RpcChainGuardError` `check_failed`;
+- chain checks that kept being overtaken, or a wait that would pass the deadline:
+  `RpcChainGuardError` `stale`;
+- the connection, before one exists: `RpcTransportError` `network`, or
+  `RpcTimeoutError` or `RpcAbortedError`;
+- HTTP 3xx and 4xx, and `Work queue depth exceeded` with `directNode`:
+  `RpcTransportError` `http_status`, rejected without running it.
+
+Retries, deadlines and connections work like this:
 
 - **Retries** happen only for methods without side effects, only when
   `readRetries` is set (apart from the keep-alive retry below), and only for
@@ -492,6 +548,13 @@ an unknown or repeated id, a malformed reply item, a non-array reply, a
 transport failure, a timeout or an oversized reply rejects the whole batch. `requests.raw(method, params)`
 adds an untyped entry.
 
+An entry is any `RpcRequest`, so you can write your own `parse`. It runs
+synchronously and may throw anything: whatever it throws fails that entry with
+`RpcResponseError` (`reason: 'validation'`, `path: 'result'`), with the thrown
+value as `cause`, and the other entries are unaffected. The same holds on every
+other path that takes an `RpcRequest`, where a side-effecting call's failure
+arrives as the `cause` of an `RpcUnknownOutcomeError`, since the node has acted.
+
 ## Secrets
 
 Credentials live in private class fields. `JSON.stringify(client)` and
@@ -501,4 +564,6 @@ properties this package writes never include credentials, cookie contents,
 request parameters or request bodies.
 `RpcError.message` is the node's own text, which can quote an argument such as
 an address or hash; qbit Core's `walletpassphrase` errors do not quote the
-passphrase. The package does not log.
+passphrase. A `check_failed` message quotes its `cause`'s, so it can carry the
+node's answer to the chain check, whose requests hold no secrets. The package
+does not log.

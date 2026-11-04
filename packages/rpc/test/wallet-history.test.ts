@@ -895,7 +895,7 @@ describe('getNewAddress', () => {
       const before = node.requests.length
       const error = await failure(rpc.getNewAddress({ addressType: 'bogus' }))
       expect(RpcError.is(error)).toBe(true)
-      expect(error).toMatchObject({ code, message })
+      expect(error).toMatchObject({ rpcCode: code, message })
       expect(node.requests).toHaveLength(before + 1)
     }
   })

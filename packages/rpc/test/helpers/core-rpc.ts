@@ -1,8 +1,10 @@
 // An adapted copy of the `CoreRpc` interface the qbit Core wallet adapter in
 // Qbit-Org/qbit-payments takes (packages/payments/src/core-wallet/rpc.ts at
-// 8030b00). It differs from that file in two places: `Outpoint` is copied in
-// from its src/tx.ts instead of imported, and the `CoreRpc` comment names
-// `QbitRpcClient` at 8ad6854 where the original names 09eac4a.
+// 8030b00). It differs from that file in three places: `Outpoint` is copied in
+// from its src/tx.ts instead of imported, the `CoreRpc` comment names
+// `QbitRpcClient` at 8ad6854 where the original names 09eac4a, and `rpcErrorCode`
+// and the `CoreRpc` comments read `rpcCode`, the property `RpcError` has had
+// since qbit-rpc issue #8, where the original reads `code`.
 // test/core-rpc.test.ts proves `QbitRpcClient` satisfies it without a wrapper.
 // The adapter has changed since 8030b00 and this copy has not: a check that
 // catches the drift, in place of the copy, is tracked in qbit-rpc issue #22.
@@ -161,7 +163,7 @@ export interface CoreMempoolAcceptance {
  * for wallet calls, one wallet (`QbitRpcClient`'s `wallet` option).
  *
  * **Errors.** A JSON-RPC error from the node must reject with an error whose
- * `code` is the node's numeric error code, as `QbitRpcClient`'s `RpcError`
+ * `rpcCode` is the node's numeric error code, as `QbitRpcClient`'s `RpcError`
  * does: that is a definite answer. Anything else (a timeout, a dropped
  * connection, an abort) means the outcome of a call with side effects is
  * unknown, and the adapter treats it so.
@@ -174,7 +176,7 @@ export interface CoreRpc {
   getBlockchainInfo(options?: CoreRpcCallOptions): Promise<CoreBlockchainInfo>
   getBlockCount(options?: CoreRpcCallOptions): Promise<number>
   getBestBlockHash(options?: CoreRpcCallOptions): Promise<string>
-  /** Rejects with code -5 for a transaction not in the mempool. */
+  /** Rejects with `rpcCode` -5 for a transaction not in the mempool. */
   getMempoolEntry(txid: string, options?: CoreRpcCallOptions): Promise<object>
   /** `null` for an output that is spent, or unknown; with `includeMempool`, spent in the mempool too. */
   getTxOut(
@@ -191,11 +193,11 @@ export interface CoreRpc {
   sendRawTransaction(hex: string, options?: CoreRpcCallOptions): Promise<string>
 
   getWalletInfo(options?: CoreRpcCallOptions): Promise<CoreWalletInfo>
-  /** Rejects with code -5 for a transaction the wallet does not know. */
+  /** Rejects with `rpcCode` -5 for a transaction the wallet does not know. */
   getTransaction(txid: string, options?: CoreRpcCallOptions): Promise<CoreWalletTransaction>
   getAddressInfo(address: string, options?: CoreRpcCallOptions): Promise<CoreAddressInfo>
   getRawChangeAddress(options?: { readonly addressType?: string } & CoreRpcCallOptions): Promise<string>
-  /** `lockunspent`: `unlock` `false` locks, `true` unlocks. Rejects with code -8 for an output it cannot lock or unlock. */
+  /** `lockunspent`: `unlock` `false` locks, `true` unlocks. Rejects with `rpcCode` -8 for an output it cannot lock or unlock. */
   lockUnspent(
     unlock: boolean,
     outputs: readonly Outpoint[],
@@ -219,7 +221,7 @@ export interface CoreRpc {
 
 /** The node's numeric JSON-RPC error code of `error`, or `undefined` when it is not a node answer. */
 export function rpcErrorCode(error: unknown): number | undefined {
-  const code = typeof error === 'object' && error !== null ? (error as { code?: unknown }).code : undefined
+  const code = typeof error === 'object' && error !== null ? (error as { rpcCode?: unknown }).rpcCode : undefined
   return typeof code === 'number' && Number.isInteger(code) ? code : undefined
 }
 

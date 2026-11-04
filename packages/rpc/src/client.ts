@@ -120,10 +120,11 @@ export interface QbitRpcClientOptions {
   readonly retryDelayMs?: number
   /**
    * How long a chain confirmation stays fresh. A wallet-write or broadcast call
-   * made later first re-runs the chain check, under the call's own deadline.
-   * A connection error, an HTTP 401 or a changed cookie (a qbitd restart)
-   * makes the confirmation stale at once. 0 re-checks before every such call.
-   * Default 10,000 ms.
+   * made later first re-runs the chain check, under the call's own deadline; if
+   * that check fails, the call is not sent and rejects with `RpcChainGuardError`
+   * (`reason: 'check_failed'`, the failure as `cause`). A connection error, an
+   * HTTP 401 or a changed cookie (a qbitd restart) makes the confirmation stale
+   * at once. 0 re-checks before every such call. Default 10,000 ms.
    */
   readonly chainCheckMaxAgeMs?: number
   /**
@@ -149,13 +150,22 @@ export interface QbitRpcClientOptions {
 
 /** Per-call options. */
 export interface CallOptions {
-  /** Aborts the call. An abort after a side-effecting request was sent is an `RpcUnknownOutcomeError`. */
+  /**
+   * Aborts the call. An abort after a side-effecting request was sent is an
+   * `RpcUnknownOutcomeError`; one during its chain re-check is an
+   * `RpcChainGuardError` (`reason: 'check_failed'`), and one at any other point
+   * before it was sent an `RpcAbortedError`.
+   */
   readonly signal?: AbortSignal
   /** Overrides the client's `timeoutMs` for this operation. */
   readonly timeoutMs?: number
 }
 
-/** One batch entry's outcome. Transport, timeout and size failures reject the whole batch instead. */
+/**
+ * One batch entry's outcome. Transport, timeout and size failures reject the
+ * whole batch instead. An entry whose `parse` throws, whatever it throws, has
+ * an `RpcResponseError` here.
+ */
 export type BatchItem<T> =
   { readonly ok: true; readonly value: T } | { readonly ok: false; readonly error: RpcError | RpcResponseError }
 
@@ -382,7 +392,10 @@ export class QbitRpcClient {
    * `getBlockchainInfo()` for current block data. An answer that a connection error or an
    * HTTP 401 elsewhere may postdate is checked again, after `retryDelayMs`, up
    * to three checks per attempt; then this throws `reason: 'stale'` (retried
-   * like a read under `readRetries`) and changes nothing.
+   * like a read under `readRetries`) and changes nothing. This is a read and the
+   * check itself, so any other failure of it is thrown as it is (`RpcTimeoutError`,
+   * `RpcTransportError` and so on, about `getblockchaininfo` or `getblockhash`),
+   * never `reason: 'check_failed'`.
    */
   async confirmChain(options: CallOptions = {}): Promise<BlockchainInfo> {
     const method = 'getblockchaininfo'
@@ -417,8 +430,9 @@ export class QbitRpcClient {
 
   /**
    * Send several read or wallet-read requests in one JSON-RPC batch, matched
-   * to their replies by id. Each entry succeeds or fails on its own; a
-   * transport failure, timeout or oversized reply rejects the whole batch.
+   * to their replies by id. Each entry succeeds or fails on its own, a throwing
+   * `parse` included; a transport failure, timeout or oversized reply rejects
+   * the whole batch.
    */
   batch<const T extends readonly RpcRequest<unknown>[]>(
     entries: T,
@@ -667,7 +681,10 @@ export class QbitRpcClient {
         : { expectedSignetChallenge: this.#expectedSignetChallenge }),
       ...(report.signetChallenge === undefined ? {} : { actualSignetChallenge: report.signetChallenge }),
     }
-    return new RpcChainGuardError(method, 'mismatch', this.#expectedChain, report.chain, details)
+    return new RpcChainGuardError(method, 'mismatch', this.#expectedChain, {
+      actualChain: report.chain,
+      mismatch: details,
+    })
   }
 
   /** A sign the node may have restarted or been replaced: re-check the chain before the next guarded call. */
@@ -719,10 +736,33 @@ export class QbitRpcClient {
   }
 
   /**
+   * What a guarded call rejects with when its chain guard threw `error`. A
+   * refusal stands as it is. A failed re-check, or a wait before one that was cut
+   * short, becomes `check_failed` about the call itself, with the failure as
+   * `cause`, unless a mismatch was recorded meanwhile, which stands. The failure
+   * keeps its classification: a guarded call without side effects retries it
+   * under `readRetries`, and a stale socket still gets its extra attempt.
+   */
+  #guardFailure(method: string, error: unknown): Failure {
+    if (error instanceof Failure && RpcChainGuardError.is(error.error)) return error
+    const refusal = this.#chainRefusal(method)
+    if (refusal !== undefined) return new Failure(refusal, false, false)
+    // Anything else thrown here, a bug included, still failed before the call was sent.
+    if (!(error instanceof Failure)) {
+      return new Failure(
+        new RpcChainGuardError(method, 'check_failed', this.#expectedChain, { cause: error }),
+        false,
+        false
+      )
+    }
+    const failed = new RpcChainGuardError(method, 'check_failed', this.#expectedChain, { cause: error.error })
+    return new Failure(failed, false, error.retryable, error.staleSocket)
+  }
+
+  /**
    * Wait `retryDelayMs` (at most 10 s) before checking the chain again. A wait
    * that would pass the deadline ends the attempt at once with the retryable
-   * `stale` refusal; an abort ends it unsent, reported like a failed check,
-   * under `getblockchaininfo`.
+   * `stale` refusal; an abort ends it unsent, reported like a failed check.
    */
   async #pause(method: string, attempt: AttemptContext): Promise<void> {
     const delay = Math.min(this.#retryDelayMs, MAX_RETRY_DELAY_MS)
@@ -742,10 +782,11 @@ export class QbitRpcClient {
    * `#recordChain`. `getblockchaininfo` and `getblockhash 0` go in one batch:
    * one exchange under the attempt's signal, answered by one node. Its
    * failures, an error or a malformed or missing reply for either request
-   * included, are plain failures that record nothing: a guarded request has
-   * not been sent. Whole-exchange failures name `getblockchaininfo`. The one
-   * exception: when only the `getblockhash` reply fails, a chain name or signet
-   * challenge that differs is still recorded as a mismatch.
+   * included, are definite failures that record nothing: a guarded request has
+   * not been sent, and `#guardFailure` reports them as the guarded call's.
+   * Whole-exchange failures name `getblockchaininfo`. The one exception: when
+   * only the `getblockhash` reply fails, a chain name or signet challenge that
+   * differs is still recorded as a mismatch.
    */
   async #checkChain(
     attempt: AttemptContext,
@@ -789,7 +830,7 @@ export class QbitRpcClient {
     if (!replies.has(id))
       throw new Failure(protocolError(request.method, path, 'a reply for this request'), true, false)
     const reply = this.#envelope(request.method, replies.get(id), id, path)
-    if ('error' in reply) throw new Failure(reply.error, false, reply.error.code === RPC_IN_WARMUP)
+    if ('error' in reply) throw new Failure(reply.error, false, reply.error.rpcCode === RPC_IN_WARMUP)
     return validated(request.method, request, reply.result)
   }
 
@@ -821,20 +862,24 @@ export class QbitRpcClient {
         // with that header, and a new cookie (qbitd restarted) means a check.
         const authorization = await this.#authorization(method, attempt.signal)
         if (guarded(policy)) {
-          // Decide after the last await: a mismatch or doubt recorded meanwhile is honoured.
-          for (let checks = 0; this.#chainNeedsCheck(method, authorization, checks); checks += 1) {
-            if (checks > 0) {
-              await this.#pause(method, attempt)
-              // Decide again after the wait: a mismatch recorded meanwhile refuses the call.
-              if (!this.#chainNeedsCheck(method, authorization, checks)) break
+          try {
+            // Decide after the last await: a mismatch or doubt recorded meanwhile is honoured.
+            for (let checks = 0; this.#chainNeedsCheck(method, authorization, checks); checks += 1) {
+              if (checks > 0) {
+                await this.#pause(method, attempt)
+                // Decide again after the wait: a mismatch recorded meanwhile refuses the call.
+                if (!this.#chainNeedsCheck(method, authorization, checks)) break
+              }
+              await this.#checkChain(attempt, authorization, undefined)
             }
-            await this.#checkChain(attempt, authorization, undefined)
+          } catch (error) {
+            throw this.#guardFailure(method, error)
           }
         }
         const text = await this.#exchange(method, body, attempt.signal, policy.sideEffects, id, authorization.header)
         const reply = this.#envelope(method, parseOrProtocolError(method, text), id, 'response')
         if ('error' in reply) {
-          throw new Failure(reply.error, false, !policy.sideEffects && reply.error.code === RPC_IN_WARMUP)
+          throw new Failure(reply.error, false, !policy.sideEffects && reply.error.rpcCode === RPC_IN_WARMUP)
         }
         return validated(method, request, reply.result)
       } catch (error) {
@@ -851,6 +896,10 @@ export class QbitRpcClient {
     if (!Array.isArray(entries)) throw new TypeError('batch takes an array of requests')
     argOptions(options, 'options', CALL_OPTIONS)
     if (entries.length > MAX_BATCH) throw new RangeError(`a batch holds at most ${MAX_BATCH} requests`)
+    entries.forEach((entry, index) => {
+      // A caller's mistake, not the node's: refused before anything is sent.
+      if (typeof entry?.parse !== 'function') throw new TypeError(`batch() entry ${index} has no parse function`)
+    })
     for (const entry of entries) this.#authorize(entry.method, true)
     if (entries.length === 0) return []
     const ids = entries.map(() => this.#nextId++)
@@ -875,10 +924,9 @@ export class QbitRpcClient {
         const reply = this.#envelope(entry.method, byId.get(id), id, `response[id=${id}]`)
         if ('error' in reply) return { ok: false, error: reply.error }
         try {
-          return { ok: true, value: validated(entry.method, entry, reply.result) }
+          return { ok: true, value: entry.parse(reply.result) }
         } catch (error) {
-          if (error instanceof Failure && RpcResponseError.is(error.error)) return { ok: false, error: error.error }
-          throw error
+          return { ok: false, error: validationError(entry.method, error) }
         }
       })
     })
@@ -1146,14 +1194,20 @@ function parseOrProtocolError(method: string, text: string): unknown {
   }
 }
 
+/** The failure of a request's `parse`: this package's validators throw `ResultIssue`, and a custom one anything. */
+function validationError(method: string, thrown: unknown): RpcResponseError {
+  return thrown instanceof ResultIssue
+    ? new RpcResponseError(method, 'validation', thrown.path, thrown.expected)
+    : new RpcResponseError(method, 'validation', 'result', "a result this request's parse function accepts", {
+        cause: thrown,
+      })
+}
+
 function validated<T>(method: string, request: RpcRequest<T>, result: unknown): T {
   try {
     return request.parse(result)
   } catch (error) {
-    if (error instanceof ResultIssue) {
-      throw new Failure(new RpcResponseError(method, 'validation', error.path, error.expected), true, false)
-    }
-    throw error
+    throw new Failure(validationError(method, error), true, false)
   }
 }
 

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { JsonNumber, QbitRpcClient, requests, RpcError, RpcResponseError } from '../src'
+import { JsonNumber, QbitRpcClient, requests, RpcError, RpcResponseError, type RpcRequest } from '../src'
 import { FakeNode, HASH_A, HASH_B } from './helpers/fake-node'
 
 let node: FakeNode
@@ -20,6 +20,14 @@ const errorItem = (id: number, code: number, message: string): string =>
   `{"jsonrpc":"2.0","error":{"code":${code},"message":"${message}"},"id":${id}}`
 
 describe('batch', () => {
+  it('refuses an entry without a parse function as a TypeError, sending nothing', async () => {
+    const entry = { method: 'getblockcount', params: [] } as unknown as RpcRequest<number>
+    await expect(rpc.batch([requests.getBlockCount(), entry])).rejects.toThrow(
+      new TypeError('batch() entry 1 has no parse function')
+    )
+    expect(node.calls()).toEqual([])
+  })
+
   it('sends one request and matches replies by id, whatever their order', async () => {
     node.handler = (request, response) => {
       const calls = JSON.parse(request.body) as Call[]
@@ -61,7 +69,7 @@ describe('batch', () => {
     expect(results[0]).toEqual({ ok: true, value: HASH_A })
     expect(results[1].ok).toBe(false)
     const nodeError = !results[1].ok ? results[1].error : undefined
-    expect(RpcError.is(nodeError) && nodeError.code).toBe(-8)
+    expect(RpcError.is(nodeError) && nodeError.rpcCode).toBe(-8)
     const invalid = !results[2].ok ? results[2].error : undefined
     expect(RpcResponseError.is(invalid) && invalid.reason).toBe('validation')
     const missing = !results[3].ok ? results[3].error : undefined

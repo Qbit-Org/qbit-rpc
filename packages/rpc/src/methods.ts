@@ -38,7 +38,14 @@ import {
 export interface RpcRequest<T> {
   readonly method: string
   readonly params: readonly unknown[]
-  /** Validates the raw result (numbers as `JsonNumber`) and converts it. Throws on a malformed result. */
+  /**
+   * Validates the raw result (numbers as `JsonNumber`) and converts it,
+   * synchronously. It may throw anything on a malformed result: the client
+   * reports whatever it throws as `RpcResponseError` (`reason: 'validation'`),
+   * with the thrown value as `cause`. That is the entry's own error in a batch,
+   * and, for a call with side effects, the `cause` of an
+   * `RpcUnknownOutcomeError`, since the node has acted by then.
+   */
   readonly parse: (result: unknown) => T
   /** For `sendrawtransaction`: the txid computed from the hex, when it parses. */
   readonly txid?: string
