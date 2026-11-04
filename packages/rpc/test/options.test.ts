@@ -133,6 +133,36 @@ const unknownKeys: [string, () => RpcRequest<unknown>, RegExp][] = [
     /use options\.addressType$/,
   ],
   [
+    'psbtBumpFee options (the node fee rate)',
+    () => requests.psbtBumpFee(HASH_A, { fee_rate: 4 } as never),
+    /^options\.fee_rate is not a known key: use options\.feeRateBitsPerKvB, a bigint in bits per 1,000 vbytes \(1000n is 1 bit\/vB\)$/,
+  ],
+  [
+    'psbtBumpFee options (the node confirmation target)',
+    () => requests.psbtBumpFee(HASH_A, { conf_target: 6 } as never),
+    /^options\.conf_target is not a known key: use options\.confTarget$/,
+  ],
+  [
+    'psbtBumpFee options (the node change index)',
+    () => requests.psbtBumpFee(HASH_A, { original_change_index: 1 } as never),
+    /^options\.original_change_index is not a known key: use options\.originalChangeIndex$/,
+  ],
+  [
+    'psbtBumpFee options (the node estimate mode)',
+    () => requests.psbtBumpFee(HASH_A, { estimate_mode: 'economical' } as never),
+    /^options\.estimate_mode is not a known key: use options\.estimateMode$/,
+  ],
+  [
+    'psbtBumpFee options (a walletCreateFundedPsbt option)',
+    () => requests.psbtBumpFee(HASH_A, { subtractFeeFromOutputs: [0] } as never),
+    /^options\.subtractFeeFromOutputs is not a known key; the known keys are feeRateBitsPerKvB, confTarget, estimateMode, replaceable, outputs, originalChangeIndex$/,
+  ],
+  [
+    'psbtBumpFee options.outputs[]',
+    () => requests.psbtBumpFee(HASH_A, { outputs: [{ address: 'rq1a', amount: 1n }] } as never),
+    /^options\.outputs\[0\]\.amount is not a known key: use options\.outputs\[0\]\.amountBits, a bigint in bits/,
+  ],
+  [
     'lockUnspent options',
     () => requests.lockUnspent(false, [{ txid: HASH_A, vout: 0 }], { persist: true } as never),
     /^options\.persist is not a known key; the known keys are persistent$/,
@@ -330,6 +360,16 @@ describe('client methods', () => {
     ],
     ['getNewAddress', c => c.getNewAddress({ signal: undefined, label_name: 'x' } as never), /label_name/],
     ['lockUnspent', c => c.lockUnspent(false, [{ txid: HASH_A, vout: 0 }], { persist: true } as never), /persist/],
+    [
+      'psbtBumpFee',
+      c => c.psbtBumpFee(HASH_A, { timeoutMs: 1000, conf_target: 6 } as never),
+      /^options\.conf_target is not a known key: use options\.confTarget$/,
+    ],
+    [
+      'psbtBumpFee (a call option misspelled)',
+      c => c.psbtBumpFee(HASH_A, { timeout: 1000 } as never),
+      /use options\.timeoutMs, in milliseconds$/,
+    ],
     // Call options alone.
     [
       'getBlockCount',

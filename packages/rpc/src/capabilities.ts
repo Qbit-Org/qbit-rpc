@@ -37,11 +37,11 @@ const WALLET_WRITE: MethodPolicy = { capability: 'wallet-write', sideEffects: tr
  * here; anything else is refused before a request is made. Each name exists in
  * qbit Core v1.0.0.
  *
- * Deliberately absent: `sendmany`, `sendtoaddress`, `send`, `sendall`,
- * `bumpfee` and `psbtbumpfee` sign and broadcast in one step, so a caller
- * cannot store the signed transaction before it leaves the node. Build with
- * `walletcreatefundedpsbt`, sign with `walletprocesspsbt`, store the hex, then
- * `sendrawtransaction`.
+ * Deliberately absent: `sendmany`, `sendtoaddress`, `send`, `sendall` and
+ * `bumpfee` sign and broadcast in one step, so a caller cannot store the
+ * signed transaction before it leaves the node. Build with
+ * `walletcreatefundedpsbt` (or `psbtbumpfee` to bump a fee), sign with
+ * `walletprocesspsbt`, store the hex, then `sendrawtransaction`.
  */
 export const METHOD_POLICIES: Readonly<Record<string, MethodPolicy>> = Object.freeze({
   // Chain and utility reads with a typed method.
@@ -97,6 +97,10 @@ export const METHOD_POLICIES: Readonly<Record<string, MethodPolicy>> = Object.fr
   getrawchangeaddress: WALLET_WRITE,
   lockunspent: WALLET_WRITE,
   getnewaddress: WALLET_WRITE,
+  // psbtbumpfee returns an unsigned PSBT and signs and broadcasts nothing, but
+  // it can take change keys from the keypool for good (no change in the
+  // original, or outputs that drop the change), so it counts as side-effecting.
+  psbtbumpfee: WALLET_WRITE,
 })
 
 /**

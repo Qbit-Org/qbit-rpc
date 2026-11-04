@@ -32,6 +32,7 @@ import {
   type AddressValidation,
   type BlockchainInfo,
   type BlockHeader,
+  type BumpedPsbt,
   type ConfirmationTarget,
   type DataPqcHashProof,
   type DataPqcHashVerification,
@@ -47,6 +48,7 @@ import {
   type NetworkInfo,
   type Outpoint,
   type ProcessedPsbt,
+  type PsbtBumpFeeOptions,
   type RpcRequest,
   type SecurityLevel,
   type SighashType,
@@ -466,6 +468,9 @@ export class QbitRpcClient {
   }
   finalizePsbt(psbt: string, options?: { readonly extract?: boolean } & CallOptions): Promise<FinalizedPsbt> {
     return this.#lazyWith(options, own => requests.finalizePsbt(psbt, own))
+  }
+  psbtBumpFee(txid: string, options?: PsbtBumpFeeOptions & CallOptions): Promise<BumpedPsbt> {
+    return this.#lazyWith(options, own => requests.psbtBumpFee(txid, own))
   }
   walletPassphrase(passphrase: string, timeoutSeconds: number, options?: CallOptions): Promise<void> {
     return this.#lazy(() => requests.walletPassphrase(passphrase, timeoutSeconds), options).then(() => undefined)
