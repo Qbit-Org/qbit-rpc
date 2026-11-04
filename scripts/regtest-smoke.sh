@@ -22,7 +22,7 @@ QBITD="$QBIT_BIN_DIR/qbitd"
 CLI_BIN="$QBIT_BIN_DIR/qbit-cli"
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-expected="$(node --input-type=module -e 'console.log((await import(process.argv[1])).QBIT_CORE_VERSION)' \
+expected="$(node --input-type=module -e 'import { pathToFileURL } from "node:url"; console.log((await import(pathToFileURL(process.argv[1]).href)).QBIT_CORE_VERSION)' \
   "$repo_root/scripts/qbit-core-release.mjs")"
 version="$("$QBITD" -version)"
 version="${version%%$'\n'*}"
