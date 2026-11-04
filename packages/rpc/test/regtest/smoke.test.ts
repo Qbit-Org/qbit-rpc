@@ -179,6 +179,25 @@ describe.runIf(enabled)('qbit Core v1.0.0 regtest', () => {
     })
     expect(recipientPays.feeBits).toBeGreaterThan(0n)
     expect(amountTo(await decode(recipientPays.psbt), recipient)).toBe(50_000_000n - recipientPays.feeBits)
+    // The node accepts subtract_fee_from_outputs and then ignores it, so the
+    // wallet pays; call() refuses it, and the typed method rejects the key.
+    const ignored = JSON.parse(
+      cli(
+        '-rpcwallet=smoke',
+        'walletcreatefundedpsbt',
+        '[]',
+        JSON.stringify([{ [recipient]: 0.5 }]),
+        '0',
+        JSON.stringify({ subtract_fee_from_outputs: [0], fee_rate: 2.5 })
+      )
+    ) as { psbt: string }
+    expect(amountTo(await decode(ignored.psbt), recipient)).toBe(50_000_000n)
+    await expect(
+      wallet.call('walletcreatefundedpsbt', [[], [{ [recipient]: '0.5' }], 0, { subtract_fee_from_outputs: [0] }])
+    ).rejects.toThrow(/accepted and then ignored/)
+    await expect(
+      wallet.walletCreateFundedPsbt({ ...payment, options: { subtract_fee_from_outputs: [0] } } as never)
+    ).rejects.toThrow(/use args\.options\.subtractFeeFromOutputs/)
     const signed = await wallet.walletProcessPsbt(recipientPays.psbt)
     const txid = await wallet.sendRawTransaction(signed.hex!)
     const sent = await wallet.getRawTransactionVerbose(txid)

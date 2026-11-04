@@ -46,6 +46,12 @@ version. Nothing has been published yet: both are `0.0.0` and private.
   ignores, so the wallet paid fees meant to come out of the recipient's
   output. Every option name sent to `walletcreatefundedpsbt` and `listunspent`
   is now checked against a live node in the regtest smoke test.
+- Every typed method and request builder rejects an unknown option or argument
+  key, at every level, with a `TypeError` that names it and the key it most
+  likely meant, before anything is sent. They used to drop it silently, so
+  `{ subtract_fee_from_outputs: [0] }` sent no fee subtraction. `call()`
+  refuses `walletcreatefundedpsbt` options qbit Core v1.0.0 accepts and then
+  ignores (`subtract_fee_from_outputs`).
 - The chain guard goes stale after `chainCheckMaxAgeMs` (default 10 s) or on a
   connection error, HTTP 401 or cookie change, and wallet-write and broadcast
   calls re-check the chain first, under their own deadline. `chainStatus` can
