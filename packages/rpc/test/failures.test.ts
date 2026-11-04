@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import type { ServerResponse } from 'node:http'
 import { createServer, type AddressInfo } from 'node:net'
@@ -19,7 +18,7 @@ import {
   RpcUnknownOutcomeError,
   type Capability,
 } from '../src'
-import { chainResults, FakeNode, HASH_A, TX_HEX } from './helpers/fake-node'
+import { chainResults, FakeNode, HASH_A, TX_HEX, TX_TXID as TXID } from './helpers/fake-node'
 
 let node: FakeNode
 
@@ -29,14 +28,6 @@ beforeEach(async () => {
 afterEach(async () => {
   await node.close()
 })
-
-const TXID = Buffer.from(
-  createHash('sha256')
-    .update(createHash('sha256').update(Buffer.from(TX_HEX, 'hex')).digest())
-    .digest()
-)
-  .reverse()
-  .toString('hex')
 
 async function confirmed(
   options: { capabilities?: Capability[]; readRetries?: number; timeoutMs?: number } = {}

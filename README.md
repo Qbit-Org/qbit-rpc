@@ -104,16 +104,17 @@ if (!signed.complete || signed.hex === undefined) throw new Error('not fully sig
 if (signed.pqcOverallLimitState === 'critical' || signed.pqcOverallLimitState === 'exhausted') {
   // rotate keys before the signature budget runs out
 }
-await saveSignedTransaction(signed.hex) // your storage: persist before broadcasting
-
 const [preflight] = await rpc.testMempoolAccept([signed.hex])
 if (preflight?.allowed !== true) throw new Error(`rejected: ${preflight?.rejectReason}`)
+const { txid } = preflight // the txid of this hex; nothing is broadcast yet
+await saveSignedTransaction(txid, signed.hex) // your storage: persist both before broadcasting
 try {
-  const txid = await rpc.sendRawTransaction(signed.hex)
+  await rpc.sendRawTransaction(signed.hex) // resolves with the same txid
 } catch (error) {
   if (RpcUnknownOutcomeError.is(error)) {
-    // The node may have relayed it. Look it up by error.txid; resubmitting the
-    // same hex is harmless. Never rebuild the payment with new inputs.
+    // The node may have relayed it. Reconcile by the stored txid
+    // (rpc.getTransaction(txid)); resubmitting the stored hex is harmless.
+    // Never rebuild the payment with new inputs.
   }
   throw error
 }

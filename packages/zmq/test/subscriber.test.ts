@@ -2,7 +2,7 @@ import { createRequire } from 'node:module'
 import { createServer, type AddressInfo } from 'node:net'
 import { fileURLToPath } from 'node:url'
 
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { Publisher } from 'zeromq'
 
 import {
@@ -250,19 +250,65 @@ describe('QbitZmqSubscriber connection loss and limits', () => {
   })
 
   it('goes stale by default, without staleAfterMs', async () => {
-    const subscriber = new QbitZmqSubscriber({
-      url: 'tcp://127.0.0.1:1',
-      topics: ['hashblock'],
-      socketFactory: () => new FakeSocket([hashblock(1)]),
-    })
-    const iterator = subscriber[Symbol.asyncIterator]()
-    await take(iterator, 1)
-    const at = subscriber.health().lastMessageAt!
-    expect(subscriber.health(at + DEFAULT_STALE_AFTER_MS).status).toBe('receiving')
-    expect(subscriber.health(at + DEFAULT_STALE_AFTER_MS + 1).status).toBe('stale')
-    const done = iterator.next()
-    subscriber.close()
-    await done
+    vi.useFakeTimers({ toFake: ['Date', 'performance'] })
+    try {
+      const subscriber = new QbitZmqSubscriber({
+        url: 'tcp://127.0.0.1:1',
+        topics: ['hashblock'],
+        socketFactory: () => new FakeSocket([hashblock(1)]),
+      })
+      const iterator = subscriber[Symbol.asyncIterator]()
+      await take(iterator, 1)
+      const at = subscriber.health().lastMessageAt!
+      expect(subscriber.health(at + DEFAULT_STALE_AFTER_MS).status).toBe('receiving')
+      expect(subscriber.health(at + DEFAULT_STALE_AFTER_MS + 1).status).toBe('stale')
+      vi.advanceTimersByTime(DEFAULT_STALE_AFTER_MS)
+      expect(subscriber.health().status).toBe('receiving')
+      vi.advanceTimersByTime(1)
+      expect(subscriber.health().status).toBe('stale')
+      const done = iterator.next()
+      subscriber.close()
+      await done
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('measures staleness on the monotonic clock: a step in the wall clock does not change it', async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'performance'] })
+    try {
+      const subscriber = new QbitZmqSubscriber({
+        url: 'tcp://127.0.0.1:1',
+        topics: ['hashblock'],
+        staleAfterMs: 60_000,
+        socketFactory: () => new FakeSocket([hashblock(1)]),
+      })
+      const iterator = subscriber[Symbol.asyncIterator]()
+      const at = Date.now()
+      expect(await take(iterator, 1)).toEqual([expect.objectContaining({ kind: 'message', receivedAt: at })])
+
+      // The wall clock jumps an hour ahead (an NTP step, a resumed VM): the
+      // message is still fresh, and lastMessageAt is still its receipt time.
+      vi.setSystemTime(at + 3_600_000)
+      expect(subscriber.health()).toMatchObject({ status: 'receiving', lastMessageAt: at })
+      expect(subscriber.health(Date.now()).status).toBe('receiving')
+      expect(subscriber.health(Date.now() + 60_000).status).toBe('receiving')
+      expect(subscriber.health(Date.now() + 60_001).status).toBe('stale')
+
+      // A minute later it is stale, and a jump back in the wall clock does not
+      // make it fresh again.
+      vi.advanceTimersByTime(60_001)
+      expect(subscriber.health().status).toBe('stale')
+      vi.setSystemTime(at - 3_600_000)
+      expect(subscriber.health()).toMatchObject({ status: 'stale', lastMessageAt: at })
+      expect(subscriber.health(Date.now()).status).toBe('stale')
+
+      const done = iterator.next()
+      subscriber.close()
+      await done
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('caps the inbound message size: default, configured, and passed to a custom factory', async () => {

@@ -111,11 +111,26 @@ version. Nothing has been published yet: both are `0.0.0` and private.
   its SHA-256. The ZMQ smoke test now covers all five topics, both `sequence`
   body lengths, an RBF replacement's `mempool_removed`, a qbitd restart and
   `maxMessageSize`.
+- `getRawTransaction` fails a reply whose hex does not hash to the requested
+  txid, or is not a complete transaction, with `RpcResponseError` (`reason:
+  'validation'`), as the verbose form does. `getAddressInfo` ignores case in
+  the reply's address only when both it and the requested one are bech32 or
+  bech32m, and compares a base58 address exactly. `parseQbt('-0')` and
+  `parseQbt('-0.00000000')` return `0n` without `allowNegative`, and a number
+  argument of `-0` is sent as `0`.
 - `@qbit-oss/zmq`: health is `unknown` as soon as the connection drops, and the
   socket is replaced; `staleAfterMs` defaults to 10 minutes; the first message
   on each topic after a replacement is a gap; `maxMessageSize` defaults to
   2,065,536 bytes; `rawblock` and `rawtx` bodies over 2,000,000 bytes are
   malformed; `reconnect` events carry a `reason`.
+- `@qbit-oss/zmq`: `health()` measures the last message's age on the monotonic
+  clock (`performance.now()`), so a step in the wall clock no longer makes a
+  fresh subscriber `stale` or an old one `receiving`. `lastMessageAt` and
+  `receivedAt` stay `Date.now()` times, for display, and `health(now)` still
+  reports the status at the wall-clock time `now`. Tests that simulate time
+  must now fake `performance` as well as `Date`. `rawblock` and `rawtx`
+  bodies are copied with `new Uint8Array(body)`, which is faster than
+  `Uint8Array.from` and still a copy.
 
 ### Wallet and chain methods for the payout adapter
 

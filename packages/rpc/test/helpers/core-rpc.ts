@@ -1,8 +1,11 @@
-// A verbatim copy of the `CoreRpc` interface the qbit Core wallet adapter in
+// An adapted copy of the `CoreRpc` interface the qbit Core wallet adapter in
 // Qbit-Org/qbit-payments takes (packages/payments/src/core-wallet/rpc.ts at
-// 8030b00), with `Outpoint` copied in from its src/tx.ts. test/core-rpc.test.ts
-// proves `QbitRpcClient` satisfies it without a wrapper. Refresh it when the
-// adapter changes.
+// 8030b00). It differs from that file in two places: `Outpoint` is copied in
+// from its src/tx.ts instead of imported, and the `CoreRpc` comment names
+// `QbitRpcClient` at 8ad6854 where the original names 09eac4a.
+// test/core-rpc.test.ts proves `QbitRpcClient` satisfies it without a wrapper.
+// The adapter has changed since 8030b00 and this copy has not: a check that
+// catches the drift, in place of the copy, is tracked in qbit-rpc issue #22.
 
 /** An output a transaction spends (`Outpoint` in qbit-payments src/tx.ts). */
 export interface Outpoint {

@@ -66,8 +66,9 @@ export interface QbitZmqSubscriberOptions {
   readonly reconnectDelayMs?: number
   /**
    * `health()` reports `stale` once this long has passed since the last
-   * message. Pick it from the topic's expected rate: blocks arrive about once
-   * a minute, so `hashblock` alone needs several minutes. Default 600,000 ms.
+   * message, on the monotonic clock (`performance.now()`). Pick it from the
+   * topic's expected rate: blocks arrive about once a minute, so `hashblock`
+   * alone needs several minutes. Default 600,000 ms.
    */
   readonly staleAfterMs?: number
   /**
@@ -90,7 +91,10 @@ export type ZmqEvent =
   | {
       readonly kind: 'message'
       readonly message: ZmqMessage
-      /** Local receipt time (`Date.now()`), not a node timestamp. */
+      /**
+       * Local receipt time (`Date.now()`), not a node timestamp: a wall-clock
+       * time for display. `health()` measures age on the monotonic clock.
+       */
       readonly receivedAt: number
     }
   | ({ readonly kind: 'gap' } & SequenceGap)
@@ -115,7 +119,8 @@ export type ZmqEvent =
  *   the address wrong, or the topic not enabled.
  * - `receiving`: a message arrived on the current socket within
  *   `staleAfterMs`.
- * - `stale`: the last message is older than `staleAfterMs`.
+ * - `stale`: the last message is older than `staleAfterMs`, on the monotonic
+ *   clock.
  * - `closed`: `close()` was called, or the iteration ended with a
  *   {@link ZmqSetupError}.
  */
@@ -123,7 +128,12 @@ export type ZmqHealthStatus = 'unknown' | 'receiving' | 'stale' | 'closed'
 
 export interface ZmqHealth {
   readonly status: ZmqHealthStatus
-  /** Local receipt time of the last valid message, if any. */
+  /**
+   * Local receipt time (`Date.now()`) of the last valid message, if any: a
+   * wall-clock time for display. Staleness is measured on the monotonic clock
+   * instead, so after a step in the wall clock `Date.now() - lastMessageAt`
+   * is not the message's age.
+   */
   readonly lastMessageAt?: number
   readonly messages: number
   readonly gaps: number
@@ -272,6 +282,8 @@ export class QbitZmqSubscriber implements AsyncIterable<ZmqEvent> {
   #running = false
   #wake: (() => void) | undefined
   #lastMessageAt: number | undefined
+  /** `performance.now()` at the last valid message: the age `health()` compares with `staleAfterMs`. */
+  #lastMessageTick: number | undefined
   #receivedOnSocket = false
   #counts = { messages: 0, gaps: 0, malformed: 0, reconnects: 0 }
 
@@ -305,13 +317,25 @@ export class QbitZmqSubscriber implements AsyncIterable<ZmqEvent> {
     this.#socketFactory = options.socketFactory ?? createZeromqSocket
   }
 
-  /** A snapshot of what the subscriber has observed. See {@link ZmqHealthStatus}. */
-  health(now: number = Date.now()): ZmqHealth {
+  /**
+   * A snapshot of what the subscriber has observed. See {@link ZmqHealthStatus}.
+   *
+   * The last message's age is measured on the monotonic clock
+   * (`performance.now()`), so a step in the wall clock makes a fresh
+   * subscriber neither `stale` nor an old one `receiving`. `now` is the
+   * wall-clock time (`Date.now()` units) to report the status at, by default
+   * the present: the age is shifted by `now - Date.now()`, so
+   * `health(Date.now() + 60_000)` tells whether the subscriber will be stale
+   * in a minute if no message arrives meanwhile.
+   */
+  health(now?: number): ZmqHealth {
     let status: ZmqHealthStatus
     if (this.#closed) status = 'closed'
     else if (!this.#receivedOnSocket) status = 'unknown'
-    else if (now - this.#lastMessageAt! > this.#staleAfterMs) status = 'stale'
-    else status = 'receiving'
+    else {
+      const ageMs = performance.now() - this.#lastMessageTick! + (now === undefined ? 0 : now - Date.now())
+      status = ageMs > this.#staleAfterMs ? 'stale' : 'receiving'
+    }
     return {
       status,
       ...(this.#lastMessageAt === undefined ? {} : { lastMessageAt: this.#lastMessageAt }),
@@ -365,6 +389,7 @@ export class QbitZmqSubscriber implements AsyncIterable<ZmqEvent> {
             }
             const receivedAt = Date.now()
             this.#lastMessageAt = receivedAt
+            this.#lastMessageTick = performance.now()
             this.#receivedOnSocket = true
             this.#counts.messages += 1
             const gap = this.#tracker.observe(message.topic, message.sequence)

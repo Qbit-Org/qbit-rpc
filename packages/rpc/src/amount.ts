@@ -10,7 +10,8 @@ const DECIMAL = /^(-?)(0|[1-9][0-9]*)(?:\.([0-9]{1,8}))?$/
  * Parse a decimal QBT amount, such as qbit Core prints (`"1.00000000"`), into
  * bits. At most 8 decimals, no exponent, no sign other than a leading `-`
  * when `allowNegative` is set, and at most {@link MAX_MONEY_BITS} in
- * magnitude. Throws a `RangeError` otherwise.
+ * magnitude. Negative zero (`"-0"`, `"-0.00000000"`) is zero: `0n`, with or
+ * without `allowNegative`. Throws a `RangeError` otherwise.
  */
 export function parseQbt(text: string, options: { allowNegative?: boolean } = {}): bigint {
   if (typeof text !== 'string') throw new TypeError('QBT amount must be a decimal string')
@@ -21,6 +22,7 @@ export function parseQbt(text: string, options: { allowNegative?: boolean } = {}
   const [, sign, whole, fraction = ''] = match
   const magnitude = BigInt(whole!) * BITS_PER_QBT + BigInt(fraction.padEnd(8, '0'))
   if (magnitude > MAX_MONEY_BITS) throw new RangeError('QBT amount exceeds 210,000,000 QBT')
+  if (magnitude === 0n) return 0n
   if (sign === '-' && options.allowNegative !== true) {
     throw new RangeError('QBT amount must not be negative')
   }
