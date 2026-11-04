@@ -13,6 +13,8 @@ export interface RecordedRequest {
   readonly body: string
   /** The client side's port: equal for two requests on one keep-alive connection. */
   readonly remotePort: number | undefined
+  /** How long the connection sat idle before this request; undefined for its first. */
+  readonly idleMs: number | undefined
 }
 
 export interface RpcCall {
@@ -41,14 +43,26 @@ export class FakeNode {
   }
   readonly #server: Server
   readonly #sockets = new Set<Socket>()
+  /** When each keep-alive connection went idle, and its idle-close timer. */
+  readonly #idle = new Map<Socket, { readonly since: number; readonly timer: NodeJS.Timeout | undefined }>()
+  #idleCloseMs: number | undefined
 
   private constructor(server: Server) {
     this.#server = server
     server.on('connection', socket => {
       this.#sockets.add(socket)
-      socket.on('close', () => this.#sockets.delete(socket))
+      socket.on('close', () => {
+        this.#sockets.delete(socket)
+        clearTimeout(this.#idle.get(socket)?.timer)
+        this.#idle.delete(socket)
+      })
     })
     server.on('request', (req: IncomingMessage, res: ServerResponse) => {
+      const idle = this.#idle.get(req.socket)
+      clearTimeout(idle?.timer)
+      this.#idle.delete(req.socket)
+      const idleMs = idle === undefined ? undefined : performance.now() - idle.since
+      res.on('finish', () => this.#markIdle(req.socket))
       const chunks: Buffer[] = []
       req.on('data', (chunk: Buffer) => chunks.push(chunk))
       req.on('end', () => {
@@ -57,6 +71,7 @@ export class FakeNode {
           headers: req.headers,
           body: Buffer.concat(chunks).toString('utf8'),
           remotePort: req.socket.remotePort,
+          idleMs,
         }
         this.requests.push(recorded)
         res.on('close', () => {
@@ -80,6 +95,28 @@ export class FakeNode {
 
   get url(): string {
     return `http://127.0.0.1:${this.port}/`
+  }
+
+  /** Connections open now. */
+  get connections(): number {
+    return this.#sockets.size
+  }
+
+  /**
+   * Close a keep-alive connection once it has been idle for `ms`, as qbitd
+   * does after `-rpcservertimeout`, and drop the Keep-Alive hint Node's server
+   * adds: qbitd sends none, and the client's agent would act on it.
+   */
+  closeIdleAfter(ms: number): void {
+    this.#idleCloseMs = ms
+    this.#server.keepAliveTimeout = 0
+  }
+
+  #markIdle(socket: Socket): void {
+    if (socket.destroyed) return
+    const ms = this.#idleCloseMs
+    const timer = ms === undefined ? undefined : setTimeout(() => socket.destroy(), ms)
+    this.#idle.set(socket, { since: performance.now(), timer })
   }
 
   /** Answer JSON-RPC calls (single or batch) through `reply`, per call. */

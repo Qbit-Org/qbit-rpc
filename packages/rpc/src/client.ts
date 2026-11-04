@@ -84,7 +84,11 @@ export interface QbitRpcClientOptions {
    * Extra attempts for methods without side effects after a connection error,
    * an HTTP 5xx, a credentials failure, an HTTP 401 under cookie auth, or
    * (single calls) RPC error -28, node warming up. Default 0: no retries.
-   * Methods with side effects are never retried.
+   * Methods with side effects are never retried. Apart from these, even at 0,
+   * a request without side effects that is reset on a reused keep-alive
+   * connection just after it was written, before any reply byte (qbitd closed
+   * it for idleness), gets one more attempt at once, as does a chain re-check
+   * before a call with side effects; the reset still makes the chain stale.
    */
   readonly readRetries?: number
   /** Delay before the first retry; it doubles for each further one, up to 10 s. Default 250 ms. */
@@ -157,7 +161,9 @@ class Failure {
     readonly error: QbitRpcError,
     /** The request may have been executed and no definite answer arrived. */
     readonly unknown: boolean,
-    readonly retryable: boolean
+    readonly retryable: boolean,
+    /** See `ExchangeFailure.staleSocket`. */
+    readonly staleSocket: boolean = false
   ) {}
 }
 
@@ -263,7 +269,7 @@ export class QbitRpcClient {
     const method = 'getblockchaininfo'
     // A mismatch recorded after this point is newer than this call: it stands, and this call throws it.
     const started = this.#doubts
-    return this.#operation(method, options, this.#readRetries, async attempt => {
+    return this.#operation(method, options, false, async attempt => {
       try {
         const authorization = await this.#authorization(method, attempt.signal)
         let info: BlockchainInfo | undefined
@@ -597,7 +603,7 @@ export class QbitRpcClient {
       info = validated(check.method, check, reply.result)
     } catch (error) {
       const failure = asFailure(check.method, error, attempt)
-      throw new Failure(failure.error, false, failure.retryable)
+      throw new Failure(failure.error, false, failure.retryable, failure.staleSocket)
     }
     this.#recordChain(info, since, authorization.digest, clearsBefore)
     return info
@@ -625,7 +631,7 @@ export class QbitRpcClient {
     const policy = this.#authorize(method, false)
     const id = this.#nextId++
     const body = stringifyRequest({ jsonrpc: '2.0', id, method, params: request.params })
-    return this.#operation(method, options, policy.sideEffects ? 0 : this.#readRetries, async attempt => {
+    return this.#operation(method, options, policy.sideEffects, async attempt => {
       try {
         // One cookie read per attempt: the chain check and the call are sent
         // with that header, and a new cookie (qbitd restarted) means a check.
@@ -668,7 +674,7 @@ export class QbitRpcClient {
     const body = stringifyRequest(
       entries.map((entry, index) => ({ jsonrpc: '2.0', id: ids[index], method: entry.method, params: entry.params }))
     )
-    return this.#operation(label, options, this.#readRetries, async attempt => {
+    return this.#operation(label, options, false, async attempt => {
       let text: string
       try {
         const authorization = await this.#authorization(label, attempt.signal)
@@ -709,16 +715,21 @@ export class QbitRpcClient {
 
   /**
    * Run `attempt` under one deadline, retrying retryable failures while time
-   * remains. The deadline timer, the caller's abort listener and any backoff
-   * sleep are released on every exit path.
+   * remains, unless the operation has side effects. Such a retry counts against
+   * `readRetries`. Apart from these, a stale pooled socket gets one more attempt
+   * at once, even with side effects when the failure is definite: then only the
+   * chain re-check was sent, as the request itself uses a fresh connection. The
+   * deadline timer, the caller's abort listener and any backoff sleep are
+   * released on every exit path.
    */
   async #operation<T>(
     label: string,
     options: CallOptions,
-    retries: number,
+    sideEffects: boolean,
     attempt: (context: AttemptContext) => Promise<T>
   ): Promise<T> {
     argOptions(options, 'options', CALL_OPTIONS)
+    const retries = sideEffects ? 0 : this.#readRetries
     const timeoutMs = checkInteger(options.timeoutMs, 'timeoutMs', 1, 3_600_000, this.#timeoutMs)
     const callerSignal = options.signal
     if (callerSignal !== undefined && !(callerSignal instanceof AbortSignal))
@@ -730,7 +741,9 @@ export class QbitRpcClient {
     const onAbort = (): void => controller.abort(callerSignal!.reason)
     callerSignal?.addEventListener('abort', onAbort, { once: true })
     try {
-      for (let tries = 0; ; tries += 1) {
+      let tries = 0
+      let staleSocketTried = false
+      for (;;) {
         try {
           return await attempt({
             signal: controller.signal,
@@ -740,8 +753,15 @@ export class QbitRpcClient {
           })
         } catch (error) {
           if (!(error instanceof Failure)) throw error
+          // The whole attempt runs again: a new cookie read, and a guarded call
+          // re-checks the chain, which the reset has made stale.
+          if (error.staleSocket && (!sideEffects || !error.unknown) && !staleSocketTried) {
+            staleSocketTried = true
+            continue
+          }
           const delay = Math.min(this.#retryDelayMs * 2 ** tries, MAX_RETRY_DELAY_MS)
           if (!error.retryable || tries >= retries || performance.now() + delay >= deadline) throw error.error
+          tries += 1
           try {
             await sleep(delay, controller.signal)
           } catch {
@@ -949,7 +969,8 @@ function asFailure(method: string, error: unknown, attempt: AttemptContext): Fai
         return new Failure(
           new RpcTransportError(method, 'network', error.code === undefined ? {} : { code: error.code }),
           error.sent,
-          true
+          true,
+          error.staleSocket
         )
     }
   }

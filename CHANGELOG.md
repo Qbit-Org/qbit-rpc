@@ -101,3 +101,17 @@ version. Nothing has been published yet: both are `0.0.0` and private.
   the label `*`. Parameters and reply shapes were checked against a qbit Core
   v1.0.0 regtest node, including a reorg, and the smoke test drives each
   method, including the payout adapter's `listsinceblock` call.
+
+### Stale keep-alive connections
+
+- A request without side effects that is reset (`ECONNRESET`, `EPIPE`) on a
+  reused keep-alive connection within 1 s of going out and before any byte
+  of the reply, as when qbitd closes the connection for idleness
+  (`-rpcservertimeout`), gets one more attempt at once, even with
+  `readRetries: 0`, instead of failing. The other idle connections are closed
+  first, and the chain confirmation goes stale, since a qbitd restart looks the
+  same, so `finalizepsbt` and `testmempoolaccept` re-check the chain before
+  they are sent again. The chain re-check before a side-effecting call gets the
+  same attempt. The client closes pooled connections idle for 15 s, before
+  qbitd's 30 s default. Side-effecting requests still use one fresh connection
+  each and are never sent twice.
