@@ -40,6 +40,28 @@ function polluted<T>(keys: Readonly<Record<string, unknown>>, run: () => T): T {
   }
 }
 
+/**
+ * Run `run` with `keys` on Object.prototype as properties that are not
+ * enumerable, as a polyfill defines them. The client refuses every call while
+ * Object.prototype has an enumerable property (`prototype_polluted`); this is
+ * the pollution that check lets through, so what a call reads beneath it is
+ * tested with it.
+ */
+function pollutedQuietly<T>(keys: Readonly<Record<string, unknown>>, run: () => T): T {
+  const names = Object.keys(keys)
+  for (const name of names) {
+    if (Object.hasOwn(proto, name)) throw new Error(`Object.prototype.${name} is already set`)
+    Object.defineProperty(proto, name, { value: keys[name], writable: true, configurable: true, enumerable: false })
+  }
+  try {
+    return run()
+  } finally {
+    for (const name of names) delete proto[name]
+  }
+}
+
+const POLLUTION_REFUSED = { name: 'RpcTransportError', reason: 'prototype_polluted' }
+
 const NOT_OWN =
   /is not an own enumerable property \(it is inherited, a class getter or on a polluted Object\.prototype\): pass a plain object$/
 const notOwn = (name: string): RegExp => new RegExp(`^${name.replace(/[.[\]]/g, '\\$&')} ${NOT_OWN.source}`)
@@ -382,6 +404,19 @@ describe('nested objects and arrays', () => {
     expect(() => requests.walletCreateFundedPsbt({ outputs: [output] })).toThrow(notOwn('args.outputs[0].amountBits'))
   })
 
+  it('refuse a key a Proxy answers only from its get trap, listing no key and not saying it has one', () => {
+    const answering = (key: string, value: unknown): object =>
+      new Proxy({}, { get: (target, name) => (name === key ? value : Reflect.get(target, name)) })
+    expect(() =>
+      requests.walletCreateFundedPsbt({ outputs: [OUTPUT], options: answering('changeAddress', 'rq1attacker') })
+    ).toThrow(notOwn('args.options.changeAddress'))
+    expect(() => requests.getTxOut(TX_TXID, 0, answering('includeMempool', false))).toThrow(
+      notOwn('options.includeMempool')
+    )
+    // A trap that answers nothing for the keys read is an empty object.
+    expect(requests.listUnspent(answering('other', 1)).params).toEqual([])
+  })
+
   it('keep the unknown-key messages for inherited keys, and skip one only on Object.prototype', () => {
     const inherited = Object.create({ minconf: 1 }) as never
     expect(() => requests.listUnspent(inherited)).toThrow(/^options\.minconf is not a known key: use options\.minConf$/)
@@ -449,11 +484,13 @@ describe('call options under a polluted Object.prototype', () => {
 
   it.each(cases)('%s with %s polluted: refused in {}, never read when left out', async (_name, key, call) => {
     const sample = SAMPLES[key]
+    // Enumerable, as a pollution sets it, the call is refused before its call options are read.
+    await expect(polluted({ [key]: sample }, () => call(rpc)({}))).rejects.toMatchObject(POLLUTION_REFUSED)
     // The call options are read before the first await, so the pollution can end before anything is sent.
-    const refused = polluted({ [key]: sample }, () => call(rpc)({}))
+    const refused = pollutedQuietly({ [key]: sample }, () => call(rpc)({}))
     await expect(refused).rejects.toThrow(notOwn(`callOptions.${key}`))
     expect(node.requests).toHaveLength(0)
-    const left = polluted({ [key]: sample }, () => call(rpc)(undefined))
+    const left = pollutedQuietly({ [key]: sample }, () => call(rpc)(undefined))
     const settled = await left.then(
       value => ({ value }),
       (error: unknown) => ({ error })
@@ -461,6 +498,15 @@ describe('call options under a polluted Object.prototype', () => {
     // Sent, and answered by the node: neither aborted by the polluted signal nor timed out after 1 ms.
     expect(node.requests.length).toBeGreaterThan(0)
     if ('error' in settled) expect(settled.error).toBeInstanceOf(RpcError)
+  })
+
+  it('refuse a call option a Proxy answers only from its get trap', async () => {
+    const answering = new Proxy({}, { get: (target, name) => (name === 'timeoutMs' ? 1 : Reflect.get(target, name)) })
+    await expect(rpc.getBlockCount(answering as never)).rejects.toThrow(notOwn('callOptions.timeoutMs'))
+    await expect(rpc.batch([requests.getBlockCount()], answering as never)).rejects.toThrow(
+      notOwn('callOptions.timeoutMs')
+    )
+    expect(node.requests).toHaveLength(0)
   })
 })
 
@@ -875,6 +921,8 @@ const CLIENT_SAMPLES: Readonly<Record<string, unknown>> = {
   url: 'http://127.0.0.1:2/',
   wallet: 'other',
   auth: { username: 'attacker', password: 'attacker' },
+  tls: {},
+  connect: () => undefined,
   expectedChain: 'regtest',
   expectedGenesisHash: HASH_B,
   expectedSignetChallenge: '51',
@@ -960,8 +1008,9 @@ describe('client options under a polluted Object.prototype', () => {
 
 describe('client options are strict', () => {
   const OPTIONS =
-    'url, wallet, auth, expectedChain, expectedGenesisHash, expectedSignetChallenge, capabilities, timeoutMs, ' +
-    'maxResponseBytes, readRetries, retryDelayMs, chainCheckMaxAgeMs, maxConcurrentRequests, directNode'
+    'url, wallet, auth, tls, connect, expectedChain, expectedGenesisHash, expectedSignetChallenge, capabilities, ' +
+    'timeoutMs, maxResponseBytes, readRetries, retryDelayMs, chainCheckMaxAgeMs, maxConcurrentRequests, directNode'
+  const TLS = 'ca, cert, key, passphrase, servername, pinSha256'
 
   it.each([
     // Without a wallet path, wallet-write calls would go to whichever wallet the node has loaded.
@@ -969,8 +1018,23 @@ describe('client options are strict', () => {
     [{ capabilites: ['broadcast'] }, `options.capabilites is not a known key; the known keys are ${OPTIONS}`],
     [{ timeout: 5_000 }, 'options.timeout is not a known key: use options.timeoutMs, in milliseconds'],
     [{ max_response_bytes: 1024 }, 'options.max_response_bytes is not a known key: use options.maxResponseBytes'],
+    // Left out, the client would trust the system's CAs, or connect directly.
+    [{ TLS: {} }, 'options.TLS is not a known key: use options.tls'],
+    [{ Connect: 'tunnel' }, 'options.Connect is not a known key: use options.connect'],
+    [{ proxy: 'http://127.0.0.1:3128' }, `options.proxy is not a known key; the known keys are ${OPTIONS}`],
   ])('refuse the option %j, naming it', (extra, message) => {
     expect(() => new QbitRpcClient({ ...CLIENT_BASE, ...extra } as never)).toThrow(new TypeError(message))
+  })
+
+  it.each([
+    [{ server_name: 'node.test' }, 'tls.server_name is not a known key: use tls.servername'],
+    [{ pin_sha256: 'A'.repeat(43) + '=' }, 'tls.pin_sha256 is not a known key: use tls.pinSha256'],
+    [{ CA: 'x' }, 'tls.CA is not a known key: use tls.ca'],
+    [{ ciphers: 'x' }, `tls.ciphers is not a known key; the known keys are ${TLS}`],
+  ])('refuse the tls key %j, naming it', (tls, message) => {
+    expect(() => new QbitRpcClient({ ...CLIENT_BASE, url: 'https://node.test/', tls } as never)).toThrow(
+      new TypeError(message)
+    )
   })
 
   it.each([
@@ -1011,13 +1075,17 @@ describe('batch entries under a polluted Object.prototype', () => {
   it('refuse params, a method or a parse an entry has only through a prototype, sending nothing', async () => {
     // The entries are read before the first await, so the pollution can end before anything is sent.
     const noParams = { method: 'getblockcount', parse } as unknown as RpcRequest<unknown>
-    await expect(polluted({ params: ['polluted'] }, () => rpc.batch([noParams]))).rejects.toThrow(
+    // Enumerable, as a pollution sets it, the batch is refused before its entries are read.
+    await expect(polluted({ params: ['polluted'] }, () => rpc.batch([noParams]))).rejects.toMatchObject(
+      POLLUTION_REFUSED
+    )
+    await expect(pollutedQuietly({ params: ['polluted'] }, () => rpc.batch([noParams]))).rejects.toThrow(
       notOwn('entries[0].params')
     )
     const noParse = { method: 'getblockcount', params: [] } as unknown as RpcRequest<unknown>
-    await expect(polluted({ parse }, () => rpc.batch([noParse]))).rejects.toThrow(notOwn('entries[0].parse'))
+    await expect(pollutedQuietly({ parse }, () => rpc.batch([noParse]))).rejects.toThrow(notOwn('entries[0].parse'))
     const noMethod = { params: [], parse } as unknown as RpcRequest<unknown>
-    await expect(polluted({ method: 'getblockcount' }, () => rpc.batch([noMethod]))).rejects.toThrow(
+    await expect(pollutedQuietly({ method: 'getblockcount' }, () => rpc.batch([noMethod]))).rejects.toThrow(
       notOwn('entries[0].method')
     )
     class Request {
@@ -1030,7 +1098,7 @@ describe('batch entries under a polluted Object.prototype', () => {
     await expect(rpc.batch([new Request()])).rejects.toThrow(notOwn('entries[0].parse'))
     expect(node.requests).toHaveLength(0)
     // Its own fields are sent as they are, and one it leaves out is left out.
-    const [count] = await polluted({ params: ['polluted'] }, () => rpc.batch([requests.getBlockCount()]))
+    const [count] = await pollutedQuietly({ params: ['polluted'] }, () => rpc.batch([requests.getBlockCount()]))
     expect(count).toEqual({ ok: true, value: 7 })
     await rpc.batch([noParams])
     expect(node.calls().map(call => Object.keys(call))).toEqual([

@@ -540,15 +540,213 @@ describe('client methods', () => {
     const copied = { includeMempool: new Options().includeMempool }
     expect(await rpc.getTxOut(HASH_A, 0, copied, { timeoutMs: new CallOptions().timeoutMs })).toBeNull()
     expect(node.calls().at(-1)!.params).toEqual([HASH_A, 0, false])
-    // A polluted Object.prototype does not make every call throw.
+    const sentBefore = node.requests.length
+    // A key on a polluted Object.prototype is no unknown option, for a builder
+    // or the call options; the client then refuses the call before any
+    // connection, as Node would read it too.
     const proto = Object.prototype as Record<string, unknown>
     proto['polluted'] = 1
     try {
-      expect(await rpc.getBlockCount()).toBe(7)
-      expect(await rpc.getTxOut(HASH_A, 0, { includeMempool: false }, { timeoutMs: 1000 })).toBeNull()
-      expect(await rpc.batch([requests.getBlockCount()])).toEqual([{ ok: true, value: 7 }])
+      expect(requests.getTxOut(HASH_A, 0, { includeMempool: false }).params).toEqual([HASH_A, 0, false])
+      for (const call of [
+        () => rpc.getBlockCount(),
+        () => rpc.getTxOut(HASH_A, 0, { includeMempool: false }, { timeoutMs: 1000 }),
+        () => rpc.batch([requests.getBlockCount()]),
+      ]) {
+        await expect(call()).rejects.toMatchObject({ name: 'RpcTransportError', reason: 'prototype_polluted' })
+      }
     } finally {
       delete proto['polluted']
     }
+    expect(node.requests).toHaveLength(sentBefore)
+    expect(await rpc.getBlockCount()).toBe(7)
+  })
+})
+
+describe('client options', () => {
+  const base = { url: 'http://127.0.0.1:1/', auth: { username: 'u', password: 'p' }, expectedChain: 'regtest' } as const
+
+  /** Runs `run` with `values` set on Object.prototype, enumerable as a pollution sets them, and removes them after. */
+  function polluted<T>(values: Record<string, unknown>, run: () => T): T {
+    const proto = Object.prototype as Record<string, unknown>
+    for (const [key, value] of Object.entries(values)) proto[key] = value
+    try {
+      return run()
+    } finally {
+      for (const key of Object.keys(values)) delete proto[key]
+    }
+  }
+
+  it('refuse a known option on a polluted Object.prototype, naming it, unless the caller sets it too', () => {
+    const known: Record<string, unknown> = {
+      wallet: 'w',
+      tls: {},
+      connect: () => {},
+      expectedGenesisHash: '00',
+      expectedSignetChallenge: '51',
+      capabilities: ['broadcast', 'wallet-write'],
+      timeoutMs: 1,
+      maxResponseBytes: 1,
+      readRetries: 10,
+      retryDelayMs: 1,
+      chainCheckMaxAgeMs: 1,
+      maxConcurrentRequests: 1,
+      directNode: true,
+    }
+    for (const [key, value] of Object.entries(known)) {
+      const create = (): QbitRpcClient => polluted({ [key]: value }, () => new QbitRpcClient({ ...base }))
+      expect(create).toThrow(TypeError)
+      expect(create).toThrow(new RegExp(`^options\\.${key} is not an own enumerable property .*pass a plain object$`))
+    }
+    // An option the caller left out, and required.
+    const { auth: _auth, ...withoutAuth } = base
+    expect(() =>
+      polluted({ auth: { username: 'x', password: 'y' } }, () => new QbitRpcClient(withoutAuth as never))
+    ).toThrow(/^options\.auth is not an own enumerable property/)
+    // The caller's own value stands: the prototype's holds no sway over it.
+    const own = polluted(
+      { capabilities: ['broadcast'], url: 'http://127.0.0.2:1/', expectedChain: 'main' },
+      () => new QbitRpcClient({ ...base, capabilities: [] })
+    )
+    expect(own.toJSON()).toMatchObject({ url: base.url, capabilities: [], expectedChain: 'regtest' })
+    // Any other key there is not an option at all.
+    expect(() => polluted({ polluted: 1 }, () => new QbitRpcClient({ ...base }))).not.toThrow()
+    // A hole in capabilities is refused, not read as the prototype's entry at its index.
+    expect(() =>
+      polluted({ 0: 'broadcast' }, () => new QbitRpcClient({ ...base, capabilities: new Array(1) as never }))
+    ).toThrow(/^capabilities\[0\] is a hole, not an own element: pass an array without holes$/)
+  })
+
+  it('refuse a hole in tls.pinSha256 or tls.ca rather than read Array.prototype', () => {
+    const https = { ...base, url: 'https://node.test/' }
+    const arrayProto = Array.prototype as unknown as Record<string, unknown>
+    // A pin the caller never gave, which a read through the hole would accept.
+    arrayProto['0'] = 'A'.repeat(43) + '='
+    try {
+      expect(() => new QbitRpcClient({ ...https, tls: { pinSha256: new Array(1) as never } })).toThrow(
+        /^tls\.pinSha256\[0\] is a hole, not an own element: pass an array without holes$/
+      )
+      expect(() => new QbitRpcClient({ ...https, tls: { ca: new Array(1) as never } })).toThrow(
+        /^tls\.ca\[0\] is a hole, not an own element: pass an array without holes$/
+      )
+    } finally {
+      delete arrayProto['0']
+    }
+  })
+
+  it('refuse a known auth or tls key on a polluted Object.prototype', () => {
+    expect(() => polluted({ cookieFile: '/elsewhere/.cookie' }, () => new QbitRpcClient({ ...base }))).toThrow(
+      /^auth\.cookieFile is not an own enumerable property/
+    )
+    expect(() =>
+      polluted(
+        { username: 'x', password: 'y' },
+        () => new QbitRpcClient({ ...base, auth: { cookieFile: '/c/.cookie' } })
+      )
+    ).toThrow(/^auth\.username is not an own enumerable property/)
+    const https = { ...base, url: 'https://node.test/' }
+    for (const key of ['ca', 'cert', 'key', 'passphrase', 'servername', 'pinSha256']) {
+      expect(() => polluted({ [key]: 'x' }, () => new QbitRpcClient({ ...https, tls: {} }))).toThrow(
+        new RegExp(`^tls\\.${key} is not an own enumerable property`)
+      )
+    }
+    expect(() => polluted({ rejectUnauthorized: false }, () => new QbitRpcClient({ ...https, tls: {} }))).toThrow(
+      /tls.rejectUnauthorized is not an option/
+    )
+    // With no tls option, its keys are not read at all.
+    expect(() => polluted({ ca: 'x' }, () => new QbitRpcClient({ ...https }))).not.toThrow()
+  })
+
+  /** `key`, holding `value`, in each way that is not an own enumerable property. */
+  function notOwn(key: string, value: unknown): [string, object][] {
+    class Getter {
+      get [key](): unknown {
+        return value
+      }
+    }
+    return [
+      ['inherited', Object.create({ [key]: value }) as object],
+      ['a class getter', new Getter()],
+      ['not enumerable', Object.defineProperty({}, key, { enumerable: false, value })],
+      [
+        'inherited from an object without a prototype',
+        Object.create(Object.assign(Object.create(null) as object, { [key]: value })) as object,
+      ],
+      [
+        'described as its own, but left out of the keys a Proxy lists',
+        new Proxy({ [key]: value }, { ownKeys: target => Reflect.ownKeys(target).filter(name => name !== key) }),
+      ],
+      [
+        'answered only by a Proxy’s get trap',
+        new Proxy({} as Record<string, unknown>, {
+          get: (target, name) => (name === key ? value : target[name as string]),
+        }),
+      ],
+      [
+        'hidden by every trap of a Proxy but get',
+        new Proxy({ [key]: value } as Record<string, unknown>, {
+          has: (target, name) => name !== key && name in target,
+          ownKeys: target => Reflect.ownKeys(target).filter(name => name !== key),
+          getOwnPropertyDescriptor: (target, name) =>
+            name === key ? undefined : Reflect.getOwnPropertyDescriptor(target, name),
+        }),
+      ],
+    ]
+  }
+
+  it.each([
+    ['capabilities', ['broadcast']],
+    ['tls', {}],
+    ['connect', () => {}],
+    ['timeoutMs', 1],
+  ])('refuse %s given any way but as an own enumerable property', (key, value) => {
+    const url = key === 'tls' || key === 'connect' ? 'https://node.test/' : base.url
+    for (const [, holder] of notOwn(key, value)) {
+      const options = Object.assign(holder, { ...base, url })
+      expect(() => new QbitRpcClient(options)).toThrow(TypeError)
+      expect(() => new QbitRpcClient(options)).toThrow(
+        new RegExp(`^options\\.${key} is not an own enumerable property`)
+      )
+    }
+  })
+
+  it.each([
+    ['pinSha256', 'A'.repeat(43) + '='],
+    ['ca', 'x'],
+    ['servername', 'other.test'],
+    ['cert', 'x'],
+    ['key', 'x'],
+    ['passphrase', 'x'],
+  ])('refuse tls.%s given any way but as an own enumerable property', (key, value) => {
+    for (const [, tls] of notOwn(key, value)) {
+      expect(() => new QbitRpcClient({ ...base, url: 'https://node.test/', tls: tls as never })).toThrow(
+        new RegExp(`^tls\\.${key} is not an own enumerable property`)
+      )
+    }
+  })
+
+  it.each([
+    ['username', 'u'],
+    ['password', 'p'],
+    ['cookieFile', '/c/.cookie'],
+  ])('refuse auth.%s given any way but as an own enumerable property', (key, value) => {
+    for (const [, auth] of notOwn(key, value)) {
+      expect(() => new QbitRpcClient({ ...base, auth: auth as never })).toThrow(
+        new RegExp(`^auth\\.${key} is not an own enumerable property`)
+      )
+    }
+  })
+
+  it('are the own enumerable properties, read once', () => {
+    let reads = 0
+    const counted = Object.defineProperty({ ...base }, 'capabilities', {
+      enumerable: true,
+      get: () => {
+        reads += 1
+        return reads === 1 ? ['broadcast'] : ['unknown']
+      },
+    })
+    expect(new QbitRpcClient(counted).toJSON()).toMatchObject({ capabilities: ['broadcast'] })
+    expect(reads).toBe(1)
   })
 })

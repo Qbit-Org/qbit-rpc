@@ -68,22 +68,31 @@ describe('cleartext refusal', () => {
   it.each([
     'http://10.0.0.5:8352/',
     'http://node.example:48352/',
-    'http://[::ffff:127.0.0.1]:8352/',
     'http://127.0.0.1.example:8352/',
+    'http://localhost.:8352/',
+    'http://localhost.example:8352/',
+    'http://0.0.0.0:8352/',
+    'http://[::ffff:10.0.0.5]:8352/',
+    'http://[::127.0.0.1]:8352/',
   ])('refuses plain http to non-loopback %s at construction', url => {
     expect(() => new QbitRpcClient({ url, auth: { username: 'u', password: 'p' }, expectedChain: 'main' })).toThrow(
       /https unless the host is loopback/
     )
   })
 
-  it.each(['http://127.0.0.1:8352/', 'http://127.8.9.10:8352/', 'http://localhost:8352/', 'http://[::1]:8352/'])(
-    'accepts plain http to loopback %s',
-    url => {
-      expect(
-        () => new QbitRpcClient({ url, auth: { username: 'u', password: 'p' }, expectedChain: 'main' })
-      ).not.toThrow()
-    }
-  )
+  // `localhost` passes by name here; each connection then checks what it resolves to (loopback.test.ts).
+  it.each([
+    'http://127.0.0.1:8352/',
+    'http://127.8.9.10:8352/',
+    'http://localhost:8352/',
+    'http://LOCALHOST:8352/',
+    'http://[::1]:8352/',
+    'http://[::ffff:127.0.0.1]:8352/',
+  ])('accepts plain http to loopback %s', url => {
+    expect(
+      () => new QbitRpcClient({ url, auth: { username: 'u', password: 'p' }, expectedChain: 'main' })
+    ).not.toThrow()
+  })
 
   it('accepts https anywhere, but a cookie only for loopback', () => {
     expect(

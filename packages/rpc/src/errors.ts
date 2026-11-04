@@ -223,35 +223,57 @@ brand(RpcError, 'RpcError')
 
 /**
  * The request could not be completed: the connection failed (`network`), the
- * node or a proxy answered with an HTTP status that carries no JSON-RPC reply
+ * TLS handshake failed or was refused (`tls`), the URL's host name resolved to
+ * an address that is not loopback where only loopback may be reached
+ * (`not_loopback`), `Object.prototype` has enumerable properties, which
+ * something in the process put there (`prototype_polluted`), the node or a
+ * proxy answered with an HTTP status that carries no JSON-RPC reply
  * (`http_status`, see `status`), or the cookie file could not be read
- * (`credentials`).
+ * (`credentials`). `not_loopback` and `prototype_polluted` are never sent, nor
+ * is `tls` unless a TLS alert came after the request was written.
  */
 export class RpcTransportError extends QbitRpcError {
-  readonly reason: 'network' | 'http_status' | 'credentials'
+  readonly reason: 'network' | 'tls' | 'not_loopback' | 'prototype_polluted' | 'http_status' | 'credentials'
   /** The HTTP status, for `http_status`. */
   readonly status?: number
   /**
-   * A system error code such as `ECONNREFUSED` or `ENOENT`, when there is one.
-   * For `credentials` it can also be this package's `EMALFORMED` (the file is
-   * not `user:password`), `ETOOBIG` (over 1 KiB) or `EREAD` (the read failed
-   * with no code of its own). It is never a node's code: see `RpcError.rpcCode`.
+   * A system error code such as `ECONNREFUSED` or `ENOENT`, when there is one;
+   * for `tls`, Node's or OpenSSL's, such as `UNABLE_TO_VERIFY_LEAF_SIGNATURE`,
+   * `ERR_TLS_CERT_ALTNAME_INVALID` or `ERR_SSL_TLSV13_ALERT_CERTIFICATE_REQUIRED`.
+   * It can also be this package's: for `tls`, `EPINMISMATCH` (the node's
+   * certificate matches no `tls.pinSha256`) or `ESESSIONRESUMED` (a handshake
+   * resumed a TLS session, which the client never offers); for `credentials`, `EMALFORMED`
+   * (the file is not `user:password`), `ETOOBIG` (over 1 KiB) or `EREAD` (the
+   * read failed with no code of its own). It is never a node's code: see
+   * `RpcError.rpcCode`.
    */
   readonly code?: string
 
+  /**
+   * `details.pollutedKeys`, for `prototype_polluted`, is how many enumerable
+   * properties `Object.prototype` had: the message gives the number, never
+   * their names, which come from whatever polluted it.
+   */
   constructor(
     method: string,
-    reason: 'network' | 'http_status' | 'credentials',
-    details: { status?: number; code?: string } = {}
+    reason: 'network' | 'tls' | 'not_loopback' | 'prototype_polluted' | 'http_status' | 'credentials',
+    details: { status?: number; code?: string; pollutedKeys?: number } = {}
   ) {
     const status = ownValue(details, 'status')
     const code = ownValue(details, 'code')
+    const pollutedKeys = ownValue(details, 'pollutedKeys')
     const message =
       reason === 'http_status'
         ? `RPC ${method} failed: HTTP ${status}${status === 401 ? ' (credentials rejected)' : ''}`
         : reason === 'credentials'
           ? `RPC ${method} failed: the cookie file could not be read${code ? ` (${code})` : ''}`
-          : `RPC ${method} failed: connection error${code ? ` (${code})` : ''}`
+          : reason === 'tls'
+            ? `RPC ${method} failed: ${code === 'EPINMISMATCH' ? "the node's certificate matches no pinned key" : 'the TLS handshake failed'}${code ? ` (${code})` : ''}`
+            : reason === 'not_loopback'
+              ? `RPC ${method} not sent: the host name resolved to an address that is not loopback, and credentials in cleartext, or a cookie, go to loopback only`
+              : reason === 'prototype_polluted'
+                ? `RPC ${method} not sent: Object.prototype has ${pollutedKeys ?? 'some'} enumerable ${pollutedKeys === 1 ? 'property' : 'properties'}, which every object inherits and Node would read as connection options; find what polluted it and remove that`
+                : `RPC ${method} failed: connection error${code ? ` (${code})` : ''}`
     super(message, method)
     this.reason = reason
     if (status !== undefined) this.status = status

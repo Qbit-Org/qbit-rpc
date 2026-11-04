@@ -6,7 +6,13 @@ import {
   type Server,
   type ServerResponse,
 } from 'node:http'
+import {
+  createServer as createSecureServer,
+  type Server as SecureServer,
+  type ServerOptions as SecureServerOptions,
+} from 'node:https'
 import type { AddressInfo, Socket } from 'node:net'
+import type { SecureContextOptions, TLSSocket } from 'node:tls'
 
 export interface RecordedRequest {
   readonly url: string
@@ -16,6 +22,12 @@ export interface RecordedRequest {
   readonly remotePort: number | undefined
   /** How long the connection sat idle before this request; undefined for its first. */
   readonly idleMs: number | undefined
+  /** For a TLS node: the SNI name, the client certificate's common name, and whether the session was resumed. */
+  readonly tls?: {
+    readonly servername: string | undefined
+    readonly client: string | undefined
+    readonly resumed: boolean
+  }
 }
 
 export interface RpcCall {
@@ -38,19 +50,34 @@ export class FakeNode {
   readonly requests: RecordedRequest[] = []
   /** Requests the server saw closed by the client before it replied. */
   closedEarly = 0
+  /** Connections accepted, TLS or not. */
+  accepted = 0
+  /** For a TLS node: handshakes completed, and the codes of those that failed. */
+  handshakes = 0
+  readonly handshakeErrors: string[] = []
   handler: Handler = (_request, response) => {
     response.statusCode = 500
     response.end()
   }
   readonly #server: Server
+  readonly #secure: boolean
   readonly #sockets = new Set<Socket>()
+  readonly #tlsSockets = new Set<TLSSocket>()
   /** When each keep-alive connection went idle, and its idle-close timer. */
   readonly #idle = new Map<Socket, { readonly since: number; readonly timer: NodeJS.Timeout | undefined }>()
   #idleCloseMs: number | undefined
 
-  private constructor(server: Server) {
+  private constructor(server: Server, secure: boolean) {
     this.#server = server
+    this.#secure = secure
+    server.on('secureConnection', (socket: TLSSocket) => {
+      this.handshakes += 1
+      this.#tlsSockets.add(socket)
+      socket.on('close', () => this.#tlsSockets.delete(socket))
+    })
+    server.on('tlsClientError', (error: NodeJS.ErrnoException) => this.handshakeErrors.push(error.code ?? 'unknown'))
     server.on('connection', socket => {
+      this.accepted += 1
       this.#sockets.add(socket)
       socket.on('close', () => {
         this.#sockets.delete(socket)
@@ -67,12 +94,22 @@ export class FakeNode {
       const chunks: Buffer[] = []
       req.on('data', (chunk: Buffer) => chunks.push(chunk))
       req.on('end', () => {
+        const socket = req.socket as TLSSocket
         const recorded = {
           url: req.url ?? '',
           headers: req.headers,
           body: Buffer.concat(chunks).toString('utf8'),
           remotePort: req.socket.remotePort,
           idleMs,
+          ...(this.#secure
+            ? {
+                tls: {
+                  servername: typeof socket.servername === 'string' ? socket.servername : undefined,
+                  client: (socket.getPeerCertificate().subject as { CN?: string } | undefined)?.CN,
+                  resumed: socket.isSessionReused(),
+                },
+              }
+            : {}),
         }
         this.requests.push(recorded)
         res.on('close', () => {
@@ -83,11 +120,18 @@ export class FakeNode {
     })
   }
 
-  static async start(): Promise<FakeNode> {
-    const server = createServer()
+  /** With `tls`, an HTTPS server: a TLS terminator in front of the node. */
+  static async start(options: { readonly tls?: SecureServerOptions } = {}): Promise<FakeNode> {
+    const server = options.tls === undefined ? createServer() : createSecureServer(options.tls)
     // Keep Node's default: a 1 s Keep-Alive hint makes the client agent drop pooled sockets at once.
     await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
-    return new FakeNode(server)
+    return new FakeNode(server, options.tls !== undefined)
+  }
+
+  /** Serve another certificate (and key) from the next handshake on, as a terminator does when its key rotates. */
+  setSecureContext(options: SecureContextOptions): void {
+    const server = this.#server as unknown as SecureServer
+    server.setSecureContext(options)
   }
 
   get port(): number {
@@ -95,12 +139,17 @@ export class FakeNode {
   }
 
   get url(): string {
-    return `http://127.0.0.1:${this.port}/`
+    return `${this.#secure ? 'https' : 'http'}://127.0.0.1:${this.port}/`
   }
 
   /** Connections open now. */
   get connections(): number {
     return this.#sockets.size
+  }
+
+  /** Each connection open now, the TLS socket for a TLS node, to close it from the node's side. */
+  eachConnection(run: (socket: TLSSocket) => void): void {
+    for (const socket of this.#tlsSockets) run(socket)
   }
 
   /**

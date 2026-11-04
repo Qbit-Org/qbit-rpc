@@ -2,10 +2,12 @@
 // Object.prototype (a JSON merge of attacker input is the usual way) puts a key
 // on every object, and Array.prototype an element at every hole: neither may
 // supply a value to a request, a client setting or a credential. Every input
-// boundary reads through these: builder and call options, the client's options
-// and auth, batch entries and call() params. A reply's envelope and error are
+// boundary reads through these: builder and call options, the client's options,
+// auth and tls, batch entries and call() params. A reply's envelope and error are
 // read with ownValue too: parseJsonLossless makes objects without a prototype,
-// but the arrays and JsonNumbers it makes keep theirs.
+// but the arrays and JsonNumbers it makes keep theirs. The transport reads what
+// it takes from the objects Node builds (connection options, a certificate's
+// subject) with ownProperties.
 
 /** An omitted options object: an empty object without a prototype, so every key reads as undefined. */
 export const NO_OPTIONS: Readonly<Record<string, never>> = Object.freeze(Object.create(null) as Record<string, never>)
@@ -21,9 +23,10 @@ export function keysOf<T>(keys: { readonly [K in keyof Required<T>]: true }): re
  * prototype: a key left out reads as undefined whatever Object.prototype holds.
  * Other keys are not read. A key of `keys` that `value` holds any other way
  * (inherited, a class's getter, not enumerable, on a polluted Object.prototype,
- * or left out of a Proxy's own keys) is a `TypeError` naming it: read, its
- * value would not be the caller's own; ignored, the call would do less than the
- * caller asked for.
+ * left out of a Proxy's own keys, or answered only by its `get` trap) is a
+ * `TypeError` naming it: read, its value would not be the caller's own;
+ * ignored, the call would do less than the caller asked for, such as trusting
+ * the system's CAs where `tls.ca` was given.
  */
 export function plainOptions<K extends string>(
   value: object,
@@ -35,7 +38,8 @@ export function plainOptions<K extends string>(
     if ((keys as readonly string[]).includes(key)) own[key as K] = (value as Record<string, unknown>)[key]
   }
   for (const key of keys) {
-    if (key in value && !Object.hasOwn(own, key)) {
+    // A Proxy can answer for a key it neither lists nor says it has: only a `get` trap.
+    if ((key in value || (value as Record<string, unknown>)[key] !== undefined) && !Object.hasOwn(own, key)) {
       throw new TypeError(
         `${name}.${key} is not an own enumerable property (it is inherited, a class getter or on a polluted Object.prototype): pass a plain object`
       )
@@ -59,6 +63,19 @@ export function ownElements(value: readonly unknown[], name: string): unknown[] 
     elements.push(value[index])
   }
   return elements
+}
+
+/**
+ * `value`'s own enumerable properties, as `{ ...value }` copies them, in an
+ * object without a prototype: a key it leaves out reads as undefined. For an
+ * object Node builds, whose keys are Node's (connection options, a
+ * certificate's subject), where {@link plainOptions} would refuse what Node
+ * leaves out.
+ */
+export function ownProperties(value: object): Readonly<Record<string, unknown>> {
+  const own = Object.create(null) as Record<string, unknown>
+  for (const key of Object.keys(value)) own[key] = (value as Record<string, unknown>)[key]
+  return own
 }
 
 /** `value[key]` when it is `value`'s own property, else undefined: for an object whose inherited keys are simply absent. */
