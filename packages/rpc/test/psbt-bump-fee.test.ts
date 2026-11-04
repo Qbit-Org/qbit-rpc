@@ -232,6 +232,20 @@ describe('psbtBumpFee', () => {
     expect(node.requests).toHaveLength(0)
   })
 
+  it('reads each option once, so a getter cannot pass the exclusivity check and then send both', () => {
+    let reads = 0
+    const options = {
+      feeRateBitsPerKvB: 2500n,
+      // undefined on the first read, a value on any later one
+      get confTarget() {
+        return reads++ === 0 ? undefined : 6
+      },
+    }
+    const built = requests.psbtBumpFee(HASH_A, options as never)
+    expect(built.params[1]).toEqual({ fee_rate: expect.anything() })
+    expect(reads).toBe(1)
+  })
+
   it('passes node errors through as definite answers, sent once', async () => {
     const rpc = await confirmed({ readRetries: 3, retryDelayMs: 1 })
     for (const [code, message] of [

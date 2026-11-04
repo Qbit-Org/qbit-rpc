@@ -100,13 +100,14 @@ function checkHost(host: string, what: string, fail: Fail): void {
     )
   }
   if (!HOST_NAME.test(host)) fail(`has ${host} in its ${what}, not a host name, IPv4 address or bracketed IPv6 address`)
-  // A dotted quad with a part over 255 is a mistyped IPv4 address, not a host name. Parts
-  // with leading zeros are left alone: the resolver reads them as octal.
+  // A dotted quad with a decimal part over 255 is a mistyped IPv4 address, not a host
+  // name, whatever its other parts are. Parts with leading zeros are not judged: the
+  // resolver reads them as octal.
   const parts = host.split('.')
   if (
     parts.length === 4 &&
-    parts.every(part => CANONICAL_DECIMAL.test(part)) &&
-    parts.some(part => Number(part) > 255)
+    parts.every(part => DECIMAL.test(part)) &&
+    parts.some(part => CANONICAL_DECIMAL.test(part) && Number(part) > 255)
   ) {
     fail(`has ${host} in its ${what}, not an IPv4 address: each part must be 0 to 255`)
   }

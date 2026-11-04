@@ -413,6 +413,8 @@ describe('chain guard races', () => {
     expect(await lock).toMatchObject({ name: 'RpcChainGuardError', reason: 'mismatch', actual: 'main' })
     expect(methods()).not.toContain('walletlock')
     expect(rpc.chainStatus).toBe('mismatch')
+    // The call decided again after its wait, without another check.
+    expect(checks()).toBe(3)
   })
 
   it('makes confirmChain throw when another check finds a mismatch while it waits to check again', async () => {
@@ -426,6 +428,8 @@ describe('chain guard races', () => {
     chain = 'regtest'
     expect(await confirming).toMatchObject({ name: 'RpcChainGuardError', reason: 'mismatch', actual: 'main' })
     expect(rpc.chainStatus).toBe('mismatch')
+    // confirmChain decided again after its wait, without another check.
+    expect(checks()).toBe(2)
   })
 
   it('fails as stale at once, nothing sent, when the wait before checking again would pass the deadline', async () => {

@@ -137,7 +137,10 @@ nothing sent; try again later. So `confirmChain()` resolves only once a check
 made with the cookie it read confirmed the chain, and an unconfirmed client
 stays refused until then. An answer reporting another chain always stands:
 only a `confirmChain()` begun after it can clear it, and one that sees a
-mismatch recorded while it runs throws it.
+mismatch recorded while it runs throws it, unless a `confirmChain()` begun
+after that mismatch cleared it first. It returns its own last check's
+`getblockchaininfo` answer, which another check may have overtaken: call
+`getBlockchainInfo()` for current block data.
 
 The check and the call are separate requests. Behind a load balancer or DNS
 name that can switch nodes, they can reach different nodes of the same chain
@@ -252,7 +255,8 @@ broadcast, which is why the signed hex is stored first. After an unknown
 outcome from `sendRawTransaction`, look both up (`getTransaction`) instead of
 building the payment again: they spend the same inputs, so at most one
 confirms, and sending the stored hex again returns the same txid while it is in
-the mempool (-27 once it is mined). If the original confirms first, the bump
+the mempool (once it is mined, -27 while one of its outputs is unspent and -25
+once all are spent, so rely on `getTransaction`). If the original confirms first, the bump
 loses the race: `psbtBumpFee` rejects with -1 (an input "is already spent"), and
 a replacement signed earlier is refused with -25 (`testMempoolAccept` reports
 `missing-inputs`); the payment went through as it was. Once a replacement
@@ -316,15 +320,17 @@ negative `confirmations`, with no `receive` entry in `details`.
 To add up what the wallet sent, take `send` entries without `includeChange`
 (which adds each change output as a `send` and a `receive` entry), count each
 `txid` and `vout` once, and skip `abandoned` entries and those with negative
-`confirmations`. A transaction that `bumpfee` replaced has `replacedByTxid` on
-its entries, and its replacement is listed too, so skip those as well. A
-replacement sent with `sendRawTransaction`, as after `psbtBumpFee`, sets no
-`replacedByTxid`, but the original lists it in `walletConflicts`, which stays
-set even if the replacement leaves the mempool unmined. Count the original and
-the transactions in its `walletConflicts` as one payment: once one of them is
-mined the others have negative `confirmations`, and until then count only one
-of them. Don't rely on `mempoolConflicts` alone: it is empty again when
-neither is in the mempool.
+`confirmations`. A replaced payment appears as several transactions spending
+the same inputs: the original and each replacement. `bumpfee` links them with
+`replacedByTxid` and `replacesTxid`; a replacement sent with
+`sendRawTransaction`, as after `psbtBumpFee`, sets neither, and only
+`walletConflicts` links them, which stays set even if a replacement leaves the
+mempool unmined. Treat each such group as one payment. Once one of them is
+mined, the others have negative `confirmations`: count the mined one, even
+when it is the original and carries `replacedByTxid`. Until then the payment is
+pending: count it once, as pending, not from both entries, as a replacement can
+pay another amount or recipient. Don't rely on `mempoolConflicts` alone: it is
+empty again when none of them is in the mempool.
 
 `listTransactions` lists the newest `count` entries after skipping the newest
 `skip`, without change outputs. A `label` keeps incoming entries paying to that

@@ -376,7 +376,10 @@ export class QbitRpcClient {
    * goes stale they re-run this check before they are sent. On a mismatch they
    * stay refused and this throws `RpcChainGuardError`, as it does when any
    * check finds a mismatch while this call runs (its cookie read, checks,
-   * waits and retries included). An answer that a connection error or an
+   * waits and retries included), unless a `confirmChain()` begun after that
+   * mismatch cleared it first. It returns its own last check's
+   * `getblockchaininfo` answer, which another check may have overtaken: call
+   * `getBlockchainInfo()` for current block data. An answer that a connection error or an
    * HTTP 401 elsewhere may postdate is checked again, after `retryDelayMs`, up
    * to three checks per attempt; then this throws `reason: 'stale'` (retried
    * like a read under `readRetries`) and changes nothing.
