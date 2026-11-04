@@ -23,6 +23,7 @@ import {
   RpcUnknownOutcomeError,
 } from './errors'
 import { assertLosslessJsonSupport, JsonNumber, parseJsonLossless, stringifyRequest } from './json'
+import { Limiter } from './limiter'
 import {
   argOptions,
   requests,
@@ -76,7 +77,10 @@ export interface QbitRpcClientOptions {
   readonly expectedChain: QbitChain
   /** Capabilities beyond chain reads. Default none: read-only. */
   readonly capabilities?: readonly Capability[]
-  /** Deadline for one operation (a call or a batch, with every retry and the cookie read). Default 30,000 ms. */
+  /**
+   * Deadline for one operation (a call or a batch, with every retry, any wait
+   * for a request slot and the cookie read). Default 30,000 ms.
+   */
   readonly timeoutMs?: number
   /** Largest response body read before the call fails. Default 16 MiB. */
   readonly maxResponseBytes?: number
@@ -101,6 +105,25 @@ export interface QbitRpcClientOptions {
    * Default 10,000 ms.
    */
   readonly chainCheckMaxAgeMs?: number
+  /**
+   * Most requests this client has open at once, on pooled and fresh connections
+   * alike, from 1 to 1,024. A batch counts once, and a chain re-check (with any
+   * pause before checking again) runs in its call's slot. Further attempts wait
+   * in FIFO order under their operation's deadline; one that times out or is
+   * aborted while waiting was never sent, so it is a plain `RpcTimeoutError` or
+   * `RpcAbortedError`, never an unknown outcome. Keep the total over all clients of a node at or below its
+   * `-rpcworkqueue` (see the README's failure model). Default 8.
+   */
+  readonly maxConcurrentRequests?: number
+  /**
+   * Set when `url` reaches qbitd itself, with no proxy in between. qbitd's HTTP
+   * 503 `Work queue depth exceeded` is then a definite failure, since qbitd
+   * answers it without running the request: a plain `RpcTransportError`, even
+   * for a side-effecting call. It is opt-in because a proxy in between can answer
+   * 503 after forwarding the request, so by default every 5xx stays an unknown
+   * outcome for side-effecting calls. Default false.
+   */
+  readonly directNode?: boolean
 }
 
 /** Per-call options. */
@@ -145,6 +168,10 @@ const DEFAULT_TIMEOUT_MS = 30_000
 const DEFAULT_MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 const DEFAULT_RETRY_DELAY_MS = 250
 const DEFAULT_CHAIN_CHECK_MAX_AGE_MS = 10_000
+const DEFAULT_MAX_CONCURRENT_REQUESTS = 8
+const MAX_CONCURRENT_REQUESTS = 1024
+/** qbitd's whole reply body when its work queue is full (qbit Core v1.0.0). */
+const WORK_QUEUE_REJECTION = 'Work queue depth exceeded'
 const MAX_RETRY_DELAY_MS = 10_000
 const MAX_BATCH = 1000
 const RPC_IN_WARMUP = -28
@@ -193,7 +220,9 @@ export class QbitRpcClient {
   readonly #readRetries: number
   readonly #retryDelayMs: number
   readonly #chainCheckMaxAgeMs: number
-  readonly #transport = new HttpTransport()
+  readonly #directNode: boolean
+  readonly #limiter: Limiter
+  readonly #transport: HttpTransport
   #chain: ChainState = { status: 'unconfirmed' }
   /**
    * Counts signs that the node may have changed (a connection error, an HTTP
@@ -242,6 +271,24 @@ export class QbitRpcClient {
       86_400_000,
       DEFAULT_CHAIN_CHECK_MAX_AGE_MS
     )
+    const maxConcurrentRequests = checkInteger(
+      options.maxConcurrentRequests,
+      'maxConcurrentRequests',
+      1,
+      MAX_CONCURRENT_REQUESTS,
+      DEFAULT_MAX_CONCURRENT_REQUESTS
+    )
+    if (options.directNode !== undefined && typeof options.directNode !== 'boolean') {
+      throw new TypeError('directNode must be a boolean')
+    }
+    this.#directNode = options.directNode ?? false
+    this.#limiter = new Limiter(maxConcurrentRequests)
+    // The pool follows the limit, so requests queue in the limiter rather than
+    // in the agent, and a limit above 8 applies to reads too. The spare socket
+    // covers one the agent still counts after destroying it (a timeout, an
+    // abort, a stale reset) until it has closed, so the slot holder after it
+    // does not wait in the agent. Open requests stay within the limit.
+    this.#transport = new HttpTransport(maxConcurrentRequests + 1)
   }
 
   /** The chain guard's state; see {@link ChainStatus}. */
@@ -740,40 +787,66 @@ export class QbitRpcClient {
     const timer = setTimeout(() => controller.abort(TIMEOUT), timeoutMs)
     const onAbort = (): void => controller.abort(callerSignal!.reason)
     callerSignal?.addEventListener('abort', onAbort, { once: true })
+    const context = { signal: controller.signal, deadline, timeoutMs, maxResponseBytes: this.#maxResponseBytes }
     try {
       let tries = 0
       let staleSocketTried = false
       for (;;) {
         try {
-          return await attempt({
-            signal: controller.signal,
-            deadline,
-            timeoutMs,
-            maxResponseBytes: this.#maxResponseBytes,
+          return await this.#inSlot(label, context, async slotted => {
+            try {
+              return await attempt(slotted)
+            } catch (error) {
+              // The whole attempt runs again at once, in the same slot: a new
+              // cookie read, and a guarded call re-checks the chain, which the
+              // reset has made stale.
+              const stale = error instanceof Failure && error.staleSocket && (!sideEffects || !error.unknown)
+              if (!stale || staleSocketTried) throw error
+              staleSocketTried = true
+              if (slotted.signal.aborted) throw new Failure(stopError(label, slotted), false, false)
+              return await attempt(slotted)
+            }
           })
         } catch (error) {
           if (!(error instanceof Failure)) throw error
-          // The whole attempt runs again: a new cookie read, and a guarded call
-          // re-checks the chain, which the reset has made stale.
-          if (error.staleSocket && (!sideEffects || !error.unknown) && !staleSocketTried) {
-            staleSocketTried = true
-            continue
-          }
           const delay = Math.min(this.#retryDelayMs * 2 ** tries, MAX_RETRY_DELAY_MS)
           if (!error.retryable || tries >= retries || performance.now() + delay >= deadline) throw error.error
           tries += 1
           try {
             await sleep(delay, controller.signal)
           } catch {
-            throw controller.signal.reason === TIMEOUT
-              ? new RpcTimeoutError(label, timeoutMs)
-              : new RpcAbortedError(label, controller.signal.reason)
+            throw stopError(label, context)
           }
         }
       }
     } finally {
       clearTimeout(timer)
       callerSignal?.removeEventListener('abort', onAbort)
+    }
+  }
+
+  /**
+   * Run one attempt in a request slot, taken before anything else the attempt
+   * does (the cookie read, the guard's decision, a chain re-check and the pause
+   * before checking again) and released however it ends. A stale socket's extra
+   * attempt runs in the same slot; a retry's backoff holds none. A deadline or
+   * abort before the attempt starts is a definite failure: nothing was sent.
+   */
+  async #inSlot<T>(
+    label: string,
+    context: AttemptContext,
+    attempt: (context: AttemptContext) => Promise<T>
+  ): Promise<T> {
+    try {
+      await this.#limiter.acquire(context.signal)
+    } catch {
+      throw new Failure(stopError(label, context), false, false)
+    }
+    try {
+      if (context.signal.aborted) throw new Failure(stopError(label, context), false, false)
+      return await attempt(context)
+    } finally {
+      this.#limiter.release()
     }
   }
 
@@ -815,6 +888,11 @@ export class QbitRpcClient {
     const legacy = reply.status >= 400 && id !== undefined ? legacyError(method, reply.body, id) : undefined
     if (legacy !== undefined) throw new Failure(legacy, false, false)
     const transportError = new RpcTransportError(method, 'http_status', { status: reply.status })
+    // With the endpoint declared to be qbitd itself, this exact reply is its
+    // refusal to queue the request, which it sends without running anything.
+    if (this.#directNode && reply.status === 503 && reply.body === WORK_QUEUE_REJECTION) {
+      throw new Failure(transportError, false, true)
+    }
     if (reply.status >= 500) throw new Failure(transportError, true, true)
     if (reply.status >= 300) {
       // Rejected before execution: authentication, rpcallowip, unknown path.
@@ -950,17 +1028,19 @@ interface AttemptContext {
   readonly maxResponseBytes: number
 }
 
+/** The error for an attempt whose signal fired: the deadline or the caller's abort. */
+function stopError(method: string, attempt: AttemptContext): QbitRpcError {
+  const reason = attempt.signal.reason
+  return reason === TIMEOUT ? new RpcTimeoutError(method, attempt.timeoutMs) : new RpcAbortedError(method, reason)
+}
+
 /** Turn whatever an attempt threw into a Failure with its outcome and retry classification. */
 function asFailure(method: string, error: unknown, attempt: AttemptContext): Failure {
   if (error instanceof Failure) return error
   if (error instanceof ExchangeFailure) {
     switch (error.kind) {
-      case 'aborted': {
-        const reason = attempt.signal.reason
-        const abort =
-          reason === TIMEOUT ? new RpcTimeoutError(method, attempt.timeoutMs) : new RpcAbortedError(method, reason)
-        return new Failure(abort, error.sent, false)
-      }
+      case 'aborted':
+        return new Failure(stopError(method, attempt), error.sent, false)
       case 'too_large':
         return new Failure(new RpcResponseTooLargeError(method, attempt.maxResponseBytes), true, false)
       case 'bad_body':

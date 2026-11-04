@@ -115,3 +115,12 @@ version. Nothing has been published yet: both are `0.0.0` and private.
   same attempt. The client closes pooled connections idle for 15 s, before
   qbitd's 30 s default. Side-effecting requests still use one fresh connection
   each and are never sent twice.
+
+### Work queue rejections
+
+- `maxConcurrentRequests` (default 8) limits a client's open requests, fresh
+  connections included, so a burst of side-effecting calls no longer overflows
+  qbitd's work queue. Further attempts wait in FIFO order under their deadline,
+  and one that gives up there was never sent. With the new opt-in `directNode`,
+  qbitd's 503 `Work queue depth exceeded` is a plain `RpcTransportError` rather
+  than an unknown outcome.

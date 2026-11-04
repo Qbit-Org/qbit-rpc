@@ -67,11 +67,14 @@ export class HttpTransport {
   readonly #httpAgent: http.Agent
   readonly #httpsAgent: https.Agent
 
-  /** `idleSocketTimeoutMs` closes pooled sockets idle that long; tests pass a short one. */
-  constructor(idleSocketTimeoutMs = IDLE_SOCKET_TIMEOUT_MS) {
+  /**
+   * `maxSockets` caps each pool (the client passes its `maxConcurrentRequests` plus one spare);
+   * `idleSocketTimeoutMs` closes pooled sockets idle that long, and tests pass a short one.
+   */
+  constructor(maxSockets: number, idleSocketTimeoutMs = IDLE_SOCKET_TIMEOUT_MS) {
     // Node's agent destroys a socket on this timeout only while it sits in the
     // pool unused, so a slow reply is never cut (test/keep-alive.test.ts).
-    const pool = { keepAlive: true, maxSockets: 8, timeout: idleSocketTimeoutMs }
+    const pool = { keepAlive: true, maxSockets, timeout: idleSocketTimeoutMs }
     this.#httpAgent = new http.Agent(pool)
     this.#httpsAgent = new https.Agent(pool)
   }

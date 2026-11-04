@@ -445,7 +445,7 @@ describe('HttpTransport', () => {
   })
 
   it('flags a stale socket without sending again, and leaves no listener behind on any path', async () => {
-    const transport = new HttpTransport()
+    const transport = new HttpTransport(8)
     const warnings: Error[] = []
     const onWarning = (warning: Error): void => void warnings.push(warning)
     process.on('warning', onWarning)
@@ -491,7 +491,7 @@ describe('HttpTransport', () => {
         return outgoing.at(-1)!
       }
       syncBuiltinESMExports()
-      const transport = new HttpTransport()
+      const transport = new HttpTransport(8)
       try {
         const url = new URL(`http://127.0.0.1:${(server.address() as AddressInfo).port}/`)
         const send = (body: string): Promise<unknown> => transport.send({ ...exchange(), url, body })
@@ -514,7 +514,7 @@ describe('HttpTransport', () => {
 
   it('closes a pooled socket left idle for the idle timeout, and not before', async () => {
     node.closeIdleAfter(60_000) // the node would keep it open
-    const transport = new HttpTransport(150)
+    const transport = new HttpTransport(8, 150)
     try {
       await transport.send(exchange())
       const freed = performance.now()
@@ -530,7 +530,7 @@ describe('HttpTransport', () => {
 
   it('does not cut a request that runs longer than the idle timeout', async () => {
     node.closeIdleAfter(60_000)
-    const transport = new HttpTransport(300)
+    const transport = new HttpTransport(8, 300)
     try {
       const answer = node.handler
       node.handler = (request, response) => void setTimeout(() => answer(request, response), 700)
