@@ -26,7 +26,12 @@ const zmqUrl = env['QBIT_REGTEST_ZMQ_URL'] ?? ''
 const datadir = env['QBIT_REGTEST_DATADIR'] ?? ''
 const [qbitd = '', ...qbitdArgs] = JSON.parse(env['QBIT_REGTEST_QBITD'] ?? '[]') as string[]
 const [cliPath = '', ...cliArgs] = (env['QBIT_REGTEST_CLI'] ?? '').split(' ')
-const cli = (...args: string[]): string => execFileSync(cliPath, [...cliArgs, ...args], { encoding: 'utf8' }).trim()
+// Synchronous calls block the event loop, so vitest's timeout cannot stop one: each has its own.
+const CHILD_TIMEOUT_MS = 60_000
+// qbit-cli's own wait for the RPC server, in whole seconds, ends before that kill.
+const RPC_WAIT_SECONDS = 45
+const cli = (...args: string[]): string =>
+  execFileSync(cliPath, [...cliArgs, ...args], { encoding: 'utf8', timeout: CHILD_TIMEOUT_MS }).trim()
 const mine = (address: string): string => (JSON.parse(cli('generatetoaddress', '1', address)) as [string])[0]
 
 type Message<T extends ZmqTopic> = Extract<ZmqMessage, { topic: T }>
@@ -246,6 +251,9 @@ describe.runIf(enabled)('qbit Core regtest ZMQ', () => {
     }
   })
 
+  // The timeout is above the sum of the waits' and the start's deadlines (20 +
+  // 20 + 60 + 60 + 45 + 30 s), so a step that runs out normally reports itself.
+  // A wait that is stuck in a blocked child call can still overrun it.
   it('reports a restart of qbitd: a reconnect, unknown health while down, then one gap per topic', async () => {
     const { subscriber, events, messages, close } = subscribe({ topics: ZMQ_TOPICS })
     let restarted = false
@@ -276,9 +284,10 @@ describe.runIf(enabled)('qbit Core regtest ZMQ', () => {
       expect(subscriber.health().status).toBe('unknown')
 
       // The same command, ports and data directory.
-      execFileSync(qbitd, qbitdArgs, { stdio: 'ignore' })
+      // Set first: a start that times out may still leave the daemon running.
       restarted = true
-      cli('-rpcwait', 'getblockchaininfo')
+      execFileSync(qbitd, qbitdArgs, { stdio: 'ignore', timeout: CHILD_TIMEOUT_MS })
+      cli('-rpcwait', `-rpcwaittimeout=${RPC_WAIT_SECONDS}`, 'getblockchaininfo')
       expect(subscriber.health().status).toBe('unknown')
       await until(
         'a message on every topic after the restart',
@@ -301,5 +310,5 @@ describe.runIf(enabled)('qbit Core regtest ZMQ', () => {
         }
       }
     }
-  }, 120_000)
+  }, 300_000)
 })
