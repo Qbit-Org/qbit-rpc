@@ -93,6 +93,13 @@ version. Nothing has been published yet: both are `0.0.0` and private.
   manual runs. The README says what CI tests and what `engines` accepts
   untested: Node.js 27 and later, and the other platforms `zeromq` ships a
   prebuilt addon for.
+- CI runs the regtest smoke test on every pull request and push to `main`
+  (job `regtest smoke`), against qbit Core v1.0.0 downloaded only after
+  `SHA256SUMS` verifies against 3 of the 5 `mainnet` release keys committed in
+  `scripts/qbit-release-keys/` and the tarball against `SHA256SUMS`, cached by
+  its SHA-256. The ZMQ smoke test now covers all five topics, both `sequence`
+  body lengths, an RBF replacement's `mempool_removed`, a qbitd restart and
+  `maxMessageSize`.
 - `@qbit-oss/zmq`: health is `unknown` as soon as the connection drops, and the
   socket is replaced; `staleAfterMs` defaults to 10 minutes; the first message
   on each topic after a replacement is a gap; `maxMessageSize` defaults to
