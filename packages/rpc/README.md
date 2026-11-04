@@ -25,11 +25,13 @@ const info = await rpc.getBlockchainInfo()
 | `auth` | required | `{ username, password }` (HTTP Basic), or `{ cookieFile }` for a loopback endpoint only. The cookie is read again for every request, so `qbitd` can restart and rotate it. |
 | `expectedChain` | required | `main`, `test`, `testnet4`, `signet` or `regtest`. |
 | `capabilities` | `[]` | Any of `wallet-read`, `wallet-write`, `broadcast`. |
-| `timeoutMs` | 30,000 | One deadline per operation: cookie read, every attempt and every backoff. Override per call. |
+| `timeoutMs` | 30,000 | One deadline per operation: any wait for a request slot, cookie read, every attempt and every backoff. Override per call. |
 | `maxResponseBytes` | 16 MiB | Larger replies fail with `RpcResponseTooLargeError` (or an unknown outcome for side-effecting calls). |
 | `readRetries` | 0 | Opt-in retries for methods without side effects (see below). |
 | `retryDelayMs` | 250 | First backoff; doubles per retry, capped at 10 s, never past the deadline. |
 | `chainCheckMaxAgeMs` | 10,000 | How long a chain confirmation stays fresh before a wallet-write or broadcast call re-checks it. 0 re-checks before every such call. |
+| `maxConcurrentRequests` | 8 | Most requests this client has open at once, on pooled and fresh connections alike (1 to 1,024); it also sizes the keep-alive pool. Further attempts wait in FIFO order under their deadline. See [the work queue](#the-work-queue). |
+| `directNode` | `false` | Set when `url` reaches `qbitd` itself. `qbitd`'s HTTP 503 `Work queue depth exceeded` is then a definite failure, not an unknown outcome. Opt-in, because a proxy in between can answer 503 after forwarding the request. See [the work queue](#the-work-queue). |
 
 Every call also takes `{ signal?: AbortSignal, timeoutMs?: number }`.
 
@@ -284,19 +286,23 @@ bits; the 210,000,000 QBT cap is 2.1e16 bits, above 2^53). Fee rates are
 | Connection refused, DNS failure, TLS failure, cookie unreadable | `RpcTransportError` | `RpcTransportError` (provably not sent) |
 | Node error object | `RpcError` | `RpcError` |
 | HTTP 401/403/404 and other 3xx/4xx | `RpcTransportError` | `RpcTransportError` (rejected before execution) |
-| Timeout, abort, dropped connection, HTTP 5xx, malformed, invalid or oversized reply after the request was sent | the matching error | `RpcUnknownOutcomeError`, with that error as `cause` and, for `sendrawtransaction` (typed or through `call()`), the `txid` |
+| Timeout or abort while waiting for a request slot | `RpcTimeoutError`, `RpcAbortedError` | `RpcTimeoutError`, `RpcAbortedError` (provably not sent) |
+| HTTP 503 `Work queue depth exceeded` with `directNode` set | `RpcTransportError` | `RpcTransportError` (rejected before execution) |
+| Timeout, abort, dropped connection, any other HTTP 5xx, malformed, invalid or oversized reply after the request was sent | the matching error | `RpcUnknownOutcomeError`, with that error as `cause` and, for `sendrawtransaction` (typed or through `call()`), the `txid` |
 
 - **Retries** happen only for methods without side effects, only when
   `readRetries` is set (apart from the keep-alive retry below), and only for
   connection errors, HTTP 5xx, cookie read failures, HTTP 401 under cookie auth
   (the cookie may have rotated), and (single calls) RPC error -28 while the
   node warms up. Side-effecting calls are never retried.
-- **Deadline.** `timeoutMs` covers the whole operation: cookie read, every
-  attempt, every backoff and every item of a batch. On expiry the request is
-  destroyed and its socket released.
+- **Deadline.** `timeoutMs` covers the whole operation: any wait for a request
+  slot, cookie read, every attempt, every backoff and every item of a batch. On
+  expiry the request is destroyed and its socket released.
 - **Keep-alive.** Methods without side effects, batches and the chain re-check
-  share up to 8 keep-alive connections. The client closes one after 15 s
-  idle, before qbitd's `-rpcservertimeout` (30 s by default) does. With a
+  share a pool of keep-alive connections sized to `maxConcurrentRequests`
+  (default 8), plus one spare for a connection still closing; open requests
+  stay within the limit. The client closes one after 15 s idle, before
+  qbitd's `-rpcservertimeout` (30 s by default) does. With a
   `-rpcservertimeout` below 15 s qbitd closes idle connections first, and the
   race below happens more often: each one costs an extra attempt and a chain
   re-check. A request written to a connection just as qbitd closes it is reset
@@ -320,6 +326,36 @@ bits; the 210,000,000 QBT cap is 2.1e16 bits, above 2^53). Fee rates are
 - A wallet `RpcError` means the node answered with an error. For
   `walletprocesspsbt`, qbit Core may still have advanced the PQC signature
   counters of keys it tried.
+
+### The work queue
+
+`qbitd` hands each HTTP request to one of its `-rpcthreads` workers (default 16)
+through a queue of `-rpcworkqueue` entries (default 64). A request that finds
+the queue full is answered with HTTP 503 and the body `Work queue depth exceeded`
+without being run, and `debug.log` records the rejection.
+
+**Avoiding it.** `maxConcurrentRequests` limits one client's open requests. Keep
+the total over all clients of a node, plus anything else using its RPC port, at
+or below `-rpcworkqueue`: that holds even when long calls occupy every worker.
+At the defaults, eight clients fit. More `-rpcthreads` add throughput, not this
+guarantee. Each attempt takes a slot before it does anything else and frees it
+however it ends: a batch counts once, a chain re-check (and any pause before
+checking again) runs in its call's slot, the extra attempt after a stale
+keep-alive connection keeps the slot, and a retry queues again after its
+backoff.
+
+A hung request holds its slot until its deadline, so calls behind it wait and
+can time out without being sent. A request abandoned at its deadline frees its
+slot at once, but `qbitd` may still hold it, so after timeouts the node can see
+more than the limit.
+
+**Classifying it.** By default that 503 is treated like any other 5xx: an unknown
+outcome for a side-effecting call, because a proxy in between can answer 503
+after forwarding the request. Set `directNode` when nothing sits between the
+client and `qbitd`: the exact body under HTTP 503 is then a plain
+`RpcTransportError` (`reason: 'http_status'`, `status: 503`), retried under
+`readRetries` for methods without side effects and never for side-effecting
+ones. Any other body or status keeps the default classification.
 
 ## Batches
 
