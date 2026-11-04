@@ -1,3 +1,6 @@
+import { createRequire } from 'node:module'
+import { fileURLToPath } from 'node:url'
+
 import { describe, expect, it } from 'vitest'
 import { Publisher } from 'zeromq'
 
@@ -6,8 +9,11 @@ import {
   DEFAULT_MAX_MESSAGE_SIZE,
   DEFAULT_STALE_AFTER_MS,
   QbitZmqSubscriber,
+  ZmqSetupError,
   type ZmqEvent,
+  type ZmqSetupErrorCode,
   type ZmqSocket,
+  type ZmqSocketFactory,
   type ZmqSocketSettings,
 } from '../src'
 
@@ -279,13 +285,311 @@ describe('QbitZmqSubscriber connection loss and limits', () => {
     })
     const pending = subscriber[Symbol.asyncIterator]().next()
     await new Promise(resolve => setImmediate(resolve))
-    expect(seen).toEqual([{ maxMessageSize: 3_000_000 }])
+    expect(seen).toEqual([{ maxMessageSize: 3_000_000, ipv6: false }])
     subscriber.close()
     await pending
     const base = { url: 'tcp://127.0.0.1:1', topics: ['rawtx'] as const }
     for (const maxMessageSize of [0, 1023, 1.5, Number.NaN, 2 ** 31]) {
       expect(() => new QbitZmqSubscriber({ ...base, maxMessageSize })).toThrow(RangeError)
     }
+  })
+})
+
+/** The error the iteration rejects with. */
+async function failure(iterator: AsyncIterator<ZmqEvent>): Promise<unknown> {
+  return iterator.next().then(
+    next => expect.unreachable(`resolved with ${JSON.stringify(next)}`),
+    (error: unknown) => error
+  )
+}
+
+function expectSetupError(error: unknown, code: ZmqSetupErrorCode, cause: unknown): asserts error is ZmqSetupError {
+  expect(error).toBeInstanceOf(ZmqSetupError)
+  expect(error).toMatchObject({ name: 'ZmqSetupError', code })
+  expect((error as ZmqSetupError).cause).toBe(cause)
+}
+
+/** Calls the error's thrower, and returns what it throws. */
+function thrown(thrower: () => unknown): Error & { code?: string } {
+  try {
+    thrower()
+  } catch (error) {
+    return error as Error & { code?: string }
+  }
+  throw new Error('did not throw')
+}
+
+describe('QbitZmqSubscriber setup failures', () => {
+  // What Node throws for a module that is missing, or a native addon it cannot load.
+  const requireHere = createRequire(import.meta.url)
+  const moduleLoadErrors = [
+    thrown(() => requireHere('zeromq-not-installed')),
+    thrown(() => process.dlopen({ exports: {} }, fileURLToPath(import.meta.url))),
+    Object.assign(new Error("Cannot find package 'zeromq'"), { code: 'ERR_MODULE_NOT_FOUND' }),
+  ]
+
+  it('pins the codes Node throws for a missing module and an unloadable addon', () => {
+    expect(moduleLoadErrors.map(error => error.code)).toEqual([
+      'MODULE_NOT_FOUND',
+      'ERR_DLOPEN_FAILED',
+      'ERR_MODULE_NOT_FOUND',
+    ])
+  })
+
+  it.each(moduleLoadErrors.map(error => [error.code, error] as const))(
+    'ends the iteration when the factory throws %s, without a reconnect',
+    async (_code, cause) => {
+      let calls = 0
+      const subscriber = new QbitZmqSubscriber({
+        url: 'tcp://127.0.0.1:1',
+        topics: ['hashblock'],
+        reconnectDelayMs: 10,
+        socketFactory: () => {
+          calls += 1
+          throw cause
+        },
+      })
+      const events: ZmqEvent[] = []
+      const error = await (async () => {
+        try {
+          for await (const event of subscriber) events.push(event)
+        } catch (error) {
+          return error
+        }
+        return undefined
+      })()
+      expectSetupError(error, 'module_load', cause)
+      expect(error.message).toContain(`could not load a module (${cause.code}: `)
+      expect(events).toEqual([])
+      await new Promise(resolve => setTimeout(resolve, 50)) // nothing retries meanwhile
+      expect(calls).toBe(1)
+      expect(subscriber.health()).toEqual({ status: 'closed', messages: 0, gaps: 0, malformed: 0, reconnects: 0 })
+    }
+  )
+
+  it('ends the iteration when connect() refuses the address or the transport, and closes the socket', async () => {
+    // Real addon errors: a socket that connects somewhere other than the (valid) url.
+    const cases: [string, string, ZmqSetupErrorCode][] = [
+      ['tcp://127.0.0.1', 'EINVAL', 'invalid_address'],
+      ['tcp://*:28332', 'EINVAL', 'invalid_address'],
+      ['ws://127.0.0.1:28332', 'EPROTONOSUPPORT', 'unsupported_protocol'],
+      [`ipc:///${'a'.repeat(107)}`, 'ENAMETOOLONG', 'invalid_address'],
+    ]
+    for (const [target, errno, code] of cases) {
+      const closed: boolean[] = []
+      const thrownByConnect: unknown[] = []
+      let calls = 0
+      const factory: ZmqSocketFactory = async settings => {
+        calls += 1
+        const real = await createZeromqSocket(settings)
+        const index = closed.push(false) - 1
+        return {
+          connect: () => {
+            try {
+              real.connect(target)
+            } catch (error) {
+              thrownByConnect.push(error)
+              throw error
+            }
+          },
+          subscribe: topic => real.subscribe(topic),
+          receive: () => real.receive(),
+          close: () => {
+            closed[index] = true
+            real.close()
+          },
+        }
+      }
+      const subscriber = new QbitZmqSubscriber({
+        url: 'tcp://127.0.0.1:28332',
+        topics: ['hashblock'],
+        reconnectDelayMs: 10,
+        socketFactory: factory,
+      })
+      const iterator = subscriber[Symbol.asyncIterator]()
+      const error = await failure(iterator)
+      expect(thrownByConnect).toEqual([expect.objectContaining({ code: errno })])
+      expectSetupError(error, code, thrownByConnect[0])
+      expect(error.message).toContain(`tcp://127.0.0.1:28332 (${errno}: `)
+      expect(await iterator.next()).toEqual({ done: true, value: undefined })
+      expect(calls).toBe(1)
+      expect(closed).toEqual([true])
+      expect(subscriber.health().status).toBe('closed')
+    }
+  })
+
+  it('ends the iteration for an ipc:// path too long for a Unix socket, with the default factory', async () => {
+    const subscriber = new QbitZmqSubscriber({ url: `ipc:///${'a'.repeat(107)}`, topics: ['hashblock'] })
+    const error = await failure(subscriber[Symbol.asyncIterator]())
+    expect(error).toMatchObject({ code: 'invalid_address', cause: { code: 'ENAMETOOLONG' } })
+    expect((error as Error).message).toMatch(/use a shorter ipc:\/\/ path$/)
+    expect(subscriber.health().status).toBe('closed')
+  })
+
+  it('passes ipv6 to the factory for an IPv6 address only, and createZeromqSocket applies it', async () => {
+    const seen: ZmqSocketSettings[] = []
+    for (const url of ['tcp://[::1]:1', 'tcp://127.0.0.1:0;[::1]:1', 'tcp://localhost:1', 'ipc:///run/x']) {
+      const subscriber = new QbitZmqSubscriber({
+        url,
+        topics: ['hashblock'],
+        socketFactory: settings => {
+          seen.push(settings)
+          return new FakeSocket([])
+        },
+      })
+      const pending = subscriber[Symbol.asyncIterator]().next()
+      await new Promise(resolve => setImmediate(resolve))
+      subscriber.close()
+      await pending
+    }
+    expect(seen.map(settings => settings.ipv6)).toEqual([true, true, false, false])
+    for (const settings of [
+      { maxMessageSize: 4096, ipv6: true },
+      { maxMessageSize: 4096, ipv6: false },
+      { maxMessageSize: 4096 },
+    ]) {
+      const socket = (await createZeromqSocket(settings)) as ZmqSocket & { ipv6: boolean }
+      expect(socket.ipv6).toBe(settings.ipv6 === true)
+      socket.close()
+    }
+  })
+
+  it("ends the iteration on a ZmqSetupError from the package's other build", async () => {
+    // What instanceof cannot see: the class of the ESM build thrown into the CommonJS one, or the reverse.
+    class OtherBuild extends Error {
+      readonly code = 'module_load'
+    }
+    Object.defineProperty(OtherBuild.prototype, Symbol.for('qbit-zmq.ZmqSetupError'), { value: true })
+    const foreign = new OtherBuild('no zeromq here')
+    expect(foreign).not.toBeInstanceOf(ZmqSetupError)
+    expect(ZmqSetupError.is(foreign)).toBe(true)
+    const subscriber = new QbitZmqSubscriber({
+      url: 'tcp://127.0.0.1:1',
+      topics: ['hashblock'],
+      socketFactory: () => Promise.reject(foreign),
+    })
+    expect(await failure(subscriber[Symbol.asyncIterator]())).toBe(foreign)
+    expect(subscriber.health().status).toBe('closed')
+    // A look-alike without the brand is retried like any other failure.
+    const unknown = Object.assign(new Error('odd'), { name: 'ZmqSetupError', code: 'module_load' })
+    expect(ZmqSetupError.is(unknown)).toBe(false)
+    const retried = new QbitZmqSubscriber({
+      url: 'tcp://127.0.0.1:1',
+      topics: ['hashblock'],
+      reconnectDelayMs: 10,
+      socketFactory: () => Promise.reject(unknown),
+    })
+    const iterator = retried[Symbol.asyncIterator]()
+    expect((await iterator.next()).value).toMatchObject({ kind: 'reconnect', reason: 'failed' })
+    retried.close()
+    await iterator.return?.()
+  })
+
+  it('passes a ZmqSetupError from a custom factory or socket through', async () => {
+    const thrownByFactory = new ZmqSetupError('module_load', 'no zeromq here')
+    const first = new QbitZmqSubscriber({
+      url: 'tcp://127.0.0.1:1',
+      topics: ['hashblock'],
+      socketFactory: () => Promise.reject(thrownByFactory),
+    })
+    expect(await failure(first[Symbol.asyncIterator]())).toBe(thrownByFactory)
+    expect(thrownByFactory.cause).toBeUndefined()
+
+    const thrownByReceive = new ZmqSetupError('unsupported_protocol', 'not here')
+    const socket = new FakeSocket([hashblock(1), thrownByReceive])
+    const second = new QbitZmqSubscriber({
+      url: 'tcp://127.0.0.1:1',
+      topics: ['hashblock'],
+      socketFactory: () => socket,
+    })
+    const iterator = second[Symbol.asyncIterator]()
+    expect((await take(iterator, 1))[0]?.kind).toBe('message')
+    expect(await failure(iterator)).toBe(thrownByReceive)
+    expect(socket.closed).toBe(true)
+    // The counters are kept.
+    expect(second.health()).toMatchObject({ status: 'closed', messages: 1, reconnects: 0 })
+    expect(second.health().lastMessageAt).toBeTypeOf('number')
+  })
+
+  it('retries every other failure of the factory, connect() or a receive', async () => {
+    const coded = (code: string): Error => Object.assign(new Error(code), { code })
+    const steps: (() => ZmqSocket)[] = [
+      () => {
+        throw new Error('no socket') // no code
+      },
+      () => {
+        throw coded('EMFILE')
+      },
+      () => {
+        throw coded('EINVAL') // fatal only from connect()
+      },
+      () => Object.assign(new FakeSocket([]), { connect: (): void => thrown(coded('EAGAIN')) }),
+      () => Object.assign(new FakeSocket([]), { connect: (): void => thrown(coded('MODULE_NOT_FOUND')) }),
+      () => Object.assign(new FakeSocket([]), { connect: (): void => thrown(new Error('refused')) }),
+      () => new FakeSocket([coded('EINVAL')]),
+      () => new FakeSocket([hashblock(1)]),
+    ]
+    function thrown(error: Error): never {
+      throw error
+    }
+    const subscriber = new QbitZmqSubscriber({
+      url: 'tcp://127.0.0.1:1',
+      topics: ['hashblock'],
+      reconnectDelayMs: 10,
+      socketFactory: () => steps.shift()!(),
+    })
+    const iterator = subscriber[Symbol.asyncIterator]()
+    const events = await take(iterator, 8)
+    expect(events.slice(0, 7)).toEqual([
+      { kind: 'reconnect', attempt: 1, reason: 'failed' },
+      { kind: 'reconnect', attempt: 2, reason: 'failed', code: 'EMFILE' },
+      { kind: 'reconnect', attempt: 3, reason: 'failed', code: 'EINVAL' },
+      { kind: 'reconnect', attempt: 4, reason: 'failed', code: 'EAGAIN' },
+      { kind: 'reconnect', attempt: 5, reason: 'failed', code: 'MODULE_NOT_FOUND' },
+      { kind: 'reconnect', attempt: 6, reason: 'failed' },
+      { kind: 'reconnect', attempt: 7, reason: 'failed', code: 'EINVAL' },
+    ])
+    expect(events[7]?.kind).toBe('message')
+    expect(subscriber.health()).toMatchObject({ status: 'receiving', reconnects: 7 })
+    const done = iterator.next()
+    subscriber.close()
+    expect(await done).toEqual({ done: true, value: undefined })
+  })
+
+  it('ends quietly when close() comes before a fatal failure, and close() after one is harmless', async () => {
+    let reject!: (error: unknown) => void
+    const subscriber = new QbitZmqSubscriber({
+      url: 'tcp://127.0.0.1:1',
+      topics: ['hashblock'],
+      socketFactory: () =>
+        new Promise<ZmqSocket>((_resolve, rejectFactory) => {
+          reject = rejectFactory
+        }),
+    })
+    const iterator = subscriber[Symbol.asyncIterator]()
+    const pending = iterator.next()
+    await new Promise(resolve => setImmediate(resolve))
+    subscriber.close()
+    reject(Object.assign(new Error('gone'), { code: 'MODULE_NOT_FOUND' }))
+    expect(await pending).toEqual({ done: true, value: undefined })
+    expect(subscriber.health().status).toBe('closed')
+
+    const socket = new FakeSocket([])
+    socket.connect = () => {
+      throw Object.assign(new Error('Invalid argument'), { code: 'EINVAL' })
+    }
+    const failing = new QbitZmqSubscriber({
+      url: 'tcp://127.0.0.1:1',
+      topics: ['hashblock'],
+      socketFactory: () => socket,
+    })
+    const failed = failing[Symbol.asyncIterator]()
+    expect(await failure(failed)).toMatchObject({ code: 'invalid_address' })
+    expect(socket.closed).toBe(true)
+    failing.close()
+    expect(await failed.next()).toEqual({ done: true, value: undefined })
+    // A new iteration of a subscriber closed by a fatal failure ends at once.
+    expect(await failing[Symbol.asyncIterator]().next()).toEqual({ done: true, value: undefined })
   })
 })
 
@@ -422,6 +726,39 @@ describe('QbitZmqSubscriber over loopback with zeromq', () => {
     } finally {
       await stop()
       publisher.close()
+    }
+  })
+
+  it('keeps waiting for a node that is down, receives once it binds, and reconnects when it stops', async () => {
+    const probe = new Publisher()
+    await probe.bind('tcp://127.0.0.1:0')
+    const url = probe.lastEndpoint!
+    probe.close() // nothing listens on the port now
+    const subscriber = new QbitZmqSubscriber({ url, topics: ['hashblock'], reconnectDelayMs: 50 })
+    const { events, stop } = collect(subscriber)
+    let publisher: Publisher | undefined
+    try {
+      // libzmq retries the refused TCP connection itself; the subscriber neither fails nor gives up.
+      await new Promise(resolve => setTimeout(resolve, 500))
+      expect(events).toEqual([])
+      expect(subscriber.health()).toMatchObject({ status: 'unknown', reconnects: 0 })
+      publisher = new Publisher()
+      await publisher.bind(url)
+      const next = await publishUntilReceived(publisher, events, 0)
+      expect(subscriber.health().status).toBe('receiving')
+      publisher.close() // the node stops again
+      await expect
+        .poll(() => events.some(e => e.kind === 'reconnect' && e.reason === 'disconnected'), { timeout: 5000 })
+        .toBe(true)
+      publisher = new Publisher()
+      await publisher.bind(url)
+      const before = events.length
+      await publishUntilReceived(publisher, events, next)
+      expect(events.slice(before).some(e => e.kind === 'message')).toBe(true)
+      expect(subscriber.health().status).toBe('receiving')
+    } finally {
+      await stop()
+      publisher?.close()
     }
   })
 })
