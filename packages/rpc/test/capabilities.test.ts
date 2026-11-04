@@ -8,13 +8,13 @@ import {
   RpcChainGuardError,
   type Capability,
 } from '../src'
-import { blockchainInfoJson, FakeNode, HASH_A, TX_HEX } from './helpers/fake-node'
+import { chainResults, CHECK, FakeNode, HASH_A, TX_HEX } from './helpers/fake-node'
 
 let node: FakeNode
 
 beforeEach(async () => {
   node = await FakeNode.start()
-  node.results({ getblockchaininfo: blockchainInfoJson('testnet4'), sendrawtransaction: '"x"', walletlock: 'null' })
+  node.results({ ...chainResults('testnet4'), sendrawtransaction: '"x"', walletlock: 'null' })
 })
 afterEach(async () => {
   await node.close()
@@ -212,11 +212,11 @@ describe('chain guard', () => {
     expect(info.chain).toBe('testnet4')
     expect(rpc.chainStatus).toBe('confirmed')
     await rpc.walletLock()
-    expect(node.calls().map(call => call.method)).toEqual(['getblockchaininfo', 'walletlock'])
+    expect(node.calls().map(call => call.method)).toEqual([...CHECK, 'walletlock'])
   })
 
   it('keeps refusing after a mismatch, naming both chains', async () => {
-    node.results({ getblockchaininfo: blockchainInfoJson('main') })
+    node.results(chainResults('main'))
     const rpc = client(['wallet-write'])
     const mismatch = await rpc.confirmChain().then(
       () => expect.fail('expected a mismatch'),
@@ -230,7 +230,7 @@ describe('chain guard', () => {
       (e: unknown) => e
     )
     expect(refused).toMatchObject({ reason: 'mismatch', actual: 'main' })
-    expect(node.calls().map(call => call.method)).toEqual(['getblockchaininfo'])
+    expect(node.calls().map(call => call.method)).toEqual([...CHECK])
   })
 
   it('gates testmempoolaccept like sendrawtransaction, but not reads', async () => {

@@ -16,12 +16,12 @@ import {
   type QbitRpcClientOptions,
 } from '../src'
 import { ExchangeFailure, HttpTransport, STALE_SOCKET_WINDOW_MS, type Exchange } from '../src/transport'
-import { blockchainInfoJson, FakeNode, HASH_A, TX_HEX, type RecordedRequest } from './helpers/fake-node'
+import { chainResults, CHECK, FakeNode, HASH_A, TX_HEX, type RecordedRequest } from './helpers/fake-node'
 
 let node: FakeNode
 
 const results = (chain: string): Record<string, string> => ({
-  getblockchaininfo: blockchainInfoJson(chain),
+  ...chainResults(chain),
   getblockcount: '10',
   getbestblockhash: JSON.stringify(HASH_A),
   listunspent: '[]',
@@ -185,7 +185,7 @@ describe('a pooled connection the node closed', () => {
     const rpc = await pooled()
     dropNextReused()
     await run(rpc)
-    expect(methods()).toEqual([method, 'getblockchaininfo', method])
+    expect(methods()).toEqual([method, ...CHECK, method])
     expect(rpc.chainStatus).toBe('confirmed')
   })
 
@@ -196,7 +196,7 @@ describe('a pooled connection the node closed', () => {
     const error = await failure(run(rpc))
     expect(RpcChainGuardError.is(error)).toBe(true)
     expect(error).toMatchObject({ reason: 'mismatch', method, expected: 'regtest', actual: 'main' })
-    expect(methods()).toEqual([method, 'getblockchaininfo'])
+    expect(methods()).toEqual([method, ...CHECK])
     expect(rpc.chainStatus).toBe('mismatch')
   })
 
@@ -204,7 +204,7 @@ describe('a pooled connection the node closed', () => {
     const rpc = await pooled({ chainCheckMaxAgeMs: 0 })
     dropNextReused()
     await rpc.call('finalizepsbt', ['cHNidP8='])
-    expect(methods()).toEqual(['getblockchaininfo', 'getblockchaininfo', 'finalizepsbt'])
+    expect(methods()).toEqual([...CHECK, ...CHECK, 'finalizepsbt'])
   })
 
   const SIDE_EFFECTS: [string, (rpc: QbitRpcClient) => Promise<unknown>][] = [
@@ -219,7 +219,7 @@ describe('a pooled connection the node closed', () => {
       const rpc = await pooled({ chainCheckMaxAgeMs: 0 })
       dropNextReused()
       await run(rpc)
-      expect(methods()).toEqual(['getblockchaininfo', 'getblockchaininfo', method])
+      expect(methods()).toEqual([...CHECK, ...CHECK, method])
       expect(node.requests[2]!.headers.connection).toBe('close')
     }
   )
@@ -231,7 +231,7 @@ describe('a pooled connection the node closed', () => {
     const error = await failure(run(rpc))
     expect(RpcChainGuardError.is(error)).toBe(true)
     expect(error).toMatchObject({ reason: 'mismatch', method, actual: 'main' })
-    expect(methods()).toEqual(['getblockchaininfo', 'getblockchaininfo'])
+    expect(methods()).toEqual([...CHECK, ...CHECK])
   })
 
   it.each(SIDE_EFFECTS)('fails %s plainly, unsent, when the second re-check fails too', async (_method, run) => {
@@ -242,7 +242,7 @@ describe('a pooled connection the node closed', () => {
     expect(RpcTransportError.is(error)).toBe(true)
     expect(RpcUnknownOutcomeError.is(error)).toBe(false)
     expect(error).toMatchObject({ reason: 'network', method: 'getblockchaininfo' })
-    expect(methods()).toEqual(['getblockchaininfo', 'getblockchaininfo'])
+    expect(methods()).toEqual([...CHECK, ...CHECK])
   })
 
   it('never sends a side-effecting request again, whatever marks its failure', async () => {

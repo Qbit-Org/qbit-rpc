@@ -16,6 +16,17 @@ version. Nothing has been published yet: both are `0.0.0` and private.
   `batch()` alike. `sendmany` and the other sign-and-broadcast methods are not
   allowlisted.
 - A chain guard: wallet-write and broadcast calls wait for `confirmChain()`.
+- The chain guard pins the chain by its genesis block, and a signet by its
+  challenge. Every check sends `getblockchaininfo` and `getblockhash 0` as one
+  JSON-RPC batch under the call's deadline, and compares the chain name, the
+  genesis hash (`expectedGenesisHash`, by default qbit Core v1.0.0's for
+  `expectedChain`, exported as `QBIT_GENESIS_HASHES`) and, on signet,
+  `signet_challenge` (`expectedSignetChallenge`, default `51`). This is
+  stricter: a node of a custom chain that reports a known name, or of another
+  signet, is now refused with `mismatch`, and `RpcChainGuardError.differs` says
+  what differed; set the new options for such a node. Where `-rpcwhitelist`
+  applies, the RPC user also needs `getblockhash`, and a proxy in between must
+  pass batches.
 - Typed, validated methods: `getblockchaininfo`, `getnetworkinfo`,
   `getbestblockhash`, `getblockhash`, `getblockheader`, `getrawtransaction`
   (hex and verbose), `getconfirmationtarget`, `estimatesmartfee`,

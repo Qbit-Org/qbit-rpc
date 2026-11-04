@@ -4,6 +4,26 @@ export type QbitChain = 'main' | 'test' | 'testnet4' | 'signet' | 'regtest'
 export const QBIT_CHAINS: readonly QbitChain[] = ['main', 'test', 'testnet4', 'signet', 'regtest']
 
 /**
+ * Each chain's genesis block hash, as `getblockhash 0` reports it: the hashes
+ * qbit Core v1.0.0 asserts in `src/kernel/chainparams.cpp`. Every signet has
+ * the same genesis block whatever its challenge, and so does every regtest node.
+ */
+export const QBIT_GENESIS_HASHES: Readonly<Record<QbitChain, string>> = Object.freeze({
+  main: '0000000000004d60aa5d46013991d0a0e2995d89ee98e53068ae196d763e79f2',
+  test: '0000c20791706c6940a43d75db44d1ae9dadeb637cedfbaa5cf293435eeaab3c',
+  testnet4: '000000000000796fe86bbc0bf1b66a07e4b4c0676f74b54cf7e5ce8b3f1a0090',
+  signet: '0000000a5698c727f05cbdaeaff3e48b48ab187aeb03414e783ea81fed14d65c',
+  regtest: '0ee96aa77c4b600850e349344fa21b107e805f5370ddc7a6189db12cf69acce6',
+})
+
+/**
+ * The challenge of qbit Core v1.0.0's default signet (no `-signetchallenge`):
+ * `51`, OP_TRUE, an open challenge that needs no signature, so anyone can mine
+ * a signet with it.
+ */
+export const QBIT_DEFAULT_SIGNET_CHALLENGE = '51'
+
+/**
  * A capability a client must opt into. Without any, a client can only call
  * read methods that touch no wallet.
  *

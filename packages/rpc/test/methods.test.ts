@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { QbitRpcClient, RpcResponseError, RpcUnknownOutcomeError } from '../src'
-import { blockchainInfoJson, FakeNode, HASH_A, HASH_B, TX_HEX } from './helpers/fake-node'
+import { blockchainInfoJson, chainResults, FakeNode, HASH_A, HASH_B, TX_HEX } from './helpers/fake-node'
 
 let node: FakeNode
 let rpc: QbitRpcClient
@@ -20,7 +20,7 @@ afterEach(async () => {
 })
 
 async function confirm(): Promise<void> {
-  node.results({ getblockchaininfo: blockchainInfoJson('regtest') })
+  node.results(chainResults('regtest'))
   await rpc.confirmChain()
 }
 

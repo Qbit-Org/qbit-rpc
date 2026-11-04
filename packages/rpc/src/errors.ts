@@ -69,32 +69,97 @@ export class RpcCapabilityError extends QbitRpcError {
 }
 brand(RpcCapabilityError, 'RpcCapabilityError')
 
+/** What a chain check compares: the chain name, the genesis block hash and, on signet, the challenge. */
+export type ChainCheck = 'chain' | 'genesis_hash' | 'signet_challenge'
+
+/** What a chain check found, beyond the chain name, for a `mismatch` {@link RpcChainGuardError}. */
+export interface ChainMismatch {
+  readonly differs: readonly ChainCheck[]
+  readonly expectedGenesisHash: string
+  /** Absent when the `getblockhash 0` reply failed, and the chain name or challenge differed anyway. */
+  readonly actualGenesisHash?: string
+  readonly expectedSignetChallenge?: string
+  readonly actualSignetChallenge?: string
+}
+
+/** A signet challenge for a message: long scripts are cut short. */
+function challengeText(challenge: string | undefined): string {
+  if (challenge === undefined) return 'none'
+  return challenge.length <= 80 ? challenge : `${challenge.slice(0, 80)}... (${challenge.length / 2} bytes)`
+}
+
+function mismatchText(expected: QbitChain, actual: string | undefined, mismatch: ChainMismatch | undefined): string {
+  const chain = `chain '${actual}', expected '${expected}'`
+  if (mismatch === undefined || mismatch.differs.length === 0) return chain
+  return mismatch.differs
+    .map(check =>
+      check === 'chain'
+        ? chain
+        : check === 'genesis_hash'
+          ? `genesis block ${mismatch.actualGenesisHash ?? 'unknown'}, expected ${mismatch.expectedGenesisHash}`
+          : `signet challenge ${challengeText(mismatch.actualSignetChallenge)}, expected ${challengeText(mismatch.expectedSignetChallenge)}`
+    )
+    .join('; ')
+}
+
 /**
  * A wallet-write or broadcast call was refused because the node's chain has
  * not been confirmed (`reason: 'unconfirmed'`), or {@link QbitRpcClient.confirmChain}
- * found a different chain (`reason: 'mismatch'`), or every chain check it ran
- * was overtaken by a connection error, an HTTP 401 or another check, which
- * cast doubt on its answer (`reason: 'stale'`). Nothing was sent; `stale` is
- * worth retrying later.
+ * found a different chain, genesis block or signet challenge (`reason:
+ * 'mismatch'`, see `differs`), or every chain check it ran was overtaken by a
+ * connection error, an HTTP 401 or another check, which cast doubt on its
+ * answer (`reason: 'stale'`). Nothing was sent; `stale` is worth retrying later.
  */
 export class RpcChainGuardError extends QbitRpcError {
   readonly reason: 'unconfirmed' | 'mismatch' | 'stale'
   readonly expected: QbitChain
   /** The chain the node reported, for `mismatch`. */
   readonly actual?: string
+  /**
+   * For `mismatch`, what the node reported differently: its chain name
+   * (`chain`), its genesis block hash (`genesis_hash`) or, when signet is
+   * expected, its challenge (`signet_challenge`, also when it reported none).
+   */
+  readonly differs?: readonly ChainCheck[]
+  /** The genesis block hash the client expects, for `mismatch`. */
+  readonly expectedGenesisHash?: string
+  /**
+   * The genesis block hash the node reported (`getblockhash 0`), for
+   * `mismatch`; absent when that reply failed and the chain name or challenge
+   * differed anyway.
+   */
+  readonly actualGenesisHash?: string
+  /** The signet challenge the client expects, for `mismatch` when signet is expected. */
+  readonly expectedSignetChallenge?: string
+  /** The signet challenge the node reported, for `mismatch`; absent when it reported none (only a signet does). */
+  readonly actualSignetChallenge?: string
 
-  constructor(method: string, reason: 'unconfirmed' | 'mismatch' | 'stale', expected: QbitChain, actual?: string) {
+  constructor(
+    method: string,
+    reason: 'unconfirmed' | 'mismatch' | 'stale',
+    expected: QbitChain,
+    actual?: string,
+    mismatch?: ChainMismatch
+  ) {
     super(
       reason === 'unconfirmed'
         ? `RPC method ${method} refused: call confirmChain() first to check the node is on ${expected}`
         : reason === 'mismatch'
-          ? `RPC method ${method} refused: the node reports chain '${actual}', expected '${expected}'`
+          ? `RPC method ${method} refused: the node reports ${mismatchText(expected, actual, mismatch)}`
           : `RPC method ${method} refused: its chain checks kept being overtaken by connection errors, HTTP 401s or other checks; try again`,
       method
     )
     this.reason = reason
     this.expected = expected
     if (actual !== undefined) this.actual = actual
+    if (mismatch !== undefined) {
+      this.differs = Object.freeze([...mismatch.differs])
+      this.expectedGenesisHash = mismatch.expectedGenesisHash
+      if (mismatch.actualGenesisHash !== undefined) this.actualGenesisHash = mismatch.actualGenesisHash
+      if (mismatch.expectedSignetChallenge !== undefined)
+        this.expectedSignetChallenge = mismatch.expectedSignetChallenge
+      if (mismatch.actualSignetChallenge !== undefined) this.actualSignetChallenge = mismatch.actualSignetChallenge
+    }
   }
 
   static override is(value: unknown): value is RpcChainGuardError {

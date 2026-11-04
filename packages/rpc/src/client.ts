@@ -5,6 +5,8 @@ import {
   CAPABILITIES,
   methodPolicy,
   QBIT_CHAINS,
+  QBIT_DEFAULT_SIGNET_CHALLENGE,
+  QBIT_GENESIS_HASHES,
   type Capability,
   type MethodPolicy,
   type QbitChain,
@@ -21,6 +23,8 @@ import {
   RpcTimeoutError,
   RpcTransportError,
   RpcUnknownOutcomeError,
+  type ChainCheck,
+  type ChainMismatch,
 } from './errors'
 import { assertLosslessJsonSupport, JsonNumber, parseJsonLossless, stringifyRequest } from './json'
 import { Limiter } from './limiter'
@@ -77,6 +81,21 @@ export interface QbitRpcClientOptions {
   readonly auth: RpcAuth
   /** The chain this client must talk to. `confirmChain()` checks it; wallet-write and broadcast calls wait for that check. */
   readonly expectedChain: QbitChain
+  /**
+   * The genesis block hash the node must report (`getblockhash 0`) on every
+   * chain check: 64 hex characters, in either case (compared in lowercase).
+   * Default: `expectedChain`'s genesis in qbit Core v1.0.0, from
+   * `QBIT_GENESIS_HASHES`. Set it for a node built with other chain parameters.
+   */
+  readonly expectedGenesisHash?: string
+  /**
+   * The challenge (block script) a signet node must report as
+   * `signet_challenge` on every chain check: non-empty hex of whole bytes, in
+   * either case (compared in lowercase). Only with `expectedChain: 'signet'`.
+   * Default `51` (`QBIT_DEFAULT_SIGNET_CHALLENGE`), the default signet's open
+   * challenge, which anyone can mine a separate signet with.
+   */
+  readonly expectedSignetChallenge?: string
   /** Capabilities beyond chain reads. Default none: read-only. */
   readonly capabilities?: readonly Capability[]
   /**
@@ -89,7 +108,7 @@ export interface QbitRpcClientOptions {
   /**
    * Extra attempts for methods without side effects after a connection error,
    * an HTTP 5xx, a credentials failure, an HTTP 401 under cookie auth, or
-   * (single calls) RPC error -28, node warming up. Default 0: no retries.
+   * (single calls and the chain check) RPC error -28, node warming up. Default 0: no retries.
    * Methods with side effects are never retried. Apart from these, even at 0,
    * a request without side effects that is reset on a reused keep-alive
    * connection just after it was written, before any reply byte (qbitd closed
@@ -149,12 +168,14 @@ export type BatchResults<T extends readonly RpcRequest<unknown>[]> = {
  *
  * - `unconfirmed`: `confirmChain()` has not succeeded yet. Wallet-write and
  *   broadcast calls are refused.
- * - `confirmed`: the node reported `expectedChain` within `chainCheckMaxAgeMs`.
+ * - `confirmed`: the node reported `expectedChain`, its genesis block and, on
+ *   signet, its challenge, within `chainCheckMaxAgeMs`.
  * - `stale`: it did, but longer ago, or a connection error, an HTTP 401 or a
  *   cookie change happened since. The next wallet-write or broadcast call
  *   checks the chain again before it is sent.
- * - `mismatch`: the node reported another chain. Wallet-write and broadcast
- *   calls are refused until `confirmChain()` matches again.
+ * - `mismatch`: the node reported another chain, genesis block or signet
+ *   challenge. Wallet-write and broadcast calls are refused until
+ *   `confirmChain()` matches again.
  */
 export type ChainStatus = 'unconfirmed' | 'confirmed' | 'stale' | 'mismatch'
 
@@ -164,7 +185,24 @@ type ChainState =
   | { readonly status: 'confirmed'; readonly at: number; readonly digest: string }
   | { readonly status: 'invalidated' }
   /** `doubt`: `#doubts` once it was recorded, to tell a check sent before it from one sent after. */
-  | { readonly status: 'mismatch'; readonly actual: string; readonly doubt: number }
+  | {
+      readonly status: 'mismatch'
+      readonly report: ChainReport
+      readonly differs: readonly ChainCheck[]
+      readonly doubt: number
+    }
+
+/**
+ * What a chain check found: the node's chain name, genesis block hash and
+ * signet challenge (on signet only). The genesis hash is missing only from a
+ * mismatch the chain name or challenge already showed, when the `getblockhash`
+ * reply failed.
+ */
+interface ChainReport {
+  readonly chain: string
+  readonly genesisHash: string | undefined
+  readonly signetChallenge: string | undefined
+}
 
 const DEFAULT_TIMEOUT_MS = 30_000
 const DEFAULT_MAX_RESPONSE_BYTES = 16 * 1024 * 1024
@@ -196,6 +234,21 @@ class Failure {
   ) {}
 }
 
+/** A hex option of whole bytes (exactly `bytes` of them, when set), in either case; lowercased. */
+function checkHex(value: unknown, name: string, bytes?: number): string | undefined {
+  if (value === undefined) return undefined
+  if (
+    typeof value !== 'string' ||
+    !/^(?:[0-9a-fA-F]{2})+$/.test(value) ||
+    (bytes !== undefined && value.length !== bytes * 2)
+  ) {
+    throw new TypeError(
+      `${name} must be ${bytes === undefined ? 'non-empty hex of whole bytes' : `${bytes * 2} hex characters`}`
+    )
+  }
+  return value.toLowerCase()
+}
+
 function checkInteger(value: unknown, name: string, min: number, max: number, fallback: number): number {
   if (value === undefined) return fallback
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < min || value > max) {
@@ -216,6 +269,9 @@ export class QbitRpcClient {
   readonly #endpoint: Endpoint
   readonly #credentials: Credentials
   readonly #expectedChain: QbitChain
+  readonly #expectedGenesisHash: string
+  /** Set exactly when `#expectedChain` is signet. */
+  readonly #expectedSignetChallenge: string | undefined
   readonly #capabilities: ReadonlySet<Capability>
   readonly #timeoutMs: number
   readonly #maxResponseBytes: number
@@ -248,6 +304,14 @@ export class QbitRpcClient {
       throw new TypeError(`expectedChain must be one of ${QBIT_CHAINS.join(', ')}`)
     }
     this.#expectedChain = options.expectedChain
+    this.#expectedGenesisHash =
+      checkHex(options.expectedGenesisHash, 'expectedGenesisHash', 32) ?? QBIT_GENESIS_HASHES[this.#expectedChain]
+    const challenge = checkHex(options.expectedSignetChallenge, 'expectedSignetChallenge')
+    if (challenge !== undefined && this.#expectedChain !== 'signet') {
+      throw new TypeError("expectedSignetChallenge needs expectedChain: 'signet'")
+    }
+    this.#expectedSignetChallenge =
+      this.#expectedChain === 'signet' ? (challenge ?? QBIT_DEFAULT_SIGNET_CHALLENGE) : undefined
     const capabilities = options.capabilities ?? []
     if (!Array.isArray(capabilities)) throw new TypeError('capabilities must be an array')
     for (const capability of capabilities) {
@@ -304,8 +368,11 @@ export class QbitRpcClient {
   }
 
   /**
-   * Call `getblockchaininfo` and compare its `chain` with `expectedChain`. On a
-   * match, wallet-write and broadcast calls are allowed; once the confirmation
+   * Send `getblockchaininfo` and `getblockhash 0` in one JSON-RPC batch, and
+   * compare the node's `chain` with `expectedChain`, its genesis block hash
+   * with `expectedGenesisHash` and, on signet, its `signet_challenge` with
+   * `expectedSignetChallenge` (a missing one differs). On a match of all
+   * three, wallet-write and broadcast calls are allowed; once the confirmation
    * goes stale they re-run this check before they are sent. On a mismatch they
    * stay refused and this throws `RpcChainGuardError`, as it does when any
    * check finds a mismatch while this call runs (its cookie read, checks,
@@ -503,6 +570,10 @@ export class QbitRpcClient {
     return {
       url: url.href,
       expectedChain: this.#expectedChain,
+      expectedGenesisHash: this.#expectedGenesisHash,
+      ...(this.#expectedSignetChallenge === undefined
+        ? {}
+        : { expectedSignetChallenge: this.#expectedSignetChallenge }),
       capabilities: [...this.#capabilities],
       auth: this.#credentials.kind,
       chainStatus: this.chainStatus,
@@ -552,17 +623,48 @@ export class QbitRpcClient {
    * recorded (`clearsBefore`, its starting `#doubts`) can replace it with a
    * match.
    */
-  #recordChain(info: BlockchainInfo, since: number, digest: string, clearsBefore: number | undefined): void {
+  #recordChain(report: ChainReport, since: number, digest: string, clearsBefore: number | undefined): void {
     const chain = this.#chain
-    if (info.chain !== this.#expectedChain) {
+    const differs = this.#chainDifferences(report)
+    if (differs.length > 0) {
       this.#doubts += 1
-      this.#chain = { status: 'mismatch', actual: info.chain, doubt: this.#doubts }
+      this.#chain = { status: 'mismatch', report, differs, doubt: this.#doubts }
     } else if (
+      report.genesisHash !== undefined &&
       this.#doubts === since &&
       (chain.status !== 'mismatch' || (clearsBefore !== undefined && chain.doubt <= clearsBefore))
     ) {
       this.#chain = { status: 'confirmed', at: performance.now(), digest }
     }
+  }
+
+  /** What `report` has that differs from the expected chain, genesis block and signet challenge. */
+  #chainDifferences(report: ChainReport): ChainCheck[] {
+    const differs: ChainCheck[] = []
+    if (report.chain !== this.#expectedChain) differs.push('chain')
+    if (report.genesisHash !== undefined && report.genesisHash !== this.#expectedGenesisHash) {
+      differs.push('genesis_hash')
+    }
+    // A signet node always reports its challenge, so a missing one differs too.
+    if (this.#expectedSignetChallenge !== undefined && report.signetChallenge !== this.#expectedSignetChallenge) {
+      differs.push('signet_challenge')
+    }
+    return differs
+  }
+
+  /** The refusal of a guarded call (or `confirmChain()`) after the recorded `mismatch`. */
+  #mismatchError(method: string, mismatch: Extract<ChainState, { status: 'mismatch' }>): RpcChainGuardError {
+    const { report, differs } = mismatch
+    const details: ChainMismatch = {
+      differs,
+      expectedGenesisHash: this.#expectedGenesisHash,
+      ...(report.genesisHash === undefined ? {} : { actualGenesisHash: report.genesisHash }),
+      ...(this.#expectedSignetChallenge === undefined
+        ? {}
+        : { expectedSignetChallenge: this.#expectedSignetChallenge }),
+      ...(report.signetChallenge === undefined ? {} : { actualSignetChallenge: report.signetChallenge }),
+    }
+    return new RpcChainGuardError(method, 'mismatch', this.#expectedChain, report.chain, details)
   }
 
   /** A sign the node may have restarted or been replaced: re-check the chain before the next guarded call. */
@@ -575,8 +677,7 @@ export class QbitRpcClient {
   #chainRefusal(method: string): RpcChainGuardError | undefined {
     const chain = this.#chain
     if (chain.status === 'unconfirmed') return new RpcChainGuardError(method, 'unconfirmed', this.#expectedChain)
-    if (chain.status === 'mismatch')
-      return new RpcChainGuardError(method, 'mismatch', this.#expectedChain, chain.actual)
+    if (chain.status === 'mismatch') return this.#mismatchError(method, chain)
     return undefined
   }
 
@@ -610,7 +711,7 @@ export class QbitRpcClient {
   #refuseMismatchSince(method: string, started: number): void {
     const chain = this.#chain
     if (chain.status === 'mismatch' && chain.doubt > started) {
-      throw new Failure(new RpcChainGuardError(method, 'mismatch', this.#expectedChain, chain.actual), false, false)
+      throw new Failure(this.#mismatchError(method, chain), false, false)
     }
   }
 
@@ -635,8 +736,13 @@ export class QbitRpcClient {
   /**
    * One chain check, sent with `authorization` (the header of the call it
    * guards), and recorded; `clearsBefore` for `confirmChain()`'s, see
-   * `#recordChain`. Its failures are plain failures: a guarded request has
-   * not been sent.
+   * `#recordChain`. `getblockchaininfo` and `getblockhash 0` go in one batch:
+   * one exchange under the attempt's signal, answered by one node. Its
+   * failures, an error or a malformed or missing reply for either request
+   * included, are plain failures that record nothing: a guarded request has
+   * not been sent. Whole-exchange failures name `getblockchaininfo`. The one
+   * exception: when only the `getblockhash` reply fails, a chain name or signet
+   * challenge that differs is still recorded as a mismatch.
    */
   async #checkChain(
     attempt: AttemptContext,
@@ -644,21 +750,44 @@ export class QbitRpcClient {
     clearsBefore: number | undefined
   ): Promise<BlockchainInfo> {
     const check = requests.getBlockchainInfo()
-    const id = this.#nextId++
-    const body = stringifyRequest({ jsonrpc: '2.0', id, method: check.method, params: check.params })
+    const genesis = requests.getBlockHash(0)
+    const ids = [this.#nextId++, this.#nextId++] as const
+    const body = stringifyRequest([
+      { jsonrpc: '2.0', id: ids[0], method: check.method, params: check.params },
+      { jsonrpc: '2.0', id: ids[1], method: genesis.method, params: genesis.params },
+    ])
     const since = this.#doubts
     let info: BlockchainInfo
+    let genesisHash: string | undefined
     try {
-      const text = await this.#exchange(check.method, body, attempt.signal, false, id, authorization.header)
-      const reply = this.#envelope(check.method, parseOrProtocolError(check.method, text), id, 'response')
-      if ('error' in reply) throw new Failure(reply.error, false, reply.error.code === RPC_IN_WARMUP)
-      info = validated(check.method, check, reply.result)
+      const text = await this.#exchange(check.method, body, attempt.signal, false, undefined, authorization.header)
+      const replies = repliesById(check.method, parseOrProtocolError(check.method, text), ids)
+      info = this.#checkReply(check, replies, ids[0])
+      try {
+        genesisHash = this.#checkReply(genesis, replies, ids[1])
+      } catch (error) {
+        // Another chain name or signet challenge is a mismatch whatever the
+        // genesis reply was, so it is recorded; otherwise the check failed.
+        const shown = { chain: info.chain, genesisHash: undefined, signetChallenge: info.signetChallenge }
+        if (this.#chainDifferences(shown).length === 0) throw error
+      }
     } catch (error) {
       const failure = asFailure(check.method, error, attempt)
       throw new Failure(failure.error, false, failure.retryable, failure.staleSocket)
     }
-    this.#recordChain(info, since, authorization.digest, clearsBefore)
+    const report = { chain: info.chain, genesisHash, signetChallenge: info.signetChallenge }
+    this.#recordChain(report, since, authorization.digest, clearsBefore)
     return info
+  }
+
+  /** The chain check's reply to `request`: its validated result, or a failure (-28, warming up, is retryable). */
+  #checkReply<T>(request: RpcRequest<T>, replies: ReadonlyMap<number, unknown>, id: number): T {
+    const path = `response[id=${id}]`
+    if (!replies.has(id))
+      throw new Failure(protocolError(request.method, path, 'a reply for this request'), true, false)
+    const reply = this.#envelope(request.method, replies.get(id), id, path)
+    if ('error' in reply) throw new Failure(reply.error, false, reply.error.code === RPC_IN_WARMUP)
+    return validated(request.method, request, reply.result)
   }
 
   #authorize(method: string, inBatch: boolean): MethodPolicy {
@@ -734,20 +863,7 @@ export class QbitRpcClient {
       } catch (error) {
         throw asFailure(label, error, attempt)
       }
-      const parsed = parseOrProtocolError(label, text)
-      if (!Array.isArray(parsed))
-        throw new Failure(protocolError(label, 'response', 'an array of replies'), true, false)
-      const byId = new Map<number, unknown>()
-      parsed.forEach((item, index) => {
-        const path = `response[${index}]`
-        const replyId = item !== null && typeof item === 'object' ? (item as Record<string, unknown>)['id'] : undefined
-        const numericId =
-          replyId instanceof JsonNumber && /^[1-9][0-9]*$/.test(replyId.source) ? Number(replyId.source) : NaN
-        if (!ids.includes(numericId) || byId.has(numericId)) {
-          throw new Failure(protocolError(label, `${path}.id`, 'the id of a request in this batch, once'), true, false)
-        }
-        byId.set(numericId, item)
-      })
+      const byId = repliesById(label, parseOrProtocolError(label, text), ids)
       return entries.map((entry, index): BatchItem<unknown> => {
         const id = ids[index]!
         if (!byId.has(id)) {
@@ -997,6 +1113,26 @@ function nodeErrorFrom(method: string, error: Record<string, unknown>): RpcError
 
 function protocolError(method: string, path: string, expected: string): RpcResponseError {
   return new RpcResponseError(method, 'protocol', path, expected)
+}
+
+/**
+ * A batch reply's items by request id. Throws unless it is an array whose
+ * every item answers one of `ids`, once; an id with no item is absent.
+ */
+function repliesById(label: string, parsed: unknown, ids: readonly number[]): Map<number, unknown> {
+  if (!Array.isArray(parsed)) throw new Failure(protocolError(label, 'response', 'an array of replies'), true, false)
+  const byId = new Map<number, unknown>()
+  parsed.forEach((item, index) => {
+    const path = `response[${index}]`
+    const replyId = item !== null && typeof item === 'object' ? (item as Record<string, unknown>)['id'] : undefined
+    const numericId =
+      replyId instanceof JsonNumber && /^[1-9][0-9]*$/.test(replyId.source) ? Number(replyId.source) : NaN
+    if (!ids.includes(numericId) || byId.has(numericId)) {
+      throw new Failure(protocolError(label, `${path}.id`, 'the id of a request in this batch, once'), true, false)
+    }
+    byId.set(numericId, item)
+  })
+  return byId
 }
 
 function parseOrProtocolError(method: string, text: string): unknown {

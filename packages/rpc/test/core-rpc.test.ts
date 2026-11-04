@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { QbitRpcClient, RpcUnknownOutcomeError } from '../src'
 import { rpcErrorCode, RPC_INVALID_PARAMETER, RPC_NOT_FOUND, type CoreRpc } from './helpers/core-rpc'
-import { blockchainInfoJson, FakeNode, HASH_A } from './helpers/fake-node'
+import { chainResults, FakeNode, HASH_A } from './helpers/fake-node'
 
 // The compile-time proof, checked by `pnpm typecheck:test`: a QbitRpcClient
 // is a CoreRpc as it stands, with no wrapper or cast.
@@ -43,7 +43,7 @@ afterEach(async () => {
 })
 
 async function core(): Promise<CoreRpc> {
-  node.results({ getblockchaininfo: blockchainInfoJson('regtest') })
+  node.results(chainResults('regtest'))
   const rpc = new QbitRpcClient({
     url: node.url,
     wallet: 'treasury',

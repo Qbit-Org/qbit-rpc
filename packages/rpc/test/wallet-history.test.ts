@@ -12,7 +12,7 @@ import {
   type Capability,
   type QbitRpcClientOptions,
 } from '../src'
-import { blockchainInfoJson, FakeNode } from './helpers/fake-node'
+import { chainResults, FakeNode } from './helpers/fake-node'
 
 let node: FakeNode
 
@@ -38,7 +38,7 @@ function client(
 
 async function confirmed(options: Partial<QbitRpcClientOptions> = {}): Promise<QbitRpcClient> {
   const rpc = client(['wallet-read', 'wallet-write'], options)
-  node.results({ getblockchaininfo: blockchainInfoJson('regtest') })
+  node.results(chainResults('regtest'))
   await rpc.confirmChain()
   return rpc
 }
@@ -947,7 +947,7 @@ describe('getNewAddress', () => {
 describe('wallet history capabilities', () => {
   it('needs wallet-read for the reads and wallet-write and a confirmed chain for getNewAddress', async () => {
     node.results({
-      getblockchaininfo: blockchainInfoJson('regtest'),
+      ...chainResults('regtest'),
       listsinceblock: sinceBlock([]),
       listtransactions: '[]',
       getbalances: json(BALANCES),

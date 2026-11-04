@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { QbitRpcClient, requests, type RpcRequest } from '../src'
 import { withCallOptions } from '../src/methods'
-import { blockchainInfoJson, FakeNode, HASH_A, TX_HEX } from './helpers/fake-node'
+import { chainResults, FakeNode, HASH_A, TX_HEX } from './helpers/fake-node'
 
 // Every options or arguments object is strict: a key no builder reads would
 // otherwise be dropped without a word, as qbit Core v1.0.0 itself drops
@@ -325,7 +325,7 @@ describe('client methods', () => {
 
   beforeEach(async () => {
     node = await FakeNode.start()
-    node.results({ getblockchaininfo: blockchainInfoJson('regtest') })
+    node.results(chainResults('regtest'))
     rpc = new QbitRpcClient({
       url: node.url,
       auth: { username: 'u', password: 'p' },

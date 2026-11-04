@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { BITS_PER_QBT, formatQbt, JsonNumber, MAX_MONEY_BITS, parseQbt, QbitRpcClient, RpcResponseError } from '../src'
-import { blockchainInfoJson, FakeNode, HASH_A } from './helpers/fake-node'
+import { chainResults, FakeNode, HASH_A } from './helpers/fake-node'
 
 const TWO_53_PLUS_1 = 2n ** 53n + 1n // 9007199254740993 bits, not representable as a JS number
 
@@ -116,7 +116,7 @@ describe('amounts through a node', () => {
 
   it('serializes outgoing amounts as exact decimal JSON numbers', async () => {
     node.results({
-      getblockchaininfo: blockchainInfoJson('regtest'),
+      ...chainResults('regtest'),
       walletcreatefundedpsbt: '{"psbt":"cHNidP8=","fee":0.00000141,"changepos":-1}',
     })
     await rpc.confirmChain()
@@ -151,7 +151,7 @@ describe('amounts through a node', () => {
     ['a bigint above the cap', MAX_MONEY_BITS + 1n],
     ['a decimal string', '0.1'],
   ])('refuses %s as an outgoing amount before sending', async (_label, amountBits) => {
-    node.results({ getblockchaininfo: blockchainInfoJson('regtest') })
+    node.results(chainResults('regtest'))
     await rpc.confirmChain()
     const before = node.requests.length
     await expect(

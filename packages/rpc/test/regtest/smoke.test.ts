@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest'
 
 import {
   JsonNumber,
+  QBIT_GENESIS_HASHES,
   QbitRpcClient,
   requests,
   RpcCapabilityError,
@@ -21,6 +22,8 @@ const enabled = env['RUN_QBIT_REGTEST_SMOKE'] === '1'
 const url = env['QBIT_REGTEST_RPC_URL'] ?? ''
 const cookieFile = env['QBIT_REGTEST_COOKIE_FILE'] ?? ''
 const [cliPath = '', ...cliArgs] = (env['QBIT_REGTEST_CLI'] ?? '').split(' ')
+/** qbit Core v1.0.0's regtest genesis block (src/kernel/chainparams.cpp). */
+const REGTEST_GENESIS = '0ee96aa77c4b600850e349344fa21b107e805f5370ddc7a6189db12cf69acce6'
 
 function cli(...args: string[]): string {
   return execFileSync(cliPath, [...cliArgs, ...args], { encoding: 'utf8' }).trim()
@@ -58,6 +61,33 @@ describe.runIf(enabled)('qbit Core v1.0.0 regtest', () => {
     expect(count.ok && (count.value as JsonNumber).toSafeInteger()).toBe(info.blocks)
     const [missing] = await rpc.batch([requests.getBlockHash(1_000_000)])
     expect(!missing.ok && RpcError.is(missing.error) && missing.error.code).toBe(-8)
+  })
+
+  it('confirms the chain by its genesis block, and refuses another expectedGenesisHash', async () => {
+    const rpc = client()
+    expect(await rpc.getBlockHash(0)).toBe(REGTEST_GENESIS)
+    expect(QBIT_GENESIS_HASHES.regtest).toBe(REGTEST_GENESIS)
+    const info = await rpc.confirmChain()
+    expect(info.chain).toBe('regtest')
+    expect(info.signetChallenge).toBeUndefined()
+    expect(rpc.chainStatus).toBe('confirmed')
+    // Through a wallet endpoint too: the batch reaches the node's chain methods there.
+    const wallet = client({ wallet: 'smoke' })
+    await wallet.confirmChain()
+    expect(wallet.chainStatus).toBe('confirmed')
+
+    const other = client({ expectedGenesisHash: 'ab'.repeat(32) })
+    const error = await other.confirmChain().catch((e: unknown) => e)
+    expect(RpcChainGuardError.is(error)).toBe(true)
+    expect(error).toMatchObject({
+      reason: 'mismatch',
+      expected: 'regtest',
+      actual: 'regtest',
+      differs: ['genesis_hash'],
+      expectedGenesisHash: 'ab'.repeat(32),
+      actualGenesisHash: REGTEST_GENESIS,
+    })
+    expect(other.chainStatus).toBe('mismatch')
   })
 
   // Every option name the client sends must change what the node does: qbit
