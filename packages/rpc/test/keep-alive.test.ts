@@ -210,7 +210,7 @@ describe('a pooled connection the node closed', () => {
   const SIDE_EFFECTS: [string, (rpc: QbitRpcClient) => Promise<unknown>][] = [
     ['walletlock', rpc => rpc.walletLock()],
     ['sendrawtransaction', rpc => rpc.sendRawTransaction(TX_HEX)],
-    ['lockunspent', rpc => rpc.lockUnspent(false, [{ txid: HASH_A, vout: 0 }])],
+    ['lockunspent', rpc => rpc.lockUnspent([{ txid: HASH_A, vout: 0 }])],
   ]
 
   it.each(SIDE_EFFECTS)(
@@ -392,7 +392,7 @@ describe('a pooled connection the node closed', () => {
 
   it.each([
     ['sendrawtransaction', (rpc: QbitRpcClient) => rpc.sendRawTransaction(TX_HEX)],
-    ['lockunspent', (rpc: QbitRpcClient) => rpc.lockUnspent(false, [{ txid: HASH_A, vout: 0 }])],
+    ['lockunspent', (rpc: QbitRpcClient) => rpc.lockUnspent([{ txid: HASH_A, vout: 0 }])],
   ])('never retries %s: one request, on a new connection, and an unknown outcome', async (method, run) => {
     const rpc = await pooled({ readRetries: 3 })
     await rpc.getBlockCount()

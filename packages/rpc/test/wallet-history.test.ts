@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import {
-  METHOD_POLICIES,
   QbitRpcClient,
   requests,
   RpcCapabilityError,
@@ -12,6 +11,7 @@ import {
   type Capability,
   type QbitRpcClientOptions,
 } from '../src'
+import { METHOD_POLICIES } from '../src/capabilities'
 import { chainResults, FakeNode } from './helpers/fake-node'
 
 let node: FakeNode
@@ -886,14 +886,14 @@ describe('getNewAddress', () => {
   it('passes node errors through as definite answers', async () => {
     const rpc = await confirmed({ readRetries: 3 })
     for (const [code, message] of [
-      [-5, "Unknown address type 'bogus'"],
+      [-5, "address type 'bech32' is not available on this chain"],
       [-11, 'Invalid label name'],
       [-4, 'Error: This wallet has no available keys'],
       [-12, "Output type 'bech32' is not available on this chain"],
     ] as const) {
       node.rpc(() => ({ error: { code, message } }))
       const before = node.requests.length
-      const error = await failure(rpc.getNewAddress({ addressType: 'bogus' }))
+      const error = await failure(rpc.getNewAddress({ addressType: 'bech32' }))
       expect(RpcError.is(error)).toBe(true)
       expect(error).toMatchObject({ rpcCode: code, message })
       expect(node.requests).toHaveLength(before + 1)
@@ -909,7 +909,9 @@ describe('getNewAddress', () => {
       [{ label: 5 }, TypeError],
       [{ label: null }, TypeError],
       [{ label: '*' }, RangeError],
-      [{ addressType: '' }, TypeError],
+      [{ addressType: '' }, RangeError],
+      [{ addressType: 'bogus' }, RangeError],
+      [{ addressType: 'P2MR' }, RangeError],
       [{ addressType: 2 }, TypeError],
       [{ addressType: null }, TypeError],
     ]

@@ -4,7 +4,6 @@ import { describe, expect, it } from 'vitest'
 
 import {
   JsonNumber,
-  QBIT_GENESIS_HASHES,
   QbitRpcClient,
   requests,
   RpcCapabilityError,
@@ -13,6 +12,7 @@ import {
   type Outpoint,
   type QbitRpcClientOptions,
 } from '../../src'
+import { QBIT_GENESIS_HASHES } from '../../src/capabilities'
 import type { CoreRpc } from '../helpers/core-rpc'
 
 // Runs only under scripts/regtest-smoke.sh, which starts a throwaway regtest
@@ -130,9 +130,13 @@ describe.runIf(enabled)('qbit Core v1.0.0 regtest', () => {
     await expect(wallet.walletCreateFundedPsbt({ ...small, options: { maxTxWeight: 1000 } })).rejects.toSatisfy(
       nodeError()
     )
-    await expect(wallet.walletCreateFundedPsbt({ ...small, options: { changeType: 'not-a-type' } })).rejects.toSatisfy(
-      nodeError()
+    // A type qbit Core parses, which a P2MR-only chain refuses.
+    await expect(wallet.walletCreateFundedPsbt({ ...small, options: { changeType: 'bech32' } })).rejects.toSatisfy(
+      nodeError(-5)
     )
+    expect(
+      (await decode((await wallet.walletCreateFundedPsbt({ ...small, options: { changeType: 'p2mr' } })).psbt)).vout
+    ).toHaveLength(2)
 
     // add_inputs: one coin pinned, and more needed than it holds.
     const [coin] = all
@@ -362,7 +366,8 @@ describe.runIf(enabled)('qbit Core v1.0.0 regtest', () => {
       pqcLimitState: 'normal',
     })
     expect(await wallet.getRawChangeAddress()).toMatch(/^qbrt1z/)
-    await expect(wallet.getRawChangeAddress({ addressType: 'bogus' })).rejects.toSatisfy(nodeError(-5))
+    await expect(wallet.getRawChangeAddress({ addressType: 'bech32' })).rejects.toSatisfy(nodeError(-5))
+    await expect(wallet.call('getrawchangeaddress', ['bogus'])).rejects.toSatisfy(nodeError(-5))
     const locked = client({ wallet: 'locked', capabilities: ['wallet-write'] })
     await locked.confirmChain()
     expect(await locked.getRawChangeAddress({ addressType: 'p2mr' })).toMatch(/^qbrt1z/)
@@ -389,25 +394,30 @@ describe.runIf(enabled)('qbit Core v1.0.0 regtest', () => {
     expect(unspent!.coinbase).toBe('coinbase' in (await wallet.getRawTransactionVerbose(coin!.txid)).vin[0]!)
     expect(await wallet.getTxOut(coin!.txid, 999)).toBeNull()
 
-    // lockunspent and listlockunspent.
+    // lockunspent (lockUnspent and unlockUnspent) and listlockunspent.
     await wallet.call('lockunspent', [true])
     expect(await core.listLockUnspent()).toEqual([])
-    expect(await core.lockUnspent(false, [outpoint])).toBe(true)
+    expect(await core.lockUnspent([outpoint])).toBeUndefined()
     expect(await core.listLockUnspent()).toEqual([outpoint])
     expect((await wallet.listUnspent()).some(u => u.txid === coin!.txid && u.vout === coin!.vout)).toBe(false)
-    await expect(wallet.lockUnspent(false, [outpoint])).rejects.toSatisfy(nodeError(-8))
+    await expect(wallet.lockUnspent([outpoint])).rejects.toSatisfy(nodeError(-8))
     // One bad output and the node changes nothing.
-    await expect(wallet.lockUnspent(false, [other, { txid: '00'.repeat(32), vout: 0 }])).rejects.toSatisfy(
-      nodeError(-8)
-    )
-    await expect(wallet.lockUnspent(false, [{ txid: coin!.txid, vout: 999 }])).rejects.toSatisfy(nodeError(-8))
-    await expect(wallet.lockUnspent(true, [outpoint, other])).rejects.toSatisfy(nodeError(-8))
+    await expect(wallet.lockUnspent([other, { txid: '00'.repeat(32), vout: 0 }])).rejects.toSatisfy(nodeError(-8))
+    await expect(wallet.lockUnspent([{ txid: coin!.txid, vout: 999 }])).rejects.toSatisfy(nodeError(-8))
+    await expect(wallet.unlockUnspent([outpoint, other])).rejects.toSatisfy(nodeError(-8))
     expect(await wallet.listLockUnspent()).toEqual([outpoint])
-    expect(await wallet.lockUnspent(false, [other], { persistent: true })).toBe(true)
+    expect(await wallet.lockUnspent([other], { persistent: true })).toBeUndefined()
     expect(sorted(await wallet.listLockUnspent())).toEqual(sorted([outpoint, other]))
-    expect(await wallet.lockUnspent(true, [outpoint, other])).toBe(true)
+    // persistent locks an output locked in memory only again, where locking it again in memory is refused.
+    expect(await wallet.lockUnspent([outpoint], { persistent: true })).toBeUndefined()
+    // An empty list: qbit Core unlocks nothing (and the client refuses it), leaving it out unlocks everything.
+    expect(await wallet.call('lockunspent', [true, []])).toBe(true)
+    expect(sorted(await wallet.listLockUnspent())).toEqual(sorted([outpoint, other]))
+    await expect(wallet.unlockUnspent([])).rejects.toThrow(RangeError)
+    // One unlock clears persistent and in-memory locks alike.
+    expect(await core.unlockUnspent([outpoint, other])).toBeUndefined()
     expect(await wallet.listLockUnspent()).toEqual([])
-    await expect(wallet.lockUnspent(true, [outpoint])).rejects.toSatisfy(nodeError(-8))
+    await expect(wallet.unlockUnspent([outpoint])).rejects.toSatisfy(nodeError(-8))
 
     // Spend the coin: signing uses one signature of its key, which getaddressinfo reports.
     const before = await wallet.getAddressInfo(coin!.address!)
@@ -515,7 +525,8 @@ describe.runIf(enabled)('qbit Core v1.0.0 regtest', () => {
     const deposit = await wallet.getNewAddress({ label, addressType: 'p2mr' })
     expect((await wallet.getAddressInfo(deposit)).labels).toEqual([label])
     expect((await wallet.getAddressInfo(await wallet.getNewAddress())).labels).toEqual([''])
-    await expect(wallet.getNewAddress({ addressType: 'bogus' })).rejects.toSatisfy(nodeError(-5))
+    await expect(wallet.getNewAddress({ addressType: 'bech32m' })).rejects.toSatisfy(nodeError(-5))
+    await expect(wallet.call('getnewaddress', ['', 'bogus'])).rejects.toSatisfy(nodeError(-5))
     await expect(wallet.getNewAddress({ label: '*' })).rejects.toThrow(RangeError)
     await expect(wallet.call('getnewaddress', ['*'])).rejects.toSatisfy(nodeError(-11))
     // A wallet encrypted at creation, still locked.
@@ -979,6 +990,91 @@ describe.runIf(enabled)('qbit Core v1.0.0 regtest', () => {
     expect((await wallet.testMempoolAccept([pinnedBump.hex!]))[0]).toMatchObject({ allowed: true })
 
     await mine()
+    expect(await wallet.call('getrawmempool')).toEqual([])
+  })
+
+  // Each range below is the one qbit Core v1.0.0 accepts: its largest value
+  // reaches the node, and the next is refused before anything is sent, where
+  // call() shows the node refusing it too.
+  it('takes each argument up to the bound qbit Core takes, and refuses a fee-rate cap of 0n', async () => {
+    const wallet = client({ wallet: 'smoke', capabilities: ['wallet-read', 'wallet-write', 'broadcast'] })
+    await wallet.confirmChain()
+    const nodeError =
+      (code: number, message?: RegExp) =>
+      (error: unknown): boolean =>
+        RpcError.is(error) && error.rpcCode === code && (message === undefined || message.test(error.message))
+    const [coin] = await wallet.listUnspent()
+    const to = await wallet.getNewAddress({ addressType: 'p2mr' })
+    const outputs = [{ address: to, amountBits: 10_000_000n }]
+    const fee = { feeRateBitsPerKvB: 2000n }
+    const sent = { [to]: 0.1 }
+
+    // gettxout reads vout as an unsigned 32-bit integer.
+    expect(await wallet.getTxOut(coin!.txid, 0x8000_0000)).toBeNull()
+    expect(await wallet.getTxOut(coin!.txid, 0xffff_ffff)).toBeNull()
+    await expect(wallet.getTxOut(coin!.txid, 0x1_0000_0000)).rejects.toThrow(RangeError)
+    await expect(wallet.call('gettxout', [coin!.txid, 0x1_0000_0000])).rejects.toSatisfy(nodeError(-1, /out of range/))
+
+    // walletcreatefundedpsbt's inputs and lockunspent read it as a signed one.
+    const far = { txid: coin!.txid, vout: 0x7fff_ffff }
+    const beyond = { txid: coin!.txid, vout: 0x8000_0000 }
+    await expect(wallet.walletCreateFundedPsbt({ inputs: [far], outputs, options: fee })).rejects.toSatisfy(
+      nodeError(-4, /Unable to find UTXO/)
+    )
+    await expect(wallet.walletCreateFundedPsbt({ inputs: [beyond], outputs, options: fee })).rejects.toThrow(RangeError)
+    await expect(wallet.call('walletcreatefundedpsbt', [[beyond], [sent]])).rejects.toSatisfy(
+      nodeError(-1, /out of range/)
+    )
+    await expect(wallet.lockUnspent([far])).rejects.toSatisfy(nodeError(-8, /vout index out of bounds/))
+    await expect(wallet.lockUnspent([beyond])).rejects.toThrow(RangeError)
+    await expect(wallet.unlockUnspent([beyond])).rejects.toThrow(RangeError)
+    await expect(wallet.call('lockunspent', [false, [beyond]])).rejects.toSatisfy(nodeError(-1, /out of range/))
+
+    // version: TX_MIN_STANDARD_VERSION to TX_MAX_STANDARD_VERSION.
+    for (const version of [1, 3]) {
+      const funded = await wallet.walletCreateFundedPsbt({ outputs, version, options: fee })
+      const tx = ((await wallet.call('decodepsbt', [funded.psbt])) as { tx: { version: JsonNumber } }).tx
+      expect(tx.version.toSafeInteger()).toBe(version)
+    }
+    await expect(wallet.walletCreateFundedPsbt({ outputs, version: 4, options: fee })).rejects.toThrow(RangeError)
+    await expect(wallet.call('walletcreatefundedpsbt', [[], [sent], 0, { fee_rate: 2 }, false, 4])).rejects.toSatisfy(
+      nodeError(-8, /version out of range\(1~3\)/)
+    )
+
+    // max_tx_weight: 65 to 400,000. At 65 the range check passes and coin selection fails.
+    expect(
+      (await wallet.walletCreateFundedPsbt({ outputs, options: { ...fee, maxTxWeight: 400_000 } })).psbt
+    ).toBeTruthy()
+    const lightest = await wallet
+      .walletCreateFundedPsbt({ outputs, options: { ...fee, maxTxWeight: 65 } })
+      .catch(e => e)
+    expect(nodeError(-4)(lightest) && !/must be between/.test((lightest as Error).message)).toBe(true)
+    for (const weight of [64, 400_001]) {
+      await expect(
+        wallet.walletCreateFundedPsbt({ outputs, options: { ...fee, maxTxWeight: weight } })
+      ).rejects.toThrow(RangeError)
+      await expect(
+        wallet.call('walletcreatefundedpsbt', [[], [sent], 0, { fee_rate: 2, max_tx_weight: weight }])
+      ).rejects.toSatisfy(nodeError(-4, /must be between 65 and 400000/))
+    }
+
+    // maxfeerate: 1 bit/kvB is a cap, and 0 none at all; left out, the node's default of 0.10 QBT/kvB applies.
+    const funded = await wallet.walletCreateFundedPsbt({ outputs, options: fee })
+    const hex = (await wallet.walletProcessPsbt(funded.psbt)).hex!
+    expect(await wallet.testMempoolAccept([hex], { maxFeeRateBitsPerKvB: 1n })).toMatchObject([
+      { allowed: false, rejectReason: 'max-fee-exceeded' },
+    ])
+    expect(await wallet.testMempoolAccept([hex], { maxFeeRateBitsPerKvB: 99_999_999n })).toMatchObject([
+      { allowed: true },
+    ])
+    expect(await wallet.testMempoolAccept([hex])).toMatchObject([{ allowed: true }])
+    expect(cli('help', 'testmempoolaccept')).toMatch(/maxfeerate +\(numeric or string, optional, default="0\.10"\)/)
+    expect(cli('help', 'sendrawtransaction')).toMatch(/maxfeerate +\(numeric or string, optional, default="0\.10"\)/)
+    await expect(wallet.testMempoolAccept([hex], { maxFeeRateBitsPerKvB: 0n })).rejects.toThrow(RangeError)
+    await expect(wallet.sendRawTransaction(hex, { maxFeeRateBitsPerKvB: 0n })).rejects.toThrow(RangeError)
+    expect(await wallet.call('testmempoolaccept', [[hex], 0])).toMatchObject([{ allowed: true }])
+    await expect(wallet.testMempoolAccept([hex], { maxFeeRateBitsPerKvB: 100_000_000n })).rejects.toThrow(RangeError)
+    await expect(wallet.call('testmempoolaccept', [[hex], 1])).rejects.toSatisfy(nodeError(-8))
     expect(await wallet.call('getrawmempool')).toEqual([])
   })
 })

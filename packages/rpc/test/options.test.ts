@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { QbitRpcClient, requests, type RpcRequest } from '../src'
-import { withCallOptions } from '../src/methods'
 import { chainResults, FakeNode, HASH_A, TX_HEX } from './helpers/fake-node'
 
 // Every options or arguments object is strict: a key no builder reads would
@@ -173,13 +172,28 @@ const unknownKeys: [string, () => RpcRequest<unknown>, RegExp][] = [
   ],
   [
     'lockUnspent options',
-    () => requests.lockUnspent(false, [{ txid: HASH_A, vout: 0 }], { persist: true } as never),
+    () => requests.lockUnspent([{ txid: HASH_A, vout: 0 }], { persist: true } as never),
     /^options\.persist is not a known key; the known keys are persistent$/,
   ],
   [
     'lockUnspent outputs[]',
-    () => requests.lockUnspent(false, [{ txid: HASH_A, vout: 0, n: 1 }] as never),
+    () => requests.lockUnspent([{ txid: HASH_A, vout: 0, n: 1 }] as never),
     /^outputs\[0\] has an unknown key \(not shown\); the known keys are txid, vout$/,
+  ],
+  [
+    'unlockUnspent outputs[]',
+    () => requests.unlockUnspent([{ txid: HASH_A, vout: 0, n: 1 }] as never),
+    /^outputs\[0\] has an unknown key \(not shown\); the known keys are txid, vout$/,
+  ],
+  [
+    'getTxOut options (a call option)',
+    () => requests.getTxOut(HASH_A, 0, { timeoutMs: 5 } as never),
+    /^options\.timeoutMs is a call option: pass it in the call options, the last argument of the client method or of batch\(\)$/,
+  ],
+  [
+    'listUnspent options (a call option misspelled)',
+    () => requests.listUnspent({ timeout: 5 } as never),
+    /^options\.timeout is not a known key: use timeoutMs, in milliseconds, in the call options, the last argument of the client method or of batch\(\)$/,
   ],
 ]
 
@@ -244,13 +258,13 @@ describe('request builders', () => {
       parentDescs: [],
       safe: true,
     }
-    expect(requests.lockUnspent(false, [unspent]).params[1]).toEqual([{ txid: HASH_A, vout: 1 }])
+    expect(requests.lockUnspent([unspent]).params[1]).toEqual([{ txid: HASH_A, vout: 1 }])
     expect(requests.walletCreateFundedPsbt({ inputs: [unspent], outputs: [OUTPUT] }).params[0]).toEqual([
       { txid: HASH_A, vout: 1 },
     ])
     // A decoded transaction input, and a listSinceBlock() or listTransactions() entry.
     const input = { txid: HASH_A, vout: 1, scriptSig: { asm: '', hex: '' }, txinwitness: ['00'], sequence: 0xffff_fffd }
-    expect(requests.lockUnspent(false, [input]).params[1]).toEqual([{ txid: HASH_A, vout: 1 }])
+    expect(requests.lockUnspent([input]).params[1]).toEqual([{ txid: HASH_A, vout: 1 }])
     expect(requests.walletCreateFundedPsbt({ inputs: [input], outputs: [OUTPUT] }).params[0]).toEqual([
       { txid: HASH_A, vout: 1, sequence: 0xffff_fffd },
     ])
@@ -270,7 +284,7 @@ describe('request builders', () => {
       timeReceived: 1,
       bip125Replaceable: 'no',
     }
-    expect(requests.lockUnspent(false, [entry]).params[1]).toEqual([{ txid: HASH_A, vout: 1 }])
+    expect(requests.unlockUnspent([entry]).params[1]).toEqual([{ txid: HASH_A, vout: 1 }])
   })
 
   it('ignore an enumerable key on a polluted Object.prototype, but not the same key set by the caller', () => {
@@ -288,14 +302,24 @@ describe('request builders', () => {
     }
   })
 
-  it('keep the call-option mark through a nested build with the same object', () => {
-    const o = { includeMempool: true, timeoutMs: 5 }
-    const params = withCallOptions(o, () => {
-      withCallOptions(o, () => requests.getTxOut(HASH_A, 0, o))
-      return requests.getTxOut(HASH_A, 0, o).params
-    })
-    expect(params).toEqual([HASH_A, 0, true])
-    expect(() => requests.getTxOut(HASH_A, 0, o)).toThrow(/options\.timeoutMs is not a known key/)
+  it("refuse a call option among a request's own options, pointing to the call options", () => {
+    for (const key of ['signal', 'timeoutMs']) {
+      // Even set to undefined: any key a builder does not read is refused.
+      expect(() => requests.listUnspent({ minConf: 1, [key]: undefined } as never)).toThrow(TypeError)
+      expect(() => requests.listUnspent({ minConf: 1, [key]: 5 } as never)).toThrow(
+        new RegExp(
+          `^options\\.${key} is a call option: pass it in the call options, the last argument of the client method or of batch\\(\\)$`
+        )
+      )
+    }
+    // Nested arguments never take call options, and say nothing about them.
+    expect(() => requests.lockUnspent([{ txid: HASH_A, vout: 0, timeoutMs: 5 } as never])).toThrow(
+      /^outputs\[0\] has an unknown key \(not shown\); the known keys are txid, vout$/
+    )
+    // A method's top-level arguments object points a call option to its place.
+    expect(() => requests.walletCreateFundedPsbt({ outputs: [OUTPUT], signal: 5 } as never)).toThrow(
+      /^args\.signal is a call option: pass it in the call options/
+    )
   })
 
   it('read the options a check relates once, so a getter cannot pass it and then send both', () => {
@@ -363,47 +387,69 @@ describe('client methods', () => {
   })
 
   it.each<[string, (rpc: QbitRpcClient) => Promise<unknown>, RegExp]>([
-    // Options that carry the method's own keys and the call options.
+    // A method's own options.
     [
       'getTxOut',
       c => c.getTxOut(HASH_A, 0, { includeMempool: true, include_mempool: false } as never),
       /include_mempool/,
     ],
-    ['listUnspent', c => c.listUnspent({ timeoutMs: 1000, minconf: 0 } as never), /use options\.minConf$/],
     [
-      'sendRawTransaction',
-      c => c.sendRawTransaction(TX_HEX, { signal: new AbortController().signal, maxfeerate: 1n } as never),
-      /maxfeerate/,
+      'listUnspent',
+      c => c.listUnspent({ minconf: 0 } as never),
+      /^options\.minconf is not a known key: use options\.minConf$/,
     ],
+    ['sendRawTransaction', c => c.sendRawTransaction(TX_HEX, { maxfeerate: 1n } as never), /maxfeerate/],
     ['getRawChangeAddress', c => c.getRawChangeAddress({ address_type: 'p2mr' } as never), /addressType/],
-    [
-      'listSinceBlock',
-      c => c.listSinceBlock({ timeoutMs: 1000, blockhash: HASH_A } as never),
-      /use options\.blockHash$/,
-    ],
-    ['getNewAddress', c => c.getNewAddress({ signal: undefined, label_name: 'x' } as never), /label_name/],
-    ['lockUnspent', c => c.lockUnspent(false, [{ txid: HASH_A, vout: 0 }], { persist: true } as never), /persist/],
+    ['listSinceBlock', c => c.listSinceBlock({ blockhash: HASH_A } as never), /use options\.blockHash$/],
+    ['getNewAddress', c => c.getNewAddress({ label_name: 'x' } as never), /label_name/],
+    ['lockUnspent', c => c.lockUnspent([{ txid: HASH_A, vout: 0 }], { persist: true } as never), /persist/],
     [
       'psbtBumpFee',
-      c => c.psbtBumpFee(HASH_A, { timeoutMs: 1000, conf_target: 6 } as never),
+      c => c.psbtBumpFee(HASH_A, { conf_target: 6 } as never),
       /^options\.conf_target is not a known key: use options\.confTarget$/,
+    ],
+    // A call option among them, as the merged options of earlier versions took it.
+    [
+      'listUnspent (a call option)',
+      c => c.listUnspent({ minConf: 1, timeoutMs: 1000 } as never),
+      /^options\.timeoutMs is a call option: pass it in the call options, the last argument of the client method or of batch\(\)$/,
+    ],
+    [
+      'sendRawTransaction (a call option)',
+      c => c.sendRawTransaction(TX_HEX, { signal: new AbortController().signal } as never),
+      /^options\.signal is a call option/,
     ],
     [
       'psbtBumpFee (a call option misspelled)',
       c => c.psbtBumpFee(HASH_A, { timeout: 1000 } as never),
-      /use options\.timeoutMs, in milliseconds$/,
+      /^options\.timeout is not a known key: use timeoutMs, in milliseconds, in the call options, the last argument of the client method or of batch\(\)$/,
     ],
-    // Call options alone.
+    // The call options.
     [
       'getBlockCount',
       c => c.getBlockCount({ timeout: 1000 } as never),
-      /^options\.timeout is not a known key: use options\.timeoutMs, in milliseconds$/,
+      /^callOptions\.timeout is not a known key: use callOptions\.timeoutMs, in milliseconds$/,
     ],
     ['walletLock', c => c.walletLock({ signals: [] } as never), /signals/],
-    ['call', c => c.call('getblockcount', [], { timeout_ms: 5 } as never), /use options\.timeoutMs$/],
+    [
+      'getTxOut (a method option among the call options)',
+      c => c.getTxOut(HASH_A, 0, {}, { includeMempool: false } as never),
+      /^callOptions\.includeMempool is not a known key; the known keys are signal, timeoutMs$/,
+    ],
+    [
+      'listUnspent (its options passed as call options)',
+      c => c.listUnspent(undefined, { minConf: 1 } as never),
+      /^callOptions\.minConf is not a known key/,
+    ],
+    [
+      'lockUnspent (call options passed as its options)',
+      c => c.lockUnspent([{ txid: HASH_A, vout: 0 }], { timeoutMs: 1000 } as never),
+      /^options\.timeoutMs is a call option/,
+    ],
+    ['call', c => c.call('getblockcount', [], { timeout_ms: 5 } as never), /use callOptions\.timeoutMs$/],
     ['batch', c => c.batch([requests.getBlockCount()], { deadline: 5 } as never), /deadline/],
-    ['an empty batch', c => c.batch([], { timeoutMS: 5 } as never), /use options\.timeoutMs$/],
-    ['confirmChain', c => c.confirmChain({ timeoutMS: 5 } as never), /use options\.timeoutMs$/],
+    ['an empty batch', c => c.batch([], { timeoutMS: 5 } as never), /use callOptions\.timeoutMs$/],
+    ['confirmChain', c => c.confirmChain({ timeoutMS: 5 } as never), /use callOptions\.timeoutMs$/],
     [
       'walletCreateFundedPsbt',
       c => c.walletCreateFundedPsbt({ outputs: [OUTPUT] }, { timeoutMs: 1000, retries: 1 } as never),
@@ -421,29 +467,41 @@ describe('client methods', () => {
     expect(node.requests).toHaveLength(0)
   })
 
-  it('still pass the call options through', async () => {
+  it('pass the call options, the last argument, apart from the method options', async () => {
     node.results({ gettxout: 'null', getblockcount: '7' })
-    expect(await rpc.getTxOut(HASH_A, 0, { includeMempool: false, timeoutMs: 1000 })).toBeNull()
+    expect(await rpc.getTxOut(HASH_A, 0, { includeMempool: false }, { timeoutMs: 1000 })).toBeNull()
     expect(node.calls().at(-1)!.params).toEqual([HASH_A, 0, false])
+    expect(await rpc.getTxOut(HASH_A, 0, undefined, { timeoutMs: 1000 })).toBeNull()
+    expect(node.calls().at(-1)!.params).toEqual([HASH_A, 0])
     const aborted = new AbortController()
     aborted.abort()
-    await expect(rpc.getTxOut(HASH_A, 0, { signal: aborted.signal })).rejects.toMatchObject({ name: 'RpcAbortedError' })
-    await expect(rpc.getBlockCount({ timeoutMs: 0 })).rejects.toThrow(RangeError)
+    await expect(rpc.getTxOut(HASH_A, 0, {}, { signal: aborted.signal })).rejects.toMatchObject({
+      name: 'RpcAbortedError',
+    })
+    await expect(rpc.getBlockCount({ timeoutMs: 0 })).rejects.toThrow(
+      /^callOptions\.timeoutMs must be an integer from 1 to 3600000$/
+    )
+    await expect(rpc.getBlockCount({ signal: 'stop' as never })).rejects.toThrow(
+      /^callOptions\.signal must be an AbortSignal$/
+    )
+    await expect(rpc.getTxOut(HASH_A, 0, {}, 5 as never)).rejects.toThrow(/^callOptions must be an object$/)
     expect(await rpc.getBlockCount({ timeoutMs: 1000, signal: undefined } as never)).toBe(7)
-    // A typed method's options may inherit their keys, call options included.
-    const inherited = Object.create({ includeMempool: false, timeoutMs: 1000 }) as { readonly includeMempool?: boolean }
-    expect(await rpc.getTxOut(HASH_A, 0, inherited)).toBeNull()
+    // Each takes keys it inherits, and getters, as the builders and the client read them.
+    const inherited = Object.create({ includeMempool: false }) as { readonly includeMempool?: boolean }
+    const callInherited = Object.create({ timeoutMs: 1000 }) as { readonly timeoutMs?: number }
+    expect(await rpc.getTxOut(HASH_A, 0, inherited, callInherited)).toBeNull()
     expect(node.calls().at(-1)!.params).toEqual([HASH_A, 0, false])
-    // And getters or non-enumerable keys, as the builders read them.
     class Options {
       get includeMempool(): boolean {
         return false
       }
+    }
+    class CallOptions {
       get timeoutMs(): number {
         return 1000
       }
     }
-    expect(await rpc.getTxOut(HASH_A, 0, new Options())).toBeNull()
+    expect(await rpc.getTxOut(HASH_A, 0, new Options(), new CallOptions())).toBeNull()
     expect(node.calls().at(-1)!.params).toEqual([HASH_A, 0, false])
     class Private {
       readonly #mempool = false
@@ -453,18 +511,6 @@ describe('client methods', () => {
     }
     expect(await rpc.getTxOut(HASH_A, 0, new Private())).toBeNull()
     expect(node.calls().at(-1)!.params).toEqual([HASH_A, 0, false])
-    // The builder alone still refuses the call options, and nested arguments never allow them.
-    expect(() => requests.getTxOut(HASH_A, 0, { timeoutMs: 5 } as never)).toThrow(
-      /options\.timeoutMs is not a known key/
-    )
-    const shared = { timeoutMs: 1000 }
-    await expect(rpc.lockUnspent(false, [shared as never], shared)).rejects.toThrow(
-      /outputs\[0\] has an unknown key \(not shown\); the known keys are txid, vout/
-    )
-    // A typo of a call option on a typed method is hinted too.
-    await expect(rpc.getTxOut(HASH_A, 0, { timeout: 5 } as never)).rejects.toThrow(
-      /options\.timeout is not a known key: use options\.timeoutMs, in milliseconds/
-    )
     const hidden = Object.defineProperty({}, 'includeMempool', { value: false, enumerable: false })
     expect(await rpc.getTxOut(HASH_A, 0, hidden)).toBeNull()
     expect(node.calls().at(-1)!.params).toEqual([HASH_A, 0, false])
@@ -476,14 +522,20 @@ describe('client methods', () => {
         return stopped.signal
       }
     }
-    await expect(rpc.getTxOut(HASH_A, 0, new Aborted())).rejects.toMatchObject({ name: 'RpcAbortedError' })
+    await expect(rpc.getTxOut(HASH_A, 0, {}, new Aborted())).rejects.toMatchObject({ name: 'RpcAbortedError' })
+    expect(node.requests).toHaveLength(sent)
+    // One object as both is refused: each argument holds only its own keys.
+    const both = { includeMempool: false, timeoutMs: 1000 }
+    await expect(rpc.getTxOut(HASH_A, 0, both as never, both as never)).rejects.toThrow(
+      /^options\.timeoutMs is a call option/
+    )
     expect(node.requests).toHaveLength(sent)
     // A polluted Object.prototype does not make every call throw.
     const proto = Object.prototype as Record<string, unknown>
     proto['polluted'] = 1
     try {
       expect(await rpc.getBlockCount()).toBe(7)
-      expect(await rpc.getTxOut(HASH_A, 0, { includeMempool: false })).toBeNull()
+      expect(await rpc.getTxOut(HASH_A, 0, { includeMempool: false }, { timeoutMs: 1000 })).toBeNull()
       expect(await rpc.batch([requests.getBlockCount()])).toEqual([{ ok: true, value: 7 }])
     } finally {
       delete proto['polluted']

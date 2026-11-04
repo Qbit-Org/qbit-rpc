@@ -40,13 +40,30 @@ const info = await rpc.getBlockchainInfo()
 | `maxConcurrentRequests` | 8 | Most requests this client has open at once, on pooled and fresh connections alike (1 to 1,024); it also sizes the keep-alive pool. Further attempts wait in FIFO order under their deadline. See [the work queue](#the-work-queue). |
 | `directNode` | `false` | Set when `url` reaches `qbitd` itself. `qbitd`'s HTTP 503 `Work queue depth exceeded` is then a definite failure, not an unknown outcome. Opt-in, because a proxy in between can answer 503 after forwarding the request. See [the work queue](#the-work-queue). |
 
-Every call also takes `{ signal?: AbortSignal, timeoutMs?: number }`.
+## Call options
+
+Every method, `call()`, `batch()` and `confirmChain()` included, takes its call
+options, `{ signal?: AbortSignal, timeoutMs?: number }`, as a separate last
+argument, after the method's own options:
+
+```ts
+await rpc.getTxOut(txid, vout, { includeMempool: true }, { timeoutMs: 5_000 })
+await rpc.listUnspent({ minConf: 1 }, { signal })
+await rpc.sendRawTransaction(hex, undefined, { signal }) // none of its own options
+```
+
+`timeoutMs` (1 to 3,600,000) overrides the client's for this operation, and
+`signal` aborts it (see the [failure model](#failure-model)). A method's own
+options never hold call options, and the call options hold nothing else: a key
+in the wrong one is a `TypeError` that says where it belongs. So a method can
+gain an option named like neither without breaking a caller.
 
 ## Capabilities and the allowlist
 
-Every method, typed or through `call()`, must be on the allowlist
-(`METHOD_POLICIES`), and its capability must be enabled. A refused call throws
-`RpcCapabilityError` before any request is made.
+Every method, typed or through `call()`, must be on the allowlist below, and
+its capability must be enabled. A refused call throws `RpcCapabilityError`
+before any request is made. The allowlist is not exported: this table is its
+documentation, and a test keeps the two equal.
 
 | Capability | Methods |
 | --- | --- |
@@ -91,10 +108,9 @@ absent. A malformed constructor value is a `TypeError`, as is
 | `regtest` | `0ee96aa77c4b600850e349344fa21b107e805f5370ddc7a6189db12cf69acce6` |
 
 These are the genesis hashes qbit Core v1.0.0 asserts
-(`src/kernel/chainparams.cpp`), exported as `QBIT_GENESIS_HASHES`.
-`expectedSignetChallenge` defaults to `51` (`QBIT_DEFAULT_SIGNET_CHALLENGE`),
-the challenge of qbit Core's default signet. What the check still cannot tell
-apart:
+(`src/kernel/chainparams.cpp`); `client.toJSON()` shows the one a client
+expects. `expectedSignetChallenge` defaults to `51`, the challenge of qbit
+Core's default signet. What the check still cannot tell apart:
 
 - **Any two regtest nodes.** Every regtest node has the same genesis block.
 - **The default signet and a look-alike.** Every signet has the same genesis
@@ -165,7 +181,8 @@ amounts) and returned with camelCase names; fields the node adds beyond these
 are dropped (use `call()` for the raw reply). A result that does not validate
 throws `RpcResponseError` with `reason: 'validation'` and the `path` of the
 offending value. After a side-effecting call the node has acted, so that error
-is the `cause` of an `RpcUnknownOutcomeError`.
+is the `cause` of an `RpcUnknownOutcomeError`. Each method also takes
+[call options](#call-options) as its last argument, left out below.
 
 | Method | Returns |
 | --- | --- |
@@ -177,13 +194,13 @@ is the `cause` of an `RpcUnknownOutcomeError`.
 | `getRawTransaction(txid, { blockHash? })` | hex, checked to hash to `txid` |
 | `getRawTransactionVerbose(txid, { blockHash? })` | `DecodedTransaction`, output values as `valueBits` |
 | `getMempoolEntry(txid)` | `MempoolEntry`: sizes, `depends`, `spentBy`, fees as `baseBits` and so on; `RpcError` -5 when not in the mempool |
-| `getTxOut(txid, vout, { includeMempool? })` | `TxOut` with `valueBits` and `coinbase`, or `null` when spent or unknown |
+| `getTxOut(txid, vout, { includeMempool? })` | `TxOut` with `valueBits` and `coinbase`, or `null` when spent or unknown; `vout` 0 to 4,294,967,295 |
 | `getConfirmationTarget(valueBits, { securityLevel?, mergeMiningPct?, btcHashrate? })` | `ConfirmationTarget` (the node's float `value_qbt` echo is dropped) |
 | `estimateSmartFee(confTarget, { mode? })` | `{ feeRateBitsPerKvB?, errors?, blocks }` |
 | `validateAddress(address)` | `AddressValidation`, a union on `isValid` |
 | `verifyDataPqcHash(proof)` | `DataPqcHashVerification` |
-| `testMempoolAccept(rawTxs, { maxFeeRateBitsPerKvB? })` | one `MempoolAcceptance` per transaction, checked against each hex's txid |
-| `sendRawTransaction(hex, { maxFeeRateBitsPerKvB?, maxBurnAmountBits? })` | txid, checked against the hex |
+| `testMempoolAccept(rawTxs, { maxFeeRateBitsPerKvB? })` | one `MempoolAcceptance` per transaction, checked against each hex's txid; see [fee-rate caps](#fee-rate-caps) |
+| `sendRawTransaction(hex, { maxFeeRateBitsPerKvB?, maxBurnAmountBits? })` | txid, checked against the hex; see [fee-rate caps](#fee-rate-caps) |
 | `getWalletInfo()` | `WalletInfo`, including `pqcKeyValidation` |
 | `getTransaction(txid)` | `WalletTransaction`; signed `amountBits` and `feeBits` |
 | `listUnspent(options?)` | `UnspentOutput[]` |
@@ -197,9 +214,10 @@ is the `cause` of an `RpcUnknownOutcomeError`.
 | `finalizePsbt(psbt, { extract? })` | `{ psbt?, hex?, complete }` |
 | `psbtBumpFee(txid, { feeRateBitsPerKvB?, confTarget?, estimateMode?, replaceable?, outputs?, originalChangeIndex? })` | `BumpedPsbt`: `{ psbt, originalFeeBits, feeBits, errors }`, the PSBT unsigned |
 | `walletPassphrase(passphrase, timeoutSeconds)`, `walletLock()` | nothing |
-| `getRawChangeAddress({ addressType? })` | a new change address |
+| `getRawChangeAddress({ addressType? })` | a new change address; see [address types](#address-types) |
 | `getNewAddress({ label?, addressType? })` | a new receiving address, filed under `label` |
-| `lockUnspent(unlock, outputs, { persistent? })` | `true` |
+| `lockUnspent(outputs, { persistent? })` | nothing, once every output is locked |
+| `unlockUnspent(outputs)` | nothing, once every output is unlocked |
 
 `AddressInfo` and `ProcessedPsbt` carry qbit Core's PQC signature-budget
 fields: for the keys of one of the wallet's addresses (`getaddressinfo`, absent
@@ -211,21 +229,56 @@ involved; `ProcessedPsbt` adds `warnings`. `pqcLimitState` is `normal`,
 `warning`, `critical` or `exhausted`. A key's limit is 2^30 signatures. qbit
 Core v1.0.0's `getwalletinfo` does not report these counts.
 
-`lockUnspent(false, outputs)` locks outputs against automatic coin selection
-and `lockUnspent(true, outputs)` unlocks them. The locks live in memory and
-are gone after a node restart unless `persistent: true` is passed when
-locking. The node checks every output first: one that is unknown, spent,
-already locked (locking) or not locked (unlocking) rejects the whole call with
-`RpcError` -8 and changes nothing. `outputs` must not be empty, since qbit Core
-reads an empty list as "do nothing"; to unlock everything, use
-`call('lockunspent', [true])`. `getRawChangeAddress` takes a key from the
-change keypool. Both are side-effecting wallet-write calls.
+`lockUnspent(outputs)` locks outputs against automatic coin selection and
+`unlockUnspent(outputs)` unlocks them, both through qbit Core's `lockunspent`.
+A lock lives in memory and is gone after a node restart, unless it was made
+with `lockUnspent(outputs, { persistent: true })`: then it is written to the
+wallet and loaded again when the node starts. Locking an output that is locked
+already is refused, except with `persistent`, which locks it again,
+persistently. `unlockUnspent` takes no `persistent` (qbit Core ignores it
+there) and clears either kind of lock. The node checks every output first: one
+that is unknown, spent, already locked (locking) or not locked (unlocking)
+rejects the whole call with `RpcError` -8 and changes nothing. Both resolve with
+nothing once every output is done; qbit Core answers `true` or an error, and any
+other reply fails validation. `outputs` must not be empty: qbit Core reads an
+empty list as "do nothing", and a left-out one as "unlock everything", which is
+`call('lockunspent', [true])`. `vout` is 0 to 2,147,483,647: qbit Core reads it
+as a signed 32-bit integer here. `getRawChangeAddress` takes a key from the
+change keypool. All three are side-effecting wallet-write calls.
 
 `getNewAddress` takes a key from the receiving keypool and files the address
 under `label` (the default label, `''`, when left out; `*` is refused before
 sending, as qbit Core reserves it). It is side-effecting too: never retried,
 and a lost reply is an `RpcUnknownOutcomeError`, since a second call would hand
 out a second address.
+
+### Address types
+
+`getNewAddress`'s and `getRawChangeAddress`'s `addressType`, and
+`walletCreateFundedPsbt`'s `options.changeType`, are an `AddressType`: `p2mr`,
+`bech32m`, `bech32`, `p2sh-segwit` or `legacy`, the five names qbit Core v1.0.0
+parses. Any other string is refused before sending, as the node refuses it
+(`RpcError` -5); the type is closed so that a typo fails to compile. Which of
+the five a wallet can make depends on the chain:
+
+| Chain | Address types |
+| --- | --- |
+| `main`, `test`, `testnet4`, `signet` | `p2mr` only |
+| `regtest` | `p2mr` only, unless qbitd runs with `-p2mronly=0`: then all five |
+
+A type the chain does not allow is the node's `RpcError` -5. Left out, the
+wallet's `-addresstype` or `-changetype` applies.
+
+### Fee-rate caps
+
+`testMempoolAccept` and `sendRawTransaction` take `maxFeeRateBitsPerKvB`, the
+highest fee rate to accept, in bits per 1,000 vbytes: `1n` to `99_999_999n`
+(qbit Core refuses 1 QBT/kvB or more). Left out, qbit Core's default cap
+applies: 0.10 QBT/kvB, `10_000_000n` (10,000 bits/vB; `DEFAULT_MAX_RAW_TX_FEE_RATE`
+in v1.0.0, and `help sendrawtransaction` shows it). `0n` is refused before
+sending: qbit Core reads a cap of 0 as no cap at all, the opposite of what a cap
+of zero says. To send without any cap, use
+`call('sendrawtransaction', [hex, 0])`.
 
 ### Bumping a stuck payment
 
@@ -360,13 +413,24 @@ adapter in `qbit-payments` with no wrapper (`test/core-rpc.test.ts` checks a
 copy of it). Scope the client to the wallet (`wallet`), enable `wallet-read`,
 `wallet-write` and `broadcast`, and call `confirmChain()` before handing it
 over. The adapter must read a node's error code from `rpcCode`, as the copy here
-does: reading `code`, it would take every node error for an unknown outcome.
+does: reading `code`, it would take every node error for an unknown outcome. It
+must also take this version's shapes, which the copy has: call options as the
+last argument, and `lockUnspent(outputs, options)` and `unlockUnspent(outputs)`
+resolving nothing (see [CHANGELOG.md](../../CHANGELOG.md)).
 
 Arguments are checked before sending; invalid ones reject with `TypeError` or
 `RangeError` and nothing is sent. A number argument of `-0` is sent as `0`.
-Options are strict: each options or arguments object, at every level (`args`,
-`inputs`, `outputs`, `options`, `proof`, and the call options `signal` and
-`timeoutMs`), takes only the keys documented for it. Any other key rejects with
+Integer arguments take the range qbit Core v1.0.0 reads them in, so a value the
+node would refuse is refused first and every value it takes gets through:
+`getTxOut`'s `vout` is 0 to 4,294,967,295 (an unsigned 32-bit integer), an
+input's `vout` in `walletCreateFundedPsbt` and an output's in `lockUnspent` and
+`unlockUnspent` 0 to 2,147,483,647 (a signed one), `walletCreateFundedPsbt`'s
+`version` 1 to 3 (the standard versions) and `options.maxTxWeight` 65 to
+400,000 (the standard weight limits). Where the node's limit depends on its
+state (a height above the tip, an output index past the outputs), the node
+answers. Options are strict: each options or arguments object, at every level
+(`args`, `inputs`, `outputs`, `options`, `proof`, and the call options), takes
+only the keys documented for it. Any other key rejects with
 a `TypeError` that names it and, for the node's spelling or a near miss, the key
 to use (`subtract_fee_from_outputs` → `subtractFeeFromOutputs`, `fee_rate` →
 `feeRateBitsPerKvB`, `minconf` → `minConf`), and the unit when it differs
@@ -386,6 +450,22 @@ refuses `walletcreatefundedpsbt` options, as they are serialized, that qbit
 Core v1.0.0 accepts and then ignores, so far `subtract_fee_from_outputs` (the node reads
 `subtractFeeFromOutputs`; with the other name the wallet pays the fee).
 `psbtbumpfee` has none: qbit Core refuses every option key it does not read.
+
+## Public API
+
+`etc/rpc.api.md` is the package's API report: every export and its declaration,
+generated by API Extractor from the built declarations. CI fails when the
+CommonJS or ESM declarations differ from it, so every change to the public API
+shows up in review as a change to that file. To update it after an intended
+change, see the [repository README](../../README.md#the-api-report).
+
+The package exports `QbitRpcClient` with its option and result types,
+`requests`, the error classes, `JsonNumber`, and the amount helpers
+`parseQbt`, `formatQbt`, `BITS_PER_QBT` and `MAX_MONEY_BITS`. The allowlist,
+the lists of capabilities and chains, and the default genesis hashes and signet
+challenge are internal: the `Capability` and `QbitChain` types name the values,
+the tables above list them, the constructor refuses anything else, and
+`toJSON()` shows what a client uses.
 
 ## Amounts
 

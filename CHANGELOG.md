@@ -66,6 +66,91 @@ Added, and not breaking: `ZmqFrameError.is()`, with a `Symbol.for` brand as on
 package's README, which a test keeps equal to the code. The error tables that were
 in the repository README and the `@qbit-oss/zmq` connection section moved into those.
 
+### Breaking: method and option shapes, and the public exports
+
+Settled before `0.1.0`: one call-options shape for every method, no inverted
+flag, no zero that means "unlimited", argument ranges as qbit Core v1.0.0 reads
+them, and a smaller set of exports. `etc/rpc.api.md` and `etc/zmq.api.md` now
+record each package's public API, and CI fails when the built declarations
+differ from them.
+
+- Every client method takes its call options (`signal`, `timeoutMs`) as a
+  separate last argument. Methods with options of their own took both in one
+  object: `getRawTransaction`, `getRawTransactionVerbose`, `getTxOut`,
+  `getConfirmationTarget`, `estimateSmartFee`, `testMempoolAccept`,
+  `sendRawTransaction`, `listUnspent`, `listSinceBlock`, `listTransactions`,
+  `walletProcessPsbt`, `finalizePsbt`, `psbtBumpFee`, `getRawChangeAddress`,
+  `getNewAddress` and `lockUnspent`. Passing a call option there is now a
+  `TypeError` that says where it goes, so nothing is dropped silently. Methods
+  without options of their own (`getBlockCount(callOptions)`,
+  `walletCreateFundedPsbt(args, callOptions)`, `call`, `batch`, `confirmChain`)
+  take them where they did. The parameter is named `callOptions`, and so are
+  its errors (`callOptions.timeoutMs must be ...`).
+
+  ```ts
+  await rpc.getTxOut(txid, vout, { includeMempool: true, timeoutMs: 5_000 }) // before
+  await rpc.getTxOut(txid, vout, { includeMempool: true }, { timeoutMs: 5_000 }) // now
+  await rpc.listUnspent({ minConf: 1, signal }) // before
+  await rpc.listUnspent({ minConf: 1 }, { signal }) // now
+  await rpc.sendRawTransaction(hex, { signal }) // before
+  await rpc.sendRawTransaction(hex, undefined, { signal }) // now
+  ```
+
+- `lockUnspent(unlock, outputs, options)` copied `lockunspent`'s inverted flag,
+  where `false` locks. `lockUnspent(outputs, { persistent })` now locks and
+  `unlockUnspent(outputs)` unlocks; `unlockUnspent` takes no `persistent`, which
+  qbit Core ignores when unlocking (an unlock clears persistent locks too). Both
+  resolve with nothing, not `true`: qbit Core answers `true` or an error, and
+  any other reply now fails validation. `requests.lockUnspent` and
+  `requests.unlockUnspent` change the same way. To unlock every output, still
+  use `call('lockunspent', [true])`.
+
+  ```ts
+  await rpc.lockUnspent(false, outputs, { persistent: true }) // before: locks
+  await rpc.lockUnspent(outputs, { persistent: true }) // now
+  await rpc.lockUnspent(true, outputs) // before: unlocks
+  await rpc.unlockUnspent(outputs) // now
+  ```
+
+- `maxFeeRateBitsPerKvB: 0n` (`testMempoolAccept`, `sendRawTransaction`) is a
+  `RangeError`. qbit Core reads a `maxfeerate` of 0 as no cap at all, the
+  opposite of a cap of zero. Leave the option out for qbit Core's default cap,
+  0.10 QBT/kvB (`10_000_000n`); pass a cap from `1n` to `99_999_999n`; or, to
+  send with no cap, `call('sendrawtransaction', [hex, 0])`.
+- Argument ranges are qbit Core v1.0.0's (`getInt<uint32_t>` or `getInt<int>`
+  where each is read, and the policy limits it checks):
+  - `getTxOut`'s `vout` takes 0 to 4,294,967,295; it stopped at 2,147,483,647.
+  - An input's `vout` in `walletCreateFundedPsbt` stops at 2,147,483,647, as in
+    `lockUnspent`; it took up to 4,294,967,295, which the node refused (-1).
+  - `walletCreateFundedPsbt`'s `version` is 1 to 3 (it took up to
+    4,294,967,295; the node refused anything above 3 with -8), and
+    `options.maxTxWeight` 65 to 400,000 (it took 1 to 2,147,483,647; the node
+    refused the rest with -4).
+- `addressType` (`getNewAddress`, `getRawChangeAddress`) and
+  `options.changeType` (`walletCreateFundedPsbt`) are typed `AddressType`,
+  `'p2mr' | 'bech32m' | 'bech32' | 'p2sh-segwit' | 'legacy'`, the names qbit
+  Core v1.0.0 parses, and any other string is a `RangeError` before sending
+  (an empty or non-string one was a `TypeError`; an unknown name was the node's
+  -5). A `string` variable no longer compiles there: type it `AddressType`.
+  Which types a chain allows is unchanged, and still the node's -5: only `p2mr`
+  on every chain but regtest with `-p2mronly=0`.
+- No longer exported from `@qbit-oss/rpc`: `METHOD_POLICIES` and `MethodPolicy`
+  (the README's allowlist table documents it, and a test keeps the two equal),
+  `CAPABILITIES`, `QBIT_CHAINS`, `QBIT_GENESIS_HASHES` and
+  `QBIT_DEFAULT_SIGNET_CHALLENGE`. The `Capability` and `QbitChain` types stay;
+  the README lists the genesis hashes, and `client.toJSON()` shows the one a
+  client uses. Keep a copy of a list you need.
+- No longer exported from `@qbit-oss/zmq`: `SequenceTracker` (the subscriber's
+  `gap` events report what it found), `ZMQ_TOPICS` (the `ZmqTopic` type names
+  them), `DEFAULT_MAX_MESSAGE_SIZE` (2,065,536) and `DEFAULT_STALE_AFTER_MS`
+  (600,000). `createZeromqSocket` stays, for a custom `socketFactory` that wraps
+  the default socket. `ZmqMessage` is written as one intersection, with the same
+  members.
+
+Added, and not breaking: `AddressType`; the API reports, `pnpm api:check` (part
+of `pnpm verify`) and `pnpm api:update`, with API Extractor 7.59.4 as a
+development dependency.
+
 ### @qbit-oss/rpc
 
 - `QbitRpcClient` for qbit Core v1.0.0 JSON-RPC over HTTP(S), with `/wallet/<name>`
@@ -81,7 +166,7 @@ in the repository README and the `@qbit-oss/zmq` connection section moved into t
   challenge. Every check sends `getblockchaininfo` and `getblockhash 0` as one
   JSON-RPC batch under the call's deadline, and compares the chain name, the
   genesis hash (`expectedGenesisHash`, by default qbit Core v1.0.0's for
-  `expectedChain`, exported as `QBIT_GENESIS_HASHES`) and, on signet,
+  `expectedChain`) and, on signet,
   `signet_challenge` (`expectedSignetChallenge`, default `51`). This is
   stricter: a node of a custom chain that reports a known name, or of another
   signet, is now refused with `mismatch`, and `RpcChainGuardError.differs` says
@@ -217,7 +302,7 @@ in the repository README and the `@qbit-oss/zmq` connection section moved into t
   the PQC signature-budget fields. Parameters and results were checked against
   a qbit Core v1.0.0 regtest node, and the smoke test drives each method.
 - `lockUnspent` refuses an empty list of outputs, which qbit Core would read as
-  "do nothing".
+  "do nothing" (and so does `unlockUnspent`, which replaced `lockUnspent(true, ...)`).
 
 ### Wallet history and receiving
 

@@ -14,12 +14,14 @@
     "test:release": "node --test scripts/qbit-release.test.mjs",
     "typecheck": "pnpm -r --if-present typecheck",
     "typecheck:test": "pnpm -r --if-present typecheck:test",
+    "api:check": "pnpm -r --if-present api:check",
+    "api:update": "pnpm build && pnpm -r --if-present api:update",
     "clean": "pnpm -r --if-present clean",
     "pack:check": "node scripts/check-pack.mjs",
     "consumer:check": "node scripts/check-packed-consumer.mjs",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "verify": "pnpm format:check && pnpm build && pnpm test && pnpm test:release && pnpm typecheck && pnpm typecheck:test && pnpm pack:check && pnpm consumer:check"
+    "verify": "pnpm format:check && pnpm build && pnpm api:check && pnpm test && pnpm test:release && pnpm typecheck && pnpm typecheck:test && pnpm pack:check && pnpm consumer:check"
   },
   "keywords": [
     "qbit",

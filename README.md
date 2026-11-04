@@ -149,10 +149,12 @@ for await (const event of zmq) {
 | Wallet balance inputs | `rpc.listUnspent()`, `rpc.getWalletInfo()` |
 | Look up a wallet transaction | `rpc.getTransaction(txid)` |
 | Build, sign, finalize | `walletCreateFundedPsbt` → `walletProcessPsbt` → `finalizePsbt` |
-| Preflight and broadcast | `rpc.testMempoolAccept([hex])`, `rpc.sendRawTransaction(hex)` |
+| Preflight and broadcast | `rpc.testMempoolAccept([hex])`, `rpc.sendRawTransaction(hex)` (the node's 0.10 QBT/kvB fee-rate cap, or `{ maxFeeRateBitsPerKvB }`) |
+| Keep coins out of coin selection | `rpc.lockUnspent(outputs, { persistent: true })`, `rpc.unlockUnspent(outputs)` |
 | Unlock an encrypted wallet | `rpc.walletPassphrase(passphrase, seconds)`, `rpc.walletLock()` |
 | Verify a data-hash PQC proof | `rpc.verifyDataPqcHash(proof)` |
 | Any other allowlisted method | `rpc.call('getmempoolinfo')` (numbers come back as `JsonNumber`) |
+| Abort a call or give it its own deadline | the last argument: `rpc.getTxOut(txid, vout, { includeMempool: true }, { signal, timeoutMs: 5_000 })` |
 | Convert amounts | `parseQbt('1.5')` → `150000000n`, `formatQbt(1n)` → `'0.00000001'` |
 | Block and mempool notifications | `new QbitZmqSubscriber({ url, topics })`, `subscriber.health()` |
 
@@ -205,9 +207,35 @@ corepack pnpm install --frozen-lockfile
 corepack pnpm verify
 ```
 
-`verify` runs `format:check`, `build`, `test`, `test:release` (which needs
-`gpg`), `typecheck`, `typecheck:test`, `pack:check` and `consumer:check`, as
-`.github/workflows/ci.yml` does.
+`verify` runs `format:check`, `build`, `api:check`, `test`, `test:release`
+(which needs `gpg`), `typecheck`, `typecheck:test`, `pack:check` and
+`consumer:check`, as `.github/workflows/ci.yml` does, on each Node.js line.
+
+### The API report
+
+Each package's public API is recorded in `packages/<package>/etc/<package>.api.md`,
+an [API Extractor](https://api-extractor.com/) (`@microsoft/api-extractor`
+7.59.4) report of every export and its declaration, made from the built
+declarations, `lib/index.d.ts` and `lib/index.d.mts`. `api:check` compares both
+builds' declarations with the checked-in report and fails on any difference, so
+a change to the public API, breaking or not, cannot reach `main` without a
+change to that file in the same pull request. The report holds no paths and
+does not depend on the Node.js version: every line of the CI matrix checks the
+same file. A public type that names an unexported one fails the check too.
+What each package exports, and what it keeps internal, is in its README:
+[`@qbit-oss/rpc`](packages/rpc/README.md#public-api) and
+[`@qbit-oss/zmq`](packages/zmq/README.md#public-api).
+
+After an intended API change:
+
+```sh
+corepack pnpm api:update   # builds, then rewrites packages/*/etc/*.api.md
+git diff packages/*/etc    # review what changed
+```
+
+Commit the reports with the change, and list a breaking change in
+[CHANGELOG.md](CHANGELOG.md) with how a caller migrates. `api:check` alone
+(after `corepack pnpm build`) runs the check without writing anything.
 
 The live smoke test starts a throwaway regtest node (loopback only, temporary
 data directory) from a verified qbit Core release, and runs both packages

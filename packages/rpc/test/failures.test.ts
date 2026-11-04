@@ -115,7 +115,7 @@ describe('unknown outcomes after a side effect may have happened', () => {
     ['walletpassphrase', (rpc: QbitRpcClient) => rpc.walletPassphrase('pw', 10)],
     ['walletlock', (rpc: QbitRpcClient) => rpc.walletLock()],
     ['call(lockunspent)', (rpc: QbitRpcClient) => rpc.call('lockunspent', [false])],
-    ['lockunspent', (rpc: QbitRpcClient) => rpc.lockUnspent(false, [{ txid: HASH_A, vout: 0 }])],
+    ['lockunspent', (rpc: QbitRpcClient) => rpc.lockUnspent([{ txid: HASH_A, vout: 0 }])],
     ['getrawchangeaddress', (rpc: QbitRpcClient) => rpc.getRawChangeAddress({ addressType: 'p2mr' })],
     ['psbtbumpfee', (rpc: QbitRpcClient) => rpc.psbtBumpFee(HASH_A, { feeRateBitsPerKvB: 4000n })],
   ])('treats a dropped reply to %s as unknown', async (_name, run) => {
@@ -431,7 +431,7 @@ describe('side-effecting calls', () => {
       // ...but a broadcast gets exactly one attempt.
       node.requests.length = 0
       // The 401 made the chain confirmation stale, so a chain check runs first and fails: the broadcast is not sent.
-      await expect(rpc.sendRawTransaction(TX_HEX, { timeoutMs: 5000 })).rejects.toMatchObject({
+      await expect(rpc.sendRawTransaction(TX_HEX, {}, { timeoutMs: 5000 })).rejects.toMatchObject({
         reason: 'check_failed',
         cause: { status: 401 },
       })

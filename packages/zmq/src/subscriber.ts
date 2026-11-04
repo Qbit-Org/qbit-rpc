@@ -74,7 +74,8 @@ export interface QbitZmqSubscriberOptions {
   /**
    * Largest inbound message part, in bytes. A larger one makes libzmq drop the
    * connection, which the subscriber reports as a `reconnect`. Default
-   * {@link DEFAULT_MAX_MESSAGE_SIZE}, enough for `rawblock`.
+   * 2,065,536: qbit Core's 2,000,000-byte block limit plus 64 KiB, enough for
+   * `rawblock`.
    */
   readonly maxMessageSize?: number
   /**

@@ -23,6 +23,7 @@ const CORE_RPC_METHODS = [
   'getAddressInfo',
   'getRawChangeAddress',
   'lockUnspent',
+  'unlockUnspent',
   'listLockUnspent',
   'walletCreateFundedPsbt',
   'walletProcessPsbt',
@@ -73,14 +74,28 @@ describe('CoreRpc from qbit-payments core-wallet', () => {
     )
     const notFound = await rpc.getMempoolEntry(HASH_A).catch((e: unknown) => e)
     expect(rpcErrorCode(notFound)).toBe(RPC_NOT_FOUND)
-    const locked = await rpc.lockUnspent(false, [{ txid: HASH_A, vout: 0 }]).catch((e: unknown) => e)
+    const locked = await rpc.lockUnspent([{ txid: HASH_A, vout: 0 }]).catch((e: unknown) => e)
     expect(rpcErrorCode(locked)).toBe(RPC_INVALID_PARAMETER)
 
     node.handler = (_request, response) => response.socket?.destroy()
-    const dropped = await rpc.lockUnspent(true, [{ txid: HASH_A, vout: 0 }]).catch((e: unknown) => e)
+    const dropped = await rpc.unlockUnspent([{ txid: HASH_A, vout: 0 }]).catch((e: unknown) => e)
     expect(RpcUnknownOutcomeError.is(dropped)).toBe(true)
     expect(rpcErrorCode(dropped)).toBeUndefined()
     expect(node.requests.at(-1)!.url).toBe('/wallet/treasury')
+  })
+
+  it("takes the adapter's call options as the last argument, apart from a method's own options", async () => {
+    const rpc = await core()
+    node.results({ gettxout: 'null' })
+    expect(await rpc.getTxOut(HASH_A, 1, { includeMempool: true }, { timeoutMs: 1000 })).toBeNull()
+    expect(node.calls().at(-1)!.params).toEqual([HASH_A, 1, true])
+    const stopped = AbortSignal.abort('stop')
+    await expect(rpc.getTxOut(HASH_A, 1, undefined, { signal: stopped })).rejects.toMatchObject({
+      name: 'RpcAbortedError',
+    })
+    await expect(rpc.testMempoolAccept([TX_HEX], undefined, { signal: stopped })).rejects.toMatchObject({
+      name: 'RpcAbortedError',
+    })
   })
 
   it('reaches the adapter without a code when a transport error has a string one', async () => {

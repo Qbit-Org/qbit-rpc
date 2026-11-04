@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
-import { parseZmqMessage, SequenceTracker, ZmqFrameError, ZmqSetupError, type ZmqFrameErrorCode } from '../src'
+import { parseZmqMessage, ZmqFrameError, ZmqSetupError, type ZmqFrameErrorCode } from '../src'
+import { SequenceTracker } from '../src/parser'
 
 // qbit Core writes hashes byte-reversed from their internal order, which is
 // the display order RPC uses: the wire bytes read as hex are the RPC hash

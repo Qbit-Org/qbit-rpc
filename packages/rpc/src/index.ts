@@ -1,13 +1,6 @@
 export { QbitRpcClient } from './client'
 export type { BatchItem, BatchResults, CallOptions, ChainStatus, QbitRpcClientOptions } from './client'
-export {
-  CAPABILITIES,
-  METHOD_POLICIES,
-  QBIT_CHAINS,
-  QBIT_DEFAULT_SIGNET_CHALLENGE,
-  QBIT_GENESIS_HASHES,
-} from './capabilities'
-export type { Capability, MethodPolicy, QbitChain } from './capabilities'
+export type { Capability, QbitChain } from './capabilities'
 export type { RpcAuth } from './endpoint'
 export {
   QbitRpcError,
@@ -27,6 +20,7 @@ export { JsonNumber } from './json'
 export { requests } from './methods'
 export type {
   AddressInfo,
+  AddressType,
   AddressValidation,
   BlockchainInfo,
   BlockHeader,
