@@ -8,6 +8,14 @@ notifications. It depends on the native
 subscriber's first iteration, not when it is constructed, so the parser works
 without it.
 
+Node.js `^22.13.0 || ^24.0.0 || >=26.0.0`, on a platform `zeromq` 6.5.0 ships a
+prebuilt addon for: Linux x64 and arm64 (glibc 2.25 or later, or musl), macOS
+arm64 (14 or later) and x64 (13.7 or later), and Windows x64, arm64 and ia32.
+CI runs the tests on Linux x64 with Node.js 22.13.0 and the newest 22.x, 24.x
+and 26.x, and loads the addon on Linux arm64 and macOS arm64 with 26.x in
+manual runs. The other platforms, and Node.js 27 and later, are untested.
+See [Node.js and platforms](../../README.md#nodejs-and-platforms).
+
 ```ts
 import { QbitZmqSubscriber, ZmqSetupError } from '@qbit-oss/zmq'
 

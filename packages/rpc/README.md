@@ -3,7 +3,12 @@
 > **Unaudited MVP**, not published to npm. See the [repository README](../../README.md).
 
 A Node.js JSON-RPC client for qbit Core (`qbitd`) v1.0.0. No runtime
-dependencies.
+dependencies and no native code.
+
+Node.js `^22.13.0 || ^24.0.0 || >=26.0.0`. CI tests 22.13.0 and the newest
+22.x, 24.x and 26.x on Linux x64; Node.js 27 and later, and other operating
+systems, are expected to work but untested. See
+[Node.js and platforms](../../README.md#nodejs-and-platforms).
 
 ```ts
 import { QbitRpcClient } from '@qbit-oss/rpc'

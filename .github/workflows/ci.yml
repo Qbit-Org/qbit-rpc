@@ -13,9 +13,20 @@ permissions:
   contents: read
 
 jobs:
-  verify:
+  # One job per Node.js line that engines.node (^22.13.0 || ^24.0.0 ||
+  # >=26.0.0) accepts, with 22.13.0 pinned exactly for the floor.
+  verify-node:
+    name: verify (node ${{ matrix.node }})
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        node:
+          - 22.13.0
+          - 22.x
+          - 24.x
+          - 26.x
 
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -28,16 +39,19 @@ jobs:
         with:
           run_install: false
 
+      # check-latest: a range runs the newest release of its line, not an older
+      # one the runner image has cached.
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version-file: .nvmrc
+          node-version: ${{ matrix.node }}
+          check-latest: true
           cache: pnpm
 
       - name: Check pnpm matches packageManager
         run: |
           expected="$(node -p "require('./package.json').packageManager.split('+')[0].slice('pnpm@'.length)")"
           actual="$(pnpm --version)"
-          echo "packageManager pnpm $expected, running pnpm $actual"
+          echo "node $(node --version), packageManager pnpm $expected, running pnpm $actual"
           test "$actual" = "$expected"
 
       # engine-strict turns pnpm's "Unsupported engine" warning into a failure,
@@ -51,3 +65,76 @@ jobs:
       # consumer:check, stopping at the first failure.
       - name: Verify
         run: pnpm verify
+
+  # The one check to require: it passes only when every Node.js line above
+  # passed, and keeps the name the single job had before the matrix.
+  verify:
+    needs: verify-node
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every Node.js line passed
+        env:
+          RESULT: ${{ needs.verify-node.result }}
+        run: |
+          echo "verify (node ...): $RESULT"
+          test "$RESULT" = success
+
+  # zeromq's prebuilt addon on the arm64 platforms the Ubuntu matrix does not
+  # cover. Manual runs only: macOS minutes are billed at a multiple for a
+  # private repository, and a runner label the repository cannot get would
+  # leave the job queued on every push.
+  zeromq-platforms:
+    name: zeromq load (${{ matrix.os }})
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - macos-latest
+          - ubuntu-24.04-arm
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          run_install: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 26.x
+          check-latest: true
+          cache: pnpm
+
+      - name: Check pnpm matches packageManager
+        run: |
+          expected="$(node -p "require('./package.json').packageManager.split('+')[0].slice('pnpm@'.length)")"
+          actual="$(pnpm --version)"
+          echo "node $(node --version), packageManager pnpm $expected, running pnpm $actual"
+          test "$actual" = "$expected"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --config.engine-strict=true
+
+      # zeromq's loader picks a prebuild by platform, arch and libc; it is a
+      # Node-API addon, so one Node.js version stands for the others.
+      - name: Load zeromq and create a Subscriber
+        working-directory: packages/zmq
+        run: |
+          node -e "
+            const zmq = require('zeromq')
+            const socket = new zmq.Subscriber()
+            console.log('libzmq', zmq.version, 'on', process.platform, process.arch, 'node', process.version)
+            socket.close()
+          "
+
+      # Packs both packages and loads their CommonJS and ESM builds, each of
+      # which creates a zeromq Subscriber.
+      - name: Packed consumer check
+        run: pnpm consumer:check

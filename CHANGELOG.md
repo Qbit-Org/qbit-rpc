@@ -87,6 +87,12 @@ version. Nothing has been published yet: both are `0.0.0` and private.
   `RpcChainGuardError` reason `stale`, having sent nothing.
 - `call('sendrawtransaction', ...)` reports the computed txid in an
   `RpcUnknownOutcomeError`, as the typed method does.
+- CI runs `verify` on Node.js 22.13.0, the `engines` floor, and on the newest
+  22.x, 24.x and 26.x, where it ran Node.js 22 only, with `verify` passing only
+  when all of them pass, and loads `zeromq` on macOS arm64 and Linux arm64 in
+  manual runs. The README says what CI tests and what `engines` accepts
+  untested: Node.js 27 and later, and the other platforms `zeromq` ships a
+  prebuilt addon for.
 - `@qbit-oss/zmq`: health is `unknown` as soon as the connection drops, and the
   socket is replaced; `staleAfterMs` defaults to 10 minutes; the first message
   on each topic after a replacement is a gap; `maxMessageSize` defaults to
