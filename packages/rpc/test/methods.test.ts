@@ -777,10 +777,13 @@ describe('wallet methods', () => {
       ],
       true,
     ])
-    // Only txid and vout go out, whatever else the caller's objects hold.
-    const outpoint = Object.assign({ txid: HASH_A, vout: 1 }, { amountBits: 5n })
+    // Only txid and vout go out, so listUnspent() entries can be passed; any other key is refused.
+    const outpoint = Object.assign({ txid: HASH_A, vout: 1 }, { amountBits: 5n, safe: true })
     await rpc.lockUnspent(true, [outpoint])
     expect(params()).toEqual([true, [{ txid: HASH_A, vout: 1 }]])
+    await expect(rpc.lockUnspent(true, [{ txid: HASH_A, vout: 1, index: 1 } as never])).rejects.toThrow(
+      /outputs\[0\]\.index is not a known key/
+    )
     node.results({ lockunspent: 'false' })
     expect(await rpc.lockUnspent(true, [outpoint])).toBe(false)
     for (const bad of ['null', '"true"', '1']) {

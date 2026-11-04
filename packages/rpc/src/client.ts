@@ -24,7 +24,9 @@ import {
 } from './errors'
 import { assertLosslessJsonSupport, JsonNumber, parseJsonLossless, stringifyRequest } from './json'
 import {
+  argOptions,
   requests,
+  withCallOptions,
   type AddressInfo,
   type AddressValidation,
   type BlockchainInfo,
@@ -147,6 +149,7 @@ const MAX_NODE_MESSAGE = 1000
 const MAX_CHAIN_CHECKS = 3
 
 const TIMEOUT = Symbol('timeout')
+const CALL_OPTIONS = ['signal', 'timeoutMs'] as const satisfies readonly (keyof CallOptions)[]
 
 /** An attempt's failure, with what is known about whether the node may have acted on it. */
 class Failure {
@@ -318,13 +321,13 @@ export class QbitRpcClient {
     return this.#lazy(() => requests.getBlockHeader(blockHash), options)
   }
   getRawTransaction(txid: string, options?: { readonly blockHash?: string } & CallOptions): Promise<string> {
-    return this.#lazy(() => requests.getRawTransaction(txid, options), options)
+    return this.#lazyWith(options, own => requests.getRawTransaction(txid, own))
   }
   getRawTransactionVerbose(
     txid: string,
     options?: { readonly blockHash?: string } & CallOptions
   ): Promise<DecodedTransaction> {
-    return this.#lazy(() => requests.getRawTransactionVerbose(txid, options), options)
+    return this.#lazyWith(options, own => requests.getRawTransactionVerbose(txid, own))
   }
   getMempoolEntry(txid: string, options?: CallOptions): Promise<MempoolEntry> {
     return this.#lazy(() => requests.getMempoolEntry(txid), options)
@@ -334,7 +337,7 @@ export class QbitRpcClient {
     vout: number,
     options?: { readonly includeMempool?: boolean } & CallOptions
   ): Promise<TxOut | null> {
-    return this.#lazy(() => requests.getTxOut(txid, vout, options), options)
+    return this.#lazyWith(options, own => requests.getTxOut(txid, vout, own))
   }
   getConfirmationTarget(
     valueBits: bigint,
@@ -344,13 +347,13 @@ export class QbitRpcClient {
       readonly btcHashrate?: number
     } & CallOptions
   ): Promise<ConfirmationTarget> {
-    return this.#lazy(() => requests.getConfirmationTarget(valueBits, options), options)
+    return this.#lazyWith(options, own => requests.getConfirmationTarget(valueBits, own))
   }
   estimateSmartFee(
     confTarget: number,
     options?: { readonly mode?: FeeEstimateMode } & CallOptions
   ): Promise<SmartFeeEstimate> {
-    return this.#lazy(() => requests.estimateSmartFee(confTarget, options), options)
+    return this.#lazyWith(options, own => requests.estimateSmartFee(confTarget, own))
   }
   validateAddress(address: string, options?: CallOptions): Promise<AddressValidation> {
     return this.#lazy(() => requests.validateAddress(address), options)
@@ -362,13 +365,13 @@ export class QbitRpcClient {
     rawTxs: readonly string[],
     options?: { readonly maxFeeRateBitsPerKvB?: bigint } & CallOptions
   ): Promise<MempoolAcceptance[]> {
-    return this.#lazy(() => requests.testMempoolAccept(rawTxs, options), options)
+    return this.#lazyWith(options, own => requests.testMempoolAccept(rawTxs, own))
   }
   sendRawTransaction(
     hex: string,
     options?: { readonly maxFeeRateBitsPerKvB?: bigint; readonly maxBurnAmountBits?: bigint } & CallOptions
   ): Promise<string> {
-    return this.#lazy(() => requests.sendRawTransaction(hex, options), options)
+    return this.#lazyWith(options, own => requests.sendRawTransaction(hex, own))
   }
   getWalletInfo(options?: CallOptions): Promise<WalletInfo> {
     return this.#single(requests.getWalletInfo(), options)
@@ -377,7 +380,7 @@ export class QbitRpcClient {
     return this.#lazy(() => requests.getTransaction(txid), options)
   }
   listUnspent(options?: ListUnspentOptions & CallOptions): Promise<UnspentOutput[]> {
-    return this.#lazy(() => requests.listUnspent(options), options)
+    return this.#lazyWith(options, own => requests.listUnspent(own))
   }
   getAddressInfo(address: string, options?: CallOptions): Promise<AddressInfo> {
     return this.#lazy(() => requests.getAddressInfo(address), options)
@@ -386,10 +389,10 @@ export class QbitRpcClient {
     return this.#single(requests.listLockUnspent(), options)
   }
   listSinceBlock(options?: ListSinceBlockOptions & CallOptions): Promise<SinceBlockHistory> {
-    return this.#lazy(() => requests.listSinceBlock(options), options)
+    return this.#lazyWith(options, own => requests.listSinceBlock(own))
   }
   listTransactions(options?: ListTransactionsOptions & CallOptions): Promise<WalletHistoryEntry[]> {
-    return this.#lazy(() => requests.listTransactions(options), options)
+    return this.#lazyWith(options, own => requests.listTransactions(own))
   }
   getBalances(options?: CallOptions): Promise<WalletBalances> {
     return this.#single(requests.getBalances(), options)
@@ -406,10 +409,10 @@ export class QbitRpcClient {
       readonly finalize?: boolean
     } & CallOptions
   ): Promise<ProcessedPsbt> {
-    return this.#lazy(() => requests.walletProcessPsbt(psbt, options), options)
+    return this.#lazyWith(options, own => requests.walletProcessPsbt(psbt, own))
   }
   finalizePsbt(psbt: string, options?: { readonly extract?: boolean } & CallOptions): Promise<FinalizedPsbt> {
-    return this.#lazy(() => requests.finalizePsbt(psbt, options), options)
+    return this.#lazyWith(options, own => requests.finalizePsbt(psbt, own))
   }
   walletPassphrase(passphrase: string, timeoutSeconds: number, options?: CallOptions): Promise<void> {
     return this.#lazy(() => requests.walletPassphrase(passphrase, timeoutSeconds), options).then(() => undefined)
@@ -418,17 +421,17 @@ export class QbitRpcClient {
     return this.#single(requests.walletLock(), options).then(() => undefined)
   }
   getRawChangeAddress(options?: { readonly addressType?: string } & CallOptions): Promise<string> {
-    return this.#lazy(() => requests.getRawChangeAddress(options), options)
+    return this.#lazyWith(options, own => requests.getRawChangeAddress(own))
   }
   getNewAddress(options?: { readonly label?: string; readonly addressType?: string } & CallOptions): Promise<string> {
-    return this.#lazy(() => requests.getNewAddress(options), options)
+    return this.#lazyWith(options, own => requests.getNewAddress(own))
   }
   lockUnspent(
     unlock: boolean,
     outputs: readonly Outpoint[],
     options?: { readonly persistent?: boolean } & CallOptions
   ): Promise<boolean> {
-    return this.#lazy(() => requests.lockUnspent(unlock, outputs, options), options)
+    return this.#lazyWith(options, own => requests.lockUnspent(unlock, outputs, own))
   }
 
   /** Close pooled keep-alive connections. The client stays usable; later calls open new ones. */
@@ -457,6 +460,26 @@ export class QbitRpcClient {
   /** Build the request inside the promise, so an invalid argument rejects instead of throwing. */
   async #lazy<T>(build: () => RpcRequest<T>, options?: CallOptions): Promise<T> {
     return this.#single(build(), options)
+  }
+
+  /**
+   * `#lazy` for a typed method whose options carry the call options too: its
+   * request builder checks the other keys, and allows these two there.
+   */
+  async #lazyWith<T, O extends object>(
+    options: (O & CallOptions) | undefined,
+    build: (own: O | undefined) => RpcRequest<T>
+  ): Promise<T> {
+    if (options === undefined) return this.#single(build(undefined))
+    if (typeof options !== 'object' || options === null || Array.isArray(options)) {
+      throw new TypeError('options must be an object')
+    }
+    const view = options as Record<string, unknown>
+    const call = { signal: view['signal'], timeoutMs: view['timeoutMs'] }
+    return this.#single(
+      withCallOptions(options, () => build(options)),
+      call as CallOptions
+    )
   }
 
   #chainExpired(at: number): boolean {
@@ -636,6 +659,7 @@ export class QbitRpcClient {
 
   async #batch(entries: readonly RpcRequest<unknown>[], options: CallOptions): Promise<BatchItem<unknown>[]> {
     if (!Array.isArray(entries)) throw new TypeError('batch takes an array of requests')
+    argOptions(options, 'options', CALL_OPTIONS)
     if (entries.length > MAX_BATCH) throw new RangeError(`a batch holds at most ${MAX_BATCH} requests`)
     for (const entry of entries) this.#authorize(entry.method, true)
     if (entries.length === 0) return []
@@ -694,6 +718,7 @@ export class QbitRpcClient {
     retries: number,
     attempt: (context: AttemptContext) => Promise<T>
   ): Promise<T> {
+    argOptions(options, 'options', CALL_OPTIONS)
     const timeoutMs = checkInteger(options.timeoutMs, 'timeoutMs', 1, 3_600_000, this.#timeoutMs)
     const callerSignal = options.signal
     if (callerSignal !== undefined && !(callerSignal instanceof AbortSignal))

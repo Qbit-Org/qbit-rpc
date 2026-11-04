@@ -99,6 +99,24 @@ export const METHOD_POLICIES: Readonly<Record<string, MethodPolicy>> = Object.fr
   getnewaddress: WALLET_WRITE,
 })
 
+/**
+ * Option keys qbit Core v1.0.0 accepts in a method's options object and then
+ * ignores, so the call does something other than what was asked: with
+ * `subtract_fee_from_outputs`, the wallet pays the fee meant to come out of
+ * the outputs. `call()` refuses them. `param` is the options object's
+ * position; each key maps to the one the node reads. Each entry was checked
+ * against a live node: see test/regtest/smoke.test.ts.
+ */
+export const IGNORED_OPTIONS: Readonly<
+  Record<string, { readonly param: number; readonly typed: string; readonly keys: Readonly<Record<string, string>> }>
+> = Object.freeze({
+  walletcreatefundedpsbt: {
+    param: 3,
+    typed: 'walletCreateFundedPsbt',
+    keys: { subtract_fee_from_outputs: 'subtractFeeFromOutputs' },
+  },
+})
+
 export function methodPolicy(method: string): MethodPolicy | undefined {
   return Object.hasOwn(METHOD_POLICIES, method) ? METHOD_POLICIES[method] : undefined
 }

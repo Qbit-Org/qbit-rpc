@@ -232,7 +232,28 @@ copy of it). Scope the client to the wallet (`wallet`), enable `wallet-read`,
 over.
 
 Arguments are checked before sending; invalid ones reject with `TypeError` or
-`RangeError` and nothing is sent.
+`RangeError` and nothing is sent. Options are strict: each options or
+arguments object, at every level (`args`, `inputs`, `outputs`, `options`,
+`proof`, and the call options `signal` and `timeoutMs`), takes only the keys
+documented for it. Any other key rejects with a `TypeError` that names it and,
+for the node's spelling or a near miss, the key to use
+(`subtract_fee_from_outputs` → `subtractFeeFromOutputs`, `fee_rate` →
+`feeRateBitsPerKvB`, `minconf` → `minConf`), and the unit when it differs
+(`fee_rate` is bits/vB, `feeRateBitsPerKvB` bits per 1,000 vbytes). Inherited
+keys count as the object's own, except keys on `Object.prototype` itself, which
+no caller set. Where an outpoint is expected (`lockUnspent` outputs,
+`walletCreateFundedPsbt` inputs), the other fields of a typed result that is
+also an outpoint (a `listUnspent()`, `listSinceBlock()` or `listTransactions()`
+entry, or a decoded transaction input) are allowed and ignored. Only `txid`,
+`vout` and, for an input, `sequence` are read, so a decoded input passed to
+`walletCreateFundedPsbt` keeps its own sequence number. TypeScript catches
+unknown keys only in object literals, not in spread objects or options read
+from configuration.
+
+`call()` passes its parameters through unchecked, with one exception: it
+refuses `walletcreatefundedpsbt` options, as they are serialized, that qbit
+Core v1.0.0 accepts and then ignores, so far `subtract_fee_from_outputs` (the node reads
+`subtractFeeFromOutputs`; with the other name the wallet pays the fee).
 
 ## Amounts
 
