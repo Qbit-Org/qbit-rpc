@@ -180,7 +180,9 @@ function typeCheck(tsconfig, cwd) {
   }
 }
 
-const stage = mkdtempSync(join(tmpdir(), 'qbit-rpc-packed-consumer-'))
+// The real path: on macOS the temporary directory is reached through a symlink
+// (/var to /private/var), and tsc lists files by their real paths.
+const stage = realpathSync(mkdtempSync(join(tmpdir(), 'qbit-rpc-packed-consumer-')))
 let passed = false
 try {
   const consumerDir = join(stage, 'consumer')

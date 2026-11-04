@@ -38,8 +38,44 @@ corepack pnpm build
 npm install /path/to/qbit-oss-rpc-0.0.0.tgz /path/to/qbit-oss-zmq-0.0.0.tgz
 ```
 
-Node.js 22.13+, 24 or 26+. Both packages ship CommonJS and ESM builds with
-type declarations.
+Both packages ship CommonJS and ESM builds with type declarations. For the
+Node.js versions and platforms they run on, see below.
+
+## Node.js and platforms
+
+`engines` accepts Node.js `^22.13.0 || ^24.0.0 || >=26.0.0`. CI runs all of
+`pnpm verify` on Linux x64 (`ubuntu-latest`) for every pull request and push to
+`main`, once per line: 22.13.0 exactly (the floor), and the newest 22.x, 24.x
+and 26.x. It installs with `--config.engine-strict=true`, so a locked
+dependency whose `engines` leaves out one of these fails CI.
+
+Node.js 27 and later majors are accepted but untested. They are expected to
+work: `@qbit-oss/rpc` uses only standard JavaScript (`JSON.parse` source text
+access and `JSON.rawJSON`, checked when a client is created), and the `zeromq`
+addon is built against Node-API, whose ABI stays the same across Node.js
+majors, so the same prebuild loads without a rebuild. Odd-numbered majors (23,
+25) are not accepted.
+
+`@qbit-oss/rpc` has no native code. CI tests it on Linux x64 only; it is
+expected to work wherever a supported Node.js runs.
+
+`@qbit-oss/zmq` needs a prebuilt addon from `zeromq` 6.5.0, which ships one
+for each platform below:
+
+| Platform | Minimum | CI |
+| --- | --- | --- |
+| Linux x64, glibc | glibc 2.25 | All of `verify`, on each Node.js line above |
+| Linux arm64, glibc | glibc 2.25 | Loads `zeromq` and the packed packages on `ubuntu-24.04-arm`, Node.js 26.x, in manual runs |
+| macOS arm64 | macOS 14 | The same, on `macos-latest` (the current image, not the minimum), in manual runs |
+| macOS x64 | macOS 13.7 | Untested |
+| Linux x64 and arm64, musl (Alpine) | | Untested |
+| Windows x64, arm64 and ia32 | | Untested |
+
+The two arm64 jobs run only when started by hand (`workflow_dispatch`), not on
+pull requests or pushes: macOS minutes are billed at a multiple for this
+private repository, and the arm64 runners must first be available to it. The
+`verify` check passes only when every Node.js line passed. On any other platform `zeromq`'s install script builds libzmq from
+source, which needs CMake, Ninja and vcpkg and is not tested here.
 
 ## Quick start
 
