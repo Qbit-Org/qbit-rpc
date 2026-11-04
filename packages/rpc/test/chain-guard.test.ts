@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   QbitRpcClient,
+  RpcAbortedError,
   RpcChainGuardError,
   RpcTimeoutError,
   RpcUnknownOutcomeError,
@@ -23,7 +24,8 @@ const actualFs = await vi.importActual<typeof import('node:fs/promises')>('node:
 
 let node: FakeNode
 let chain: string
-let dropNextRead: boolean
+/** getbestblockhash requests to leave unanswered, their connection destroyed. */
+let dropReads: number
 let hangChainCheck: boolean
 /** While set, chain checks are answered (with the chain at the time they arrived) only when released. */
 let holdChainChecks: boolean
@@ -36,7 +38,7 @@ let executed: string[]
 beforeEach(async () => {
   node = await FakeNode.start()
   chain = 'regtest'
-  dropNextRead = false
+  dropReads = 0
   hangChainCheck = false
   holdChainChecks = false
   heldChainChecks = []
@@ -51,8 +53,8 @@ beforeEach(async () => {
       response.statusCode = 401
       return void response.end()
     }
-    if (call.method === 'getbestblockhash' && dropNextRead) {
-      dropNextRead = false
+    if (call.method === 'getbestblockhash' && dropReads > 0) {
+      dropReads -= 1
       return void response.socket?.destroy()
     }
     if (call.method === 'getblockchaininfo' && hangChainCheck) return
@@ -131,16 +133,27 @@ describe('chain guard freshness', () => {
     expect(methods().at(-1)).toBe('walletlock')
   })
 
-  it('goes stale on a connection error, so a restart onto another chain is caught', async () => {
-    const rpc = client({ chainCheckMaxAgeMs: 86_400_000 })
-    await rpc.confirmChain()
-    dropNextRead = true
-    await expect(rpc.getBestBlockHash()).rejects.toMatchObject({ reason: 'network' })
-    expect(rpc.chainStatus).toBe('stale')
-    chain = 'main'
-    await refusedAsMismatch(rpc.walletLock())
-    expect(methods()).not.toContain('walletlock')
-  })
+  it.each([
+    ['answered on a new connection', 1, 'answered'],
+    ['dropped there too', 2, 'network'],
+  ])(
+    'goes stale when a pooled connection resets and the read sent again is %s, so a restart onto another chain is caught',
+    async (_name, drops, outcome) => {
+      const rpc = client({ chainCheckMaxAgeMs: 86_400_000 })
+      await rpc.confirmChain()
+      // The read goes out on the pooled connection confirmChain() used.
+      dropReads = drops
+      const read = await rpc.getBestBlockHash().then(
+        () => 'answered',
+        (error: unknown) => (error as { reason?: string }).reason
+      )
+      expect(read).toBe(outcome)
+      expect(rpc.chainStatus).toBe('stale')
+      chain = 'main'
+      await refusedAsMismatch(rpc.walletLock())
+      expect(methods()).toEqual(['getblockchaininfo', 'getbestblockhash', 'getbestblockhash', 'getblockchaininfo'])
+    }
+  )
 
   it('goes stale when the cookie changes, and re-checks before the next guarded call', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'qbit-rpc-guard-'))
@@ -257,6 +270,27 @@ describe('chain guard races', () => {
     expect(methods()).toEqual(['getblockchaininfo', 'getblockchaininfo'])
   })
 
+  it('rejects with a typed error, sending nothing, when a guarded call times out or is aborted while it reads its cookie', async () => {
+    const rpc = client({ auth: { cookieFile }, chainCheckMaxAgeMs: 86_400_000 })
+    await rpc.confirmChain()
+    // Each read is released once its call has given up, so a call that did not would go on and send.
+    const timed = holdNextCookieRead()
+    const timeout = rpc.sendRawTransaction(TX_HEX, { timeoutMs: 50 }).catch((e: unknown) => e)
+    await timed.started
+    await new Promise(resolve => setTimeout(resolve, 100))
+    timed.release()
+    expect(RpcTimeoutError.is(await timeout)).toBe(true)
+    const aborted = holdNextCookieRead()
+    const controller = new AbortController()
+    const abort = rpc.sendRawTransaction(TX_HEX, { signal: controller.signal }).catch((e: unknown) => e)
+    await aborted.started
+    controller.abort('user')
+    aborted.release()
+    expect(RpcAbortedError.is(await abort)).toBe(true)
+    await new Promise(resolve => setTimeout(resolve, 50))
+    expect(methods()).toEqual(['getblockchaininfo'])
+  })
+
   it('does not let a re-check answered before a mismatch clear it', async () => {
     const rpc = client({ chainCheckMaxAgeMs: 0 })
     await rpc.confirmChain()
@@ -282,8 +316,9 @@ describe('chain guard races', () => {
     const answer = heldChainChecks.shift()!
     holdChainChecks = false
     // A dropped connection on this client hints at a restart; the answer may predate it.
-    dropNextRead = true
+    dropReads = 2 // the read, and its one extra attempt if it went out on a pooled socket
     await expect(rpc.getBestBlockHash()).rejects.toMatchObject({ reason: 'network' })
+    dropReads = 0
     answer()
     expect((await confirming).chain).toBe('regtest')
     expect(rpc.chainStatus).toBe('confirmed')
@@ -298,8 +333,9 @@ describe('chain guard races', () => {
     for (let i = 0; i < 3; i += 1) {
       await expect.poll(() => heldChainChecks.length).toBe(1)
       const answer = heldChainChecks.shift()!
-      dropNextRead = true
+      dropReads = 2 // the read, and its one extra attempt if it went out on a pooled socket
       await expect(rpc.getBestBlockHash()).rejects.toMatchObject({ reason: 'network' })
+      dropReads = 0
       answer()
     }
     const error = await broadcast
@@ -320,8 +356,9 @@ describe('chain guard races', () => {
     for (let i = 0; i < 3; i += 1) {
       await expect.poll(() => heldChainChecks.length).toBe(1)
       const answer = heldChainChecks.shift()!
-      dropNextRead = true
+      dropReads = 2 // the read, and its one extra attempt if it went out on a pooled socket
       await expect(rpc.getBestBlockHash()).rejects.toMatchObject({ reason: 'network' })
+      dropReads = 0
       answer()
     }
     expect(await confirming).toMatchObject({ name: 'RpcChainGuardError', reason: 'stale' })
@@ -334,8 +371,9 @@ describe('chain guard races', () => {
   async function answerDoubted(rpc: QbitRpcClient): Promise<void> {
     await expect.poll(() => heldChainChecks.length).toBe(1)
     const answer = heldChainChecks.shift()!
-    dropNextRead = true
+    dropReads = 2 // the read, and its one extra attempt if it went out on a pooled socket
     await expect(rpc.getBestBlockHash()).rejects.toMatchObject({ reason: 'network' })
+    dropReads = 0
     holdChainChecks = false
     answer()
   }

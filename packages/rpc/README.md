@@ -59,14 +59,15 @@ matched, or after a check found another chain, they throw `RpcChainGuardError`
 (`reason: 'unconfirmed'` or `'mismatch'`) without sending anything.
 
 A confirmation goes stale after `chainCheckMaxAgeMs` (default 10 s), and at
-once on a connection error, an HTTP 401, or a changed cookie (qbitd writes a
-new one each time it starts). A wallet-write or broadcast call made while it is
-stale first runs `getblockchaininfo` again, under the call's own deadline. If
-that check fails, the call fails without being sent (a plain error, never an
-unknown outcome; the error names `getblockchaininfo`). If it finds another
-chain, the call is refused and so is every later one until `confirmChain()`
-matches again. `rpc.chainStatus` is `unconfirmed`, `confirmed`, `stale` or
-`mismatch`.
+once on a connection error (including a reset keep-alive connection whose read
+then succeeded on another attempt), an HTTP 401, or a changed cookie (qbitd
+writes a new one each time it starts). A wallet-write or broadcast call made
+while it is stale first runs `getblockchaininfo` again, under the call's own
+deadline. If that check fails, the call fails without being sent (a plain
+error, never an unknown outcome; the error names `getblockchaininfo`). If it
+finds another chain, the call is refused and so is every later one until
+`confirmChain()` matches again. `rpc.chainStatus` is `unconfirmed`,
+`confirmed`, `stale` or `mismatch`.
 
 The guard decides after a call's last wait, as it hands the request to the
 transport: a mismatch recorded by another check while the call read its
@@ -286,15 +287,36 @@ bits; the 210,000,000 QBT cap is 2.1e16 bits, above 2^53). Fee rates are
 | Timeout, abort, dropped connection, HTTP 5xx, malformed, invalid or oversized reply after the request was sent | the matching error | `RpcUnknownOutcomeError`, with that error as `cause` and, for `sendrawtransaction` (typed or through `call()`), the `txid` |
 
 - **Retries** happen only for methods without side effects, only when
-  `readRetries` is set, and only for connection errors, HTTP 5xx, cookie read
-  failures, HTTP 401 under cookie auth (the cookie may have rotated), and
-  (single calls) RPC error -28 while the node warms up. Side-effecting calls are
-  never retried.
+  `readRetries` is set (apart from the keep-alive retry below), and only for
+  connection errors, HTTP 5xx, cookie read failures, HTTP 401 under cookie auth
+  (the cookie may have rotated), and (single calls) RPC error -28 while the
+  node warms up. Side-effecting calls are never retried.
 - **Deadline.** `timeoutMs` covers the whole operation: cookie read, every
   attempt, every backoff and every item of a batch. On expiry the request is
   destroyed and its socket released.
-- Side-effecting calls use a fresh connection, so a stale keep-alive socket
-  cannot turn into an unknown outcome.
+- **Keep-alive.** Methods without side effects, batches and the chain re-check
+  share up to 8 keep-alive connections. The client closes one after 15 s
+  idle, before qbitd's `-rpcservertimeout` (30 s by default) does. With a
+  `-rpcservertimeout` below 15 s qbitd closes idle connections first, and the
+  race below happens more often: each one costs an extra attempt and a chain
+  re-check. A request written to a connection just as qbitd closes it is reset
+  before any reply. A request without side effects that is reset this way
+  (`ECONNRESET` or `EPIPE` on a reused connection, within 1 s of going out
+  and before any byte of the reply) gets one more attempt at once, under the
+  same deadline, even with `readRetries: 0` and not counted in it, and the
+  other idle connections are closed first. The reset makes the chain
+  confirmation stale, since a qbitd restart looks the same, and the attempt
+  takes the normal path: the cookie is read again, and `finalizepsbt` and
+  `testmempoolaccept` re-check the chain before they are sent again. If it
+  fails, its error is reported like any connection error. The chain re-check
+  before a wallet-write or broadcast call gets the same extra attempt: the call
+  itself has not been sent yet, and goes out once, after a check that succeeds.
+  A later reset (the node failing during a request), any other error and a
+  reply that began get no extra attempt, so a proxy in between is covered only
+  if it closes idle connections silently: one that answers first (HTTP 408) is
+  not retried.
+- Side-effecting calls use a fresh connection each, so a stale keep-alive
+  socket cannot turn into an unknown outcome, and are never sent twice.
 - A wallet `RpcError` means the node answered with an error. For
   `walletprocesspsbt`, qbit Core may still have advanced the PQC signature
   counters of keys it tried.
