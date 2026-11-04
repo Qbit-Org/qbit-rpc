@@ -309,7 +309,7 @@ describe('chain methods', () => {
       await invalid(rpc.getMempoolEntry(HASH_A), path)
     }
     node.rpc(() => ({ error: { code: -5, message: 'Transaction not in mempool' } }))
-    await expect(rpc.getMempoolEntry(HASH_A)).rejects.toMatchObject({ code: -5, method: 'getmempoolentry' })
+    await expect(rpc.getMempoolEntry(HASH_A)).rejects.toMatchObject({ rpcCode: -5, method: 'getmempoolentry' })
     const sent = node.requests.length
     await expect(rpc.getMempoolEntry('zz')).rejects.toThrow(TypeError)
     expect(node.requests).toHaveLength(sent)
@@ -760,7 +760,7 @@ describe('wallet methods', () => {
       await invalid(rpc.getAddressInfo(ADDRESS), path)
     }
     node.rpc(() => ({ error: { code: -5, message: 'Invalid or unsupported Segwit (Bech32) or Base58 encoding.' } }))
-    await expect(rpc.getAddressInfo('qb1zqqqs')).rejects.toMatchObject({ code: -5 })
+    await expect(rpc.getAddressInfo('qb1zqqqs')).rejects.toMatchObject({ rpcCode: -5 })
     const sent = node.requests.length
     await expect(rpc.getAddressInfo('')).rejects.toThrow(TypeError)
     await expect(rpc.getAddressInfo(1 as never)).rejects.toThrow(TypeError)
@@ -800,7 +800,7 @@ describe('wallet methods', () => {
       await invalidAfterSideEffect(rpc.getRawChangeAddress(), 'result')
     }
     node.rpc(() => ({ error: { code: -5, message: "Unknown address type 'bogus'" } }))
-    await expect(rpc.getRawChangeAddress({ addressType: 'bogus' })).rejects.toMatchObject({ code: -5 })
+    await expect(rpc.getRawChangeAddress({ addressType: 'bogus' })).rejects.toMatchObject({ rpcCode: -5 })
     const sent = node.requests.length
     await expect(rpc.getRawChangeAddress({ addressType: '' })).rejects.toThrow(TypeError)
     await expect(rpc.getRawChangeAddress({ addressType: 2 as never })).rejects.toThrow(TypeError)
@@ -842,7 +842,7 @@ describe('wallet methods', () => {
       await invalidAfterSideEffect(rpc.lockUnspent(true, [outpoint]), 'result')
     }
     node.rpc(() => ({ error: { code: -8, message: 'Invalid parameter, output already locked' } }))
-    await expect(rpc.lockUnspent(false, [outpoint])).rejects.toMatchObject({ code: -8, method: 'lockunspent' })
+    await expect(rpc.lockUnspent(false, [outpoint])).rejects.toMatchObject({ rpcCode: -8, method: 'lockunspent' })
 
     const sent = node.requests.length
     const refused: [() => Promise<unknown>, typeof TypeError | typeof RangeError][] = [

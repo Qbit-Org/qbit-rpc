@@ -223,13 +223,13 @@ describe('chain guard', () => {
       (e: unknown) => e
     )
     expect(RpcChainGuardError.is(mismatch)).toBe(true)
-    expect(mismatch).toMatchObject({ reason: 'mismatch', expected: 'testnet4', actual: 'main' })
+    expect(mismatch).toMatchObject({ reason: 'mismatch', expectedChain: 'testnet4', actualChain: 'main' })
     expect(rpc.chainStatus).toBe('mismatch')
     const refused = await rpc.walletLock().then(
       () => expect.fail('expected a refusal'),
       (e: unknown) => e
     )
-    expect(refused).toMatchObject({ reason: 'mismatch', actual: 'main' })
+    expect(refused).toMatchObject({ reason: 'mismatch', actualChain: 'main' })
     expect(node.calls().map(call => call.method)).toEqual([...CHECK])
   })
 

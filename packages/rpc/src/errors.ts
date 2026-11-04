@@ -20,7 +20,8 @@ function hasBrand(value: unknown, name: string): boolean {
  * Base class of every error this package throws for a refused, failed or
  * malformed call. The messages and properties it writes never contain
  * credentials, cookie contents or request parameters; only `RpcError.message`
- * carries the node's own text.
+ * carries the node's own text, which a `check_failed` {@link RpcChainGuardError}
+ * quotes when its `cause` is an `RpcError`.
  */
 export class QbitRpcError extends Error {
   /** The JSON-RPC method the error is about, when there is one. */
@@ -102,19 +103,32 @@ function mismatchText(expected: QbitChain, actual: string | undefined, mismatch:
     .join('; ')
 }
 
+/** Why {@link RpcChainGuardError} refused a call. */
+export type RpcChainGuardReason = 'unconfirmed' | 'mismatch' | 'stale' | 'check_failed'
+
+/** The failure's own message, for quoting in another error's. */
+function causeText(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause)
+}
+
 /**
- * A wallet-write or broadcast call was refused because the node's chain has
- * not been confirmed (`reason: 'unconfirmed'`), or {@link QbitRpcClient.confirmChain}
- * found a different chain, genesis block or signet challenge (`reason:
- * 'mismatch'`, see `differs`), or every chain check it ran was overtaken by a
- * connection error, an HTTP 401 or another check, which cast doubt on its
- * answer (`reason: 'stale'`). Nothing was sent; `stale` is worth retrying later.
+ * A wallet-write or broadcast call was refused, and nothing of it was sent,
+ * because the node's chain has not been confirmed (`reason: 'unconfirmed'`), or
+ * {@link QbitRpcClient.confirmChain} found a different chain, genesis block or
+ * signet challenge (`reason: 'mismatch'`, see `differs`), or every chain check
+ * it ran was overtaken by a connection error, an HTTP 401 or another check,
+ * which cast doubt on its answer (`reason: 'stale'`), or the chain re-check it
+ * ran first could not finish (`reason: 'check_failed'`). The check's failure is
+ * the `cause` of `check_failed`, and `method` is always the refused call's. As
+ * nothing was sent, `stale` and `check_failed` are worth trying again;
+ * `cause` tells whether soon is any use.
  */
 export class RpcChainGuardError extends QbitRpcError {
-  readonly reason: 'unconfirmed' | 'mismatch' | 'stale'
-  readonly expected: QbitChain
+  readonly reason: RpcChainGuardReason
+  /** The chain the client expects (the `expectedChain` option). */
+  readonly expectedChain: QbitChain
   /** The chain the node reported, for `mismatch`. */
-  readonly actual?: string
+  readonly actualChain?: string
   /**
    * For `mismatch`, what the node reported differently: its chain name
    * (`chain`), its genesis block hash (`genesis_hash`) or, when signet is
@@ -136,22 +150,25 @@ export class RpcChainGuardError extends QbitRpcError {
 
   constructor(
     method: string,
-    reason: 'unconfirmed' | 'mismatch' | 'stale',
-    expected: QbitChain,
-    actual?: string,
-    mismatch?: ChainMismatch
+    reason: RpcChainGuardReason,
+    expectedChain: QbitChain,
+    details: { readonly actualChain?: string; readonly mismatch?: ChainMismatch; readonly cause?: unknown } = {}
   ) {
+    const { actualChain, mismatch } = details
     super(
       reason === 'unconfirmed'
-        ? `RPC method ${method} refused: call confirmChain() first to check the node is on ${expected}`
+        ? `RPC method ${method} refused: call confirmChain() first to check the node is on ${expectedChain}`
         : reason === 'mismatch'
-          ? `RPC method ${method} refused: the node reports ${mismatchText(expected, actual, mismatch)}`
-          : `RPC method ${method} refused: its chain checks kept being overtaken by connection errors, HTTP 401s or other checks; try again`,
-      method
+          ? `RPC method ${method} refused: the node reports ${mismatchText(expectedChain, actualChain, mismatch)}`
+          : reason === 'stale'
+            ? `RPC method ${method} refused: its chain checks kept being overtaken by connection errors, HTTP 401s or other checks; try again`
+            : `RPC method ${method} refused: its chain re-check failed${'cause' in details ? ` (${causeText(details.cause)})` : ''}`,
+      method,
+      'cause' in details ? { cause: details.cause } : undefined
     )
     this.reason = reason
-    this.expected = expected
-    if (actual !== undefined) this.actual = actual
+    this.expectedChain = expectedChain
+    if (actualChain !== undefined) this.actualChain = actualChain
     if (mismatch !== undefined) {
       this.differs = Object.freeze([...mismatch.differs])
       this.expectedGenesisHash = mismatch.expectedGenesisHash
@@ -169,17 +186,18 @@ export class RpcChainGuardError extends QbitRpcError {
 brand(RpcChainGuardError, 'RpcChainGuardError')
 
 /**
- * The node answered with a JSON-RPC error object. `code` is the node's error
- * code (for example -5 invalid address or key, -8 invalid parameter, -25
- * missing inputs, -26 rejected, -27 already in the chain, -28 warming up) and
- * `message` the node's message, capped at 1,000 characters.
+ * The node answered this call with a JSON-RPC error object. `rpcCode` is the
+ * node's error code (for example -5 invalid address or key, -8 invalid
+ * parameter, -25 missing inputs, -26 rejected, -27 already in the chain, -28
+ * warming up) and `message` the node's message, capped at 1,000 characters.
  */
 export class RpcError extends QbitRpcError {
-  readonly code: number
+  /** The node's JSON-RPC error code. A `code` property, on any error here, is a string instead. */
+  readonly rpcCode: number
 
-  constructor(method: string, code: number, message: string) {
+  constructor(method: string, rpcCode: number, message: string) {
     super(message, method)
-    this.code = code
+    this.rpcCode = rpcCode
   }
 
   static override is(value: unknown): value is RpcError {
@@ -198,7 +216,12 @@ export class RpcTransportError extends QbitRpcError {
   readonly reason: 'network' | 'http_status' | 'credentials'
   /** The HTTP status, for `http_status`. */
   readonly status?: number
-  /** A Node.js error code such as `ECONNREFUSED` or `ENOENT`, when there is one. */
+  /**
+   * A system error code such as `ECONNREFUSED` or `ENOENT`, when there is one.
+   * For `credentials` it can also be this package's `EMALFORMED` (the file is
+   * not `user:password`), `ETOOBIG` (over 1 KiB) or `EREAD` (the read failed
+   * with no code of its own). It is never a node's code: see `RpcError.rpcCode`.
+   */
   readonly code?: string
 
   constructor(
@@ -268,15 +291,23 @@ brand(RpcResponseTooLargeError, 'RpcResponseTooLargeError')
 
 /**
  * The response was not a well-formed JSON-RPC reply (`protocol`), or its result
- * failed this package's validation (`validation`). `path` locates the
- * offending value, for example `result.vout[0].value`.
+ * failed validation (`validation`). `path` locates the offending value, for
+ * example `result.vout[0].value`. When the request's own `parse` threw something
+ * other than this package's validation failure, `path` is `result` and `cause`
+ * is what it threw.
  */
 export class RpcResponseError extends QbitRpcError {
   readonly reason: 'protocol' | 'validation'
   readonly path: string
 
-  constructor(method: string, reason: 'protocol' | 'validation', path: string, expected: string) {
-    super(`RPC ${method} returned an invalid response at ${path}: expected ${expected}`, method)
+  constructor(
+    method: string,
+    reason: 'protocol' | 'validation',
+    path: string,
+    expected: string,
+    options?: { readonly cause?: unknown }
+  ) {
+    super(`RPC ${method} returned an invalid response at ${path}: expected ${expected}`, method, options)
     this.reason = reason
     this.path = path
   }

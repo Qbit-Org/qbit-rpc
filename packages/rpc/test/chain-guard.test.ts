@@ -1,4 +1,5 @@
 import { mkdtemp, open, rm, writeFile } from 'node:fs/promises'
+import type { ServerResponse } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -13,10 +14,13 @@ import {
   RpcChainGuardError,
   RpcError,
   RpcResponseError,
+  RpcResponseTooLargeError,
   RpcTimeoutError,
+  RpcTransportError,
   RpcUnknownOutcomeError,
   type QbitRpcClientOptions,
 } from '../src'
+import { HttpTransport } from '../src/transport'
 import {
   basicAuth,
   blockchainInfoJson,
@@ -126,7 +130,7 @@ async function refusedAsMismatch(promise: Promise<unknown>): Promise<void> {
     (e: unknown) => e
   )
   expect(RpcChainGuardError.is(error)).toBe(true)
-  expect(error).toMatchObject({ reason: 'mismatch', expected: 'regtest', actual: 'main' })
+  expect(error).toMatchObject({ reason: 'mismatch', expectedChain: 'regtest', actualChain: 'main' })
 }
 
 describe('chain guard freshness', () => {
@@ -239,7 +243,8 @@ describe('chain guard freshness', () => {
     const started = performance.now()
     const error = await rpc.sendRawTransaction(TX_HEX, { timeoutMs: 100 }).catch((e: unknown) => e)
     expect(performance.now() - started).toBeLessThan(600)
-    expect(RpcTimeoutError.is(error)).toBe(true)
+    expect(error).toMatchObject({ name: 'RpcChainGuardError', reason: 'check_failed' })
+    expect(RpcTimeoutError.is((error as RpcChainGuardError).cause)).toBe(true)
     expect(RpcUnknownOutcomeError.is(error)).toBe(false)
     expect(methods()).not.toContain('sendrawtransaction')
   })
@@ -291,7 +296,7 @@ describe('chain guard races', () => {
     expect(methods()).toEqual([...CHECK, ...CHECK])
   })
 
-  it('rejects with a typed error, sending nothing, when a guarded call times out or is aborted while it reads its cookie', async () => {
+  it('names the guarded call when it times out or is aborted while it reads its cookie, and sends nothing', async () => {
     const rpc = client({ auth: { cookieFile }, chainCheckMaxAgeMs: 86_400_000 })
     await rpc.confirmChain()
     // Each read is released once its call has given up, so a call that did not would go on and send.
@@ -301,6 +306,7 @@ describe('chain guard races', () => {
     await new Promise(resolve => setTimeout(resolve, 100))
     timed.release()
     expect(RpcTimeoutError.is(await timeout)).toBe(true)
+    expect(await timeout).toMatchObject({ method: 'sendrawtransaction', timeoutMs: 50 })
     const aborted = holdNextCookieRead()
     const controller = new AbortController()
     const abort = rpc.sendRawTransaction(TX_HEX, { signal: controller.signal }).catch((e: unknown) => e)
@@ -308,6 +314,7 @@ describe('chain guard races', () => {
     controller.abort('user')
     aborted.release()
     expect(RpcAbortedError.is(await abort)).toBe(true)
+    expect(await abort).toMatchObject({ method: 'sendrawtransaction', cause: 'user' })
     await new Promise(resolve => setTimeout(resolve, 50))
     expect(methods()).toEqual([...CHECK])
   })
@@ -388,6 +395,25 @@ describe('chain guard races', () => {
     expect(methods()).not.toContain('sendrawtransaction')
   })
 
+  it('reads the cookie once in an attempt whose re-check fails', async () => {
+    const rpc = client({ auth: { cookieFile }, chainCheckMaxAgeMs: 0, timeoutMs: 100 })
+    await rpc.confirmChain()
+    hangChainCheck = true
+    const reads = vi.mocked(open).mock.calls.length
+    await expect(rpc.walletLock()).rejects.toMatchObject({ reason: 'check_failed' })
+    expect(vi.mocked(open).mock.calls.length).toBe(reads + 1)
+  })
+
+  it('reports an unreadable cookie as a transport error about the guarded call, sending nothing', async () => {
+    const rpc = client({ auth: { cookieFile }, chainCheckMaxAgeMs: 86_400_000 })
+    await rpc.confirmChain()
+    await rm(cookieFile)
+    const error = await rpc.sendRawTransaction(TX_HEX).catch((e: unknown) => e)
+    expect(RpcTransportError.is(error)).toBe(true)
+    expect(error).toMatchObject({ reason: 'credentials', code: 'ENOENT', method: 'sendrawtransaction' })
+    expect(methods()).toEqual([...CHECK])
+  })
+
   /** Answer the held chain check after a dropped read on `rpc` cast doubt on it. */
   async function answerDoubted(rpc: QbitRpcClient): Promise<void> {
     await expect.poll(() => heldChainChecks.length).toBe(1)
@@ -410,7 +436,7 @@ describe('chain guard races', () => {
     chain = 'main'
     await refusedAsMismatch(rpc.confirmChain())
     chain = 'regtest'
-    expect(await lock).toMatchObject({ name: 'RpcChainGuardError', reason: 'mismatch', actual: 'main' })
+    expect(await lock).toMatchObject({ name: 'RpcChainGuardError', reason: 'mismatch', actualChain: 'main' })
     expect(methods()).not.toContain('walletlock')
     expect(rpc.chainStatus).toBe('mismatch')
     // The call decided again after its wait, without another check.
@@ -426,7 +452,7 @@ describe('chain guard races', () => {
     chain = 'main'
     await refusedAsMismatch(rpc.confirmChain())
     chain = 'regtest'
-    expect(await confirming).toMatchObject({ name: 'RpcChainGuardError', reason: 'mismatch', actual: 'main' })
+    expect(await confirming).toMatchObject({ name: 'RpcChainGuardError', reason: 'mismatch', actualChain: 'main' })
     expect(rpc.chainStatus).toBe('mismatch')
     // confirmChain decided again after its wait, without another check.
     expect(checks()).toBe(2)
@@ -444,6 +470,40 @@ describe('chain guard races', () => {
     expect(methods()).not.toContain('walletlock')
   })
 
+  it('reports anything else the re-check throws, a bug included, as check_failed with nothing sent', async () => {
+    const rpc = client({ chainCheckMaxAgeMs: 0 })
+    await rpc.confirmChain()
+    const bug = new TypeError('a bug in the transport')
+    const send = vi.spyOn(HttpTransport.prototype, 'send').mockRejectedValueOnce(bug)
+    try {
+      const error = await rpc.sendRawTransaction(TX_HEX).catch((e: unknown) => e)
+      expect(RpcChainGuardError.is(error)).toBe(true)
+      expect(error).toMatchObject({ reason: 'check_failed', method: 'sendrawtransaction' })
+      expect((error as RpcChainGuardError).cause).toBe(bug)
+      expect(methods()).not.toContain('sendrawtransaction')
+    } finally {
+      send.mockRestore()
+    }
+  })
+
+  it('refuses as check_failed, nothing sent, when the call is aborted during the wait before checking again', async () => {
+    const rpc = client({ chainCheckMaxAgeMs: 0, retryDelayMs: 5000 })
+    await rpc.confirmChain()
+    holdChainChecks = true
+    const controller = new AbortController()
+    const lock = rpc.walletLock({ signal: controller.signal }).catch((e: unknown) => e)
+    await answerDoubted(rpc)
+    await expect.poll(() => checks()).toBe(2)
+    await new Promise(resolve => setTimeout(resolve, 50)) // it has taken the doubted answer, and waits
+    controller.abort('user')
+    const error = await lock
+    expect(error).toMatchObject({ name: 'RpcChainGuardError', reason: 'check_failed', method: 'walletlock' })
+    const { cause } = error as RpcChainGuardError
+    expect(RpcAbortedError.is(cause)).toBe(true)
+    expect(cause).toMatchObject({ method: 'getblockchaininfo', cause: 'user' })
+    expect(methods()).not.toContain('walletlock')
+  })
+
   it('makes confirmChain throw when another check finds a mismatch while it reads its cookie', async () => {
     const rpc = client({ auth: { cookieFile } })
     const read = holdNextCookieRead()
@@ -453,7 +513,7 @@ describe('chain guard races', () => {
     await refusedAsMismatch(rpc.confirmChain())
     chain = 'regtest'
     read.release()
-    expect(await confirming).toMatchObject({ name: 'RpcChainGuardError', reason: 'mismatch', actual: 'main' })
+    expect(await confirming).toMatchObject({ name: 'RpcChainGuardError', reason: 'mismatch', actualChain: 'main' })
     expect(rpc.chainStatus).toBe('mismatch')
     // A confirmChain begun after the mismatch clears it.
     await rpc.confirmChain()
@@ -527,6 +587,259 @@ describe('chain guard races', () => {
   })
 })
 
+describe('a failed chain re-check', () => {
+  /** Answer chain checks with `fail`; other requests as before. */
+  function failChecksWith(fail: (response: ServerResponse, calls: RpcCall[]) => unknown): void {
+    const handler = node.handler
+    node.handler = (request, response) => {
+      const parsed = JSON.parse(request.body) as RpcCall | RpcCall[]
+      if (!Array.isArray(parsed)) return handler(request, response)
+      return void fail(response, parsed)
+    }
+  }
+
+  const nodeError = (calls: RpcCall[], code: number): string =>
+    `[${calls
+      .map(call => `{"jsonrpc":"2.0","error":{"code":${code},"message":"Loading block index"},"id":${call.id}}`)
+      .join(',')}]`
+
+  const GUARDED: [method: string, run: (rpc: QbitRpcClient, signal?: AbortSignal) => Promise<unknown>][] = [
+    ['sendrawtransaction', (rpc, signal) => rpc.sendRawTransaction(TX_HEX, signal === undefined ? {} : { signal })],
+    ['walletlock', (rpc, signal) => rpc.walletLock(signal === undefined ? {} : { signal })],
+    ['testmempoolaccept', (rpc, signal) => rpc.testMempoolAccept([TX_HEX], signal === undefined ? {} : { signal })],
+    ['finalizepsbt', (rpc, signal) => rpc.finalizePsbt('cHNidP8=', signal === undefined ? {} : { signal })],
+  ]
+
+  describe.each(GUARDED)('before %s', (method, run) => {
+    async function rechecking(options: Partial<QbitRpcClientOptions> = {}): Promise<QbitRpcClient> {
+      const rpc = client({ chainCheckMaxAgeMs: 0, retryDelayMs: 0, ...options })
+      await rpc.confirmChain()
+      return rpc
+    }
+
+    async function checkFailed(promise: Promise<unknown>): Promise<unknown> {
+      const error = await promise.then(
+        () => expect.fail('expected a refusal'),
+        (e: unknown) => e
+      )
+      expect(RpcChainGuardError.is(error)).toBe(true)
+      expect(RpcUnknownOutcomeError.is(error)).toBe(false)
+      expect(error).toMatchObject({ reason: 'check_failed', method, expectedChain: 'regtest' })
+      expect((error as Error).message).toContain(`RPC method ${method} refused: its chain re-check failed (`)
+      expect((error as Error).message).toContain(((error as Error).cause as Error).message)
+      expect(methods()).not.toContain(method)
+      return (error as Error).cause
+    }
+
+    it('reports a timeout as the cause', async () => {
+      const rpc = await rechecking({ timeoutMs: 100 })
+      hangChainCheck = true
+      const cause = await checkFailed(run(rpc))
+      expect(RpcTimeoutError.is(cause)).toBe(true)
+      expect(cause).toMatchObject({ method: 'getblockchaininfo', timeoutMs: 100 })
+    })
+
+    it('reports an abort as the cause', async () => {
+      const rpc = await rechecking()
+      hangChainCheck = true
+      const controller = new AbortController()
+      const pending = run(rpc, controller.signal)
+      await expect.poll(() => checks()).toBe(2)
+      controller.abort('user')
+      const cause = await checkFailed(pending)
+      expect(RpcAbortedError.is(cause)).toBe(true)
+      expect(cause).toMatchObject({ method: 'getblockchaininfo', cause: 'user' })
+    })
+
+    it('reports a dropped connection as the cause', async () => {
+      const rpc = await rechecking()
+      failChecksWith(response => response.socket?.destroy())
+      const cause = await checkFailed(run(rpc))
+      expect(RpcTransportError.is(cause)).toBe(true)
+      expect(cause).toMatchObject({ reason: 'network', method: 'getblockchaininfo' })
+    })
+
+    it('reports an HTTP status as the cause', async () => {
+      const rpc = await rechecking()
+      failChecksWith(response => {
+        response.statusCode = 403
+        response.end()
+      })
+      const cause = await checkFailed(run(rpc))
+      expect(RpcTransportError.is(cause)).toBe(true)
+      expect(cause).toMatchObject({ reason: 'http_status', status: 403, method: 'getblockchaininfo' })
+    })
+
+    it('reports the node’s error as the cause, with no rpcCode on the refusal', async () => {
+      const rpc = await rechecking()
+      failChecksWith((response, calls) => response.end(nodeError(calls, -28)))
+      const error = await run(rpc).catch((e: unknown) => e)
+      const cause = await checkFailed(Promise.reject(error))
+      expect(RpcError.is(cause)).toBe(true)
+      expect(cause).toMatchObject({ rpcCode: -28, method: 'getblockchaininfo' })
+      expect(error).not.toHaveProperty('rpcCode')
+      expect(error).not.toHaveProperty('code')
+    })
+
+    it('reports an invalid reply as the cause', async () => {
+      const rpc = await rechecking()
+      failChecksWith(response => response.end('not json'))
+      const cause = await checkFailed(run(rpc))
+      expect(RpcResponseError.is(cause)).toBe(true)
+      expect(cause).toMatchObject({ reason: 'protocol', method: 'getblockchaininfo', path: 'response' })
+    })
+
+    it('reports an oversized reply as the cause', async () => {
+      const rpc = await rechecking({ maxResponseBytes: 4096 })
+      failChecksWith(response => response.end('x'.repeat(8192)))
+      const cause = await checkFailed(run(rpc))
+      expect(RpcResponseTooLargeError.is(cause)).toBe(true)
+      expect(cause).toMatchObject({ method: 'getblockchaininfo', limitBytes: 4096 })
+    })
+
+    it('lets a mismatch recorded while the re-check fails stand', async () => {
+      const rpc = await rechecking()
+      hangChainCheck = true
+      const controller = new AbortController()
+      const pending = run(rpc, controller.signal).catch((e: unknown) => e)
+      await expect.poll(() => checks()).toBe(2)
+      hangChainCheck = false
+      chain = 'main'
+      await refusedAsMismatch(rpc.confirmChain())
+      controller.abort('user')
+      expect(await pending).toMatchObject({
+        name: 'RpcChainGuardError',
+        reason: 'mismatch',
+        method,
+        actualChain: 'main',
+      })
+      expect(methods()).not.toContain(method)
+    })
+  })
+
+  it('keeps the retry classification: a guarded read retries under readRetries, a side effect never', async () => {
+    const handler = node.handler
+    let warming = 0
+    node.handler = (request, response) => {
+      const parsed = JSON.parse(request.body) as RpcCall | RpcCall[]
+      if (!Array.isArray(parsed) || warming === 0) return handler(request, response)
+      warming -= 1
+      return void response.end(nodeError(parsed, -28))
+    }
+    const rpc = client({ chainCheckMaxAgeMs: 0, retryDelayMs: 0, readRetries: 3 })
+    await rpc.confirmChain()
+    node.requests.length = 0
+
+    warming = 1
+    expect(await rpc.call('testmempoolaccept', [[TX_HEX]])).toBeNull()
+    expect(methods()).toEqual([...CHECK, ...CHECK, 'testmempoolaccept'])
+
+    node.requests.length = 0
+    warming = 1
+    const error = await rpc.sendRawTransaction(TX_HEX).catch((e: unknown) => e)
+    expect(error).toMatchObject({ reason: 'check_failed', method: 'sendrawtransaction', cause: { rpcCode: -28 } })
+    expect(methods()).toEqual([...CHECK])
+  })
+
+  it('leaves the confirmation stale, and the next call re-checks and goes through', async () => {
+    const rpc = client({ chainCheckMaxAgeMs: 0, retryDelayMs: 0 })
+    await rpc.confirmChain()
+    hangChainCheck = true
+    await expect(rpc.walletLock({ timeoutMs: 50 })).rejects.toMatchObject({ reason: 'check_failed' })
+    expect(rpc.chainStatus).toBe('stale')
+    hangChainCheck = false
+    await rpc.walletLock()
+    expect(methods().at(-1)).toBe('walletlock')
+  })
+
+  it('leaves confirmChain, which is the check, throwing the failure itself', async () => {
+    const rpc = client()
+    hangChainCheck = true
+    const error = await rpc.confirmChain({ timeoutMs: 50 }).catch((e: unknown) => e)
+    expect(RpcTimeoutError.is(error)).toBe(true)
+    expect(RpcChainGuardError.is(error)).toBe(false)
+    expect(error).toMatchObject({ method: 'getblockchaininfo' })
+  })
+})
+
+describe('a guarded call that fails before it is sent, with no re-check involved', () => {
+  async function confirmed(options: Partial<QbitRpcClientOptions> = {}): Promise<QbitRpcClient> {
+    const rpc = client({ chainCheckMaxAgeMs: 86_400_000, ...options })
+    await rpc.confirmChain()
+    return rpc
+  }
+
+  it('reports a signal already aborted, naming the call', async () => {
+    const rpc = await confirmed()
+    const error = await rpc.sendRawTransaction(TX_HEX, { signal: AbortSignal.abort('user') }).catch((e: unknown) => e)
+    expect(RpcAbortedError.is(error)).toBe(true)
+    expect(error).toMatchObject({ method: 'sendrawtransaction', cause: 'user' })
+    expect(methods()).toEqual([...CHECK])
+  })
+
+  it('reports a timeout and an abort while waiting for a slot, naming the call', async () => {
+    const rpc = await confirmed({ maxConcurrentRequests: 1 })
+    hangChainCheck = true
+    const holder = new AbortController()
+    const held = rpc.getBlockchainInfo({ signal: holder.signal }).catch((e: unknown) => e)
+    await expect.poll(() => checks()).toBe(2)
+
+    const timedOut = await rpc.sendRawTransaction(TX_HEX, { timeoutMs: 30 }).catch((e: unknown) => e)
+    expect(RpcTimeoutError.is(timedOut)).toBe(true)
+    expect(timedOut).toMatchObject({ method: 'sendrawtransaction', timeoutMs: 30 })
+
+    const controller = new AbortController()
+    const waiting = rpc.walletLock({ signal: controller.signal }).catch((e: unknown) => e)
+    controller.abort('user')
+    const aborted = await waiting
+    expect(RpcAbortedError.is(aborted)).toBe(true)
+    expect(aborted).toMatchObject({ method: 'walletlock', cause: 'user' })
+
+    holder.abort()
+    await held
+    expect(methods()).not.toContain('sendrawtransaction')
+    expect(methods()).not.toContain('walletlock')
+  })
+
+  it('reports an abort before a connection exists, naming the call', async () => {
+    const rpc = await confirmed()
+    const controller = new AbortController()
+    const pending = rpc.sendRawTransaction(TX_HEX, { signal: controller.signal }).catch((e: unknown) => e)
+    // Past the slot and the guard, which take microtasks; a connection takes the event loop.
+    for (let i = 0; i < 50; i += 1) await Promise.resolve()
+    controller.abort('user')
+    const error = await pending
+    expect(RpcAbortedError.is(error)).toBe(true)
+    expect(RpcUnknownOutcomeError.is(error)).toBe(false)
+    expect(error).toMatchObject({ method: 'sendrawtransaction', cause: 'user' })
+    await new Promise(resolve => setTimeout(resolve, 50))
+    expect(methods()).toEqual([...CHECK])
+  })
+
+  it.each([401, 403, 404, 302])('reports HTTP %i as a transport error about the call: rejected unrun', async status => {
+    const rpc = await confirmed()
+    node.handler = (_request, response) => {
+      response.statusCode = status
+      response.end()
+    }
+    const error = await rpc.sendRawTransaction(TX_HEX).catch((e: unknown) => e)
+    expect(RpcTransportError.is(error)).toBe(true)
+    expect(RpcUnknownOutcomeError.is(error)).toBe(false)
+    expect(error).toMatchObject({ reason: 'http_status', status, method: 'sendrawtransaction' })
+  })
+
+  it('refuses before a check when the chain is unconfirmed, or is another one', async () => {
+    const rpc = client()
+    await expect(rpc.walletLock()).rejects.toMatchObject({ reason: 'unconfirmed', method: 'walletlock' })
+    expect(methods()).toEqual([])
+    chain = 'main'
+    await refusedAsMismatch(rpc.confirmChain())
+    node.requests.length = 0
+    await expect(rpc.walletLock()).rejects.toMatchObject({ reason: 'mismatch', method: 'walletlock' })
+    expect(methods()).toEqual([])
+  })
+})
+
 describe('chain identity: genesis block and signet challenge', () => {
   /** A signet challenge other than the default: a 1-of-1 multisig. */
   const OTHER_CHALLENGE = `5121${'02'.repeat(33)}51ae`
@@ -578,8 +891,8 @@ describe('chain identity: genesis block and signet challenge', () => {
     const error = await refusal(rpc.confirmChain())
     expect(error).toMatchObject({
       method: 'getblockchaininfo',
-      expected: 'main',
-      actual: 'main',
+      expectedChain: 'main',
+      actualChain: 'main',
       differs: ['genesis_hash'],
       expectedGenesisHash: GENESIS['main'],
       actualGenesisHash: HASH_B,
@@ -601,7 +914,12 @@ describe('chain identity: genesis block and signet challenge', () => {
     await rpc.confirmChain()
     genesis = HASH_B // another regtest-named chain behind the same URL
     const error = await refusal(run(rpc))
-    expect(error).toMatchObject({ method, actual: 'regtest', differs: ['genesis_hash'], actualGenesisHash: HASH_B })
+    expect(error).toMatchObject({
+      method,
+      actualChain: 'regtest',
+      differs: ['genesis_hash'],
+      actualGenesisHash: HASH_B,
+    })
     expect(methods()).toEqual([...CHECK, ...CHECK])
     expect(rpc.chainStatus).toBe('mismatch')
   })
@@ -611,7 +929,7 @@ describe('chain identity: genesis block and signet challenge', () => {
     genesis = GENESIS['main']!
     const error = await refusal(client().confirmChain())
     expect(error).toMatchObject({
-      actual: 'main',
+      actualChain: 'main',
       differs: ['chain', 'genesis_hash'],
       actualGenesisHash: GENESIS['main'],
     })
@@ -655,8 +973,8 @@ describe('chain identity: genesis block and signet challenge', () => {
       const rpc = client({ expectedChain: 'signet', chainCheckMaxAgeMs: 0 })
       const error = await refusal(rpc.confirmChain())
       expect(error).toMatchObject({
-        expected: 'signet',
-        actual: 'signet',
+        expectedChain: 'signet',
+        actualChain: 'signet',
         differs: ['signet_challenge'],
         expectedGenesisHash: GENESIS['signet'],
         actualGenesisHash: GENESIS['signet'],
@@ -890,7 +1208,7 @@ describe('chain identity: genesis block and signet challenge', () => {
         (i, g) =>
           `[${ok(i.id, info)},{"jsonrpc":"2.0","error":{"code":-8,"message":"Block height out of range"},"id":${g.id}}]`,
         RpcError,
-        { method: 'getblockhash', code: -8 },
+        { method: 'getblockhash', rpcCode: -8 },
       ],
       [
         'no reply for getblockhash',
@@ -941,14 +1259,17 @@ describe('chain identity: genesis block and signet challenge', () => {
       expect(rpc.chainStatus).toBe('unconfirmed')
     })
 
-    it.each(cases)('fails a guarded call on %s, typed and unsent', async (_name, body, expected, fields) => {
+    it.each(cases)('refuses a guarded call as check_failed on %s, unsent', async (_name, body, expected, fields) => {
       const rpc = client({ chainCheckMaxAgeMs: 0 })
       await rpc.confirmChain()
       answerChecksWith(body)
       const error = await failure(rpc.sendRawTransaction(TX_HEX))
-      expect(expected.is(error)).toBe(true)
+      expect(RpcChainGuardError.is(error)).toBe(true)
       expect(RpcUnknownOutcomeError.is(error)).toBe(false)
-      expect(error).toMatchObject(fields)
+      expect(error).toMatchObject({ reason: 'check_failed', method: 'sendrawtransaction', expectedChain: 'regtest' })
+      const { cause } = error as RpcChainGuardError
+      expect(expected.is(cause)).toBe(true)
+      expect(cause).toMatchObject(fields)
       expect(methods()).not.toContain('sendrawtransaction')
       expect(rpc.chainStatus).toBe('stale')
     })
@@ -971,7 +1292,7 @@ describe('chain identity: genesis block and signet challenge', () => {
         const other = blockchainInfoJson('main')
         answerChecksWith((i, g) => `[${ok(i.id, other)}${genesisReply === undefined ? '' : `,${genesisReply(g)}`}]`)
         const error = await refusal(rpc.confirmChain())
-        expect(error).toMatchObject({ differs: ['chain'], actual: 'main' })
+        expect(error).toMatchObject({ differs: ['chain'], actualChain: 'main' })
         expect(error.actualGenesisHash).toBeUndefined()
         expect(error.message).toContain("chain 'main', expected 'regtest'")
         expect(rpc.chainStatus).toBe('mismatch')
@@ -985,7 +1306,7 @@ describe('chain identity: genesis block and signet challenge', () => {
       await rpc.confirmChain()
       answerChecksWith(i => `[${ok(i.id, blockchainInfoJson('main'))}]`)
       const error = await refusal(rpc.sendRawTransaction(TX_HEX))
-      expect(error).toMatchObject({ method: 'sendrawtransaction', differs: ['chain'], actual: 'main' })
+      expect(error).toMatchObject({ method: 'sendrawtransaction', differs: ['chain'], actualChain: 'main' })
       expect(methods()).not.toContain('sendrawtransaction')
       expect(rpc.chainStatus).toBe('mismatch')
     })
@@ -1019,7 +1340,7 @@ describe('chain identity: genesis block and signet challenge', () => {
       expect(node.requests).toHaveLength(2)
       warming = true
       const error = await failure(client().confirmChain())
-      expect(error).toMatchObject({ name: 'RpcError', method: 'getblockhash', code: -28 })
+      expect(error).toMatchObject({ name: 'RpcError', method: 'getblockhash', rpcCode: -28 })
     })
   })
 })

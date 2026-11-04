@@ -50,13 +50,24 @@ function run(cmd, args, opts = {}) {
 const CONSUMER = `
 import {
   QbitRpcClient,
+  RpcChainGuardError,
+  RpcError,
   RpcUnknownOutcomeError,
   formatQbt,
   requests,
   type BatchItem,
   type QbitRpcClientOptions,
 } from '@qbit-oss/rpc'
-import { QbitZmqSubscriber, ZmqSetupError, parseZmqMessage, type ZmqEvent, type ZmqSetupErrorCode } from '@qbit-oss/zmq'
+import {
+  QbitZmqSubscriber,
+  ZmqFrameError,
+  ZmqSetupError,
+  parseZmqMessage,
+  type ZmqEvent,
+  type ZmqFrameErrorCode,
+  type ZmqReconnectCode,
+  type ZmqSetupErrorCode,
+} from '@qbit-oss/zmq'
 
 const options: QbitRpcClientOptions = {
   url: 'http://127.0.0.1:48352/',
@@ -79,6 +90,22 @@ export async function send(hex: string): Promise<string | undefined> {
     if (RpcUnknownOutcomeError.is(error)) return error.txid
     throw error
   }
+}
+
+export function nodeCode(error: unknown): number | undefined {
+  return RpcError.is(error) ? error.rpcCode : undefined
+}
+
+export function recheckFailure(error: unknown): unknown {
+  return RpcChainGuardError.is(error) && error.reason === 'check_failed' ? error.cause : undefined
+}
+
+export function frameCode(error: unknown): ZmqFrameErrorCode | undefined {
+  return ZmqFrameError.is(error) ? error.code : undefined
+}
+
+export function reconnectCode(event: ZmqEvent): ZmqReconnectCode | undefined {
+  return event.kind === 'reconnect' ? event.code : undefined
 }
 
 export async function first(): Promise<ZmqEvent | ZmqSetupErrorCode | undefined> {
@@ -111,6 +138,13 @@ for (const [from, to] of [[rpcCjs, rpcEsm], [rpcEsm, rpcCjs]]) {
   assert.equal(to.RpcError.is(error), true, 'RpcError.is misses the other build')
   assert.equal(to.QbitRpcError.is(error), true, 'QbitRpcError.is misses the other build')
   assert.equal(to.RpcUnknownOutcomeError.is(error), false)
+  assert.equal(error.rpcCode, -8)
+  assert.equal('code' in error, false, 'RpcError still has a code')
+  const refused = new from.RpcChainGuardError('walletlock', 'check_failed', 'regtest', {
+    cause: new from.RpcTimeoutError('getblockchaininfo', 5),
+  })
+  assert.equal(to.RpcChainGuardError.is(refused), true, 'RpcChainGuardError.is misses the other build')
+  assert.equal(to.RpcTimeoutError.is(refused.cause), true, 'a check_failed cause is not recognized in the other build')
   const unknown = new from.RpcUnknownOutcomeError('sendrawtransaction', new from.RpcTimeoutError('sendrawtransaction', 5))
   assert.equal(to.RpcUnknownOutcomeError.is(unknown), true)
   assert.equal(to.parseQbt('90071992.54740993'), 9007199254740993n)
@@ -146,8 +180,14 @@ for (const [from, to] of [
   [zmqCjs, zmqEsm],
   [zmqEsm, zmqCjs],
 ]) {
+  const frame = new from.ZmqFrameError('frame_count')
+  assert.equal(frame instanceof to.ZmqFrameError, false)
+  assert.equal(to.ZmqFrameError.is(frame), true, 'ZmqFrameError.is misses the other build')
+  assert.equal(to.ZmqSetupError.is(frame), false)
+  assert.throws(() => from.parseZmqMessage([]), e => to.ZmqFrameError.is(e) && e.code === 'frame_count')
   const foreign = new from.ZmqSetupError('module_load', 'from the other build')
   assert.equal(foreign instanceof to.ZmqSetupError, false)
+  assert.equal(to.ZmqFrameError.is(foreign), false)
   assert.equal(to.ZmqSetupError.is(foreign), true, 'ZmqSetupError.is misses the other build')
   const subscriber = new to.QbitZmqSubscriber({
     url: 'tcp://127.0.0.1:28332',
@@ -159,7 +199,7 @@ for (const [from, to] of [
   await assert.rejects(subscriber[Symbol.asyncIterator]().next(), e => e === foreign)
   assert.equal(subscriber.health().status, 'closed')
 }
-console.log('zmq dual-build parser, zeromq load, address check and ZmqSetupError: PASS')
+console.log('zmq dual-build parser, zeromq load, address check, ZmqFrameError and ZmqSetupError: PASS')
 `
 
 function typeCheck(tsconfig, cwd) {

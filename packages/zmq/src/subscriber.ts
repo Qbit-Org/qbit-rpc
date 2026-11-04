@@ -86,6 +86,26 @@ export interface QbitZmqSubscriberOptions {
   readonly socketFactory?: ZmqSocketFactory
 }
 
+/**
+ * The `code` of a `reconnect` event: the code of the error that a socket call
+ * failed with, passed on as it is. The subscriber adds none of its own, so this
+ * lists what `zeromq` and libzmq raise from the calls it makes on a SUB socket,
+ * and stays open for anything else, such as a custom `socketFactory`'s error.
+ * The package README says what each means.
+ */
+export type ZmqReconnectCode =
+  | 'EAGAIN'
+  | 'EBADF'
+  | 'EBUSY'
+  | 'EFAULT'
+  | 'EINTR'
+  | 'EINVAL'
+  | 'EMFILE'
+  | 'EMTHREAD'
+  | 'ENOTSOCK'
+  | 'ETERM'
+  | (string & {})
+
 /** What the subscriber yields. */
 export type ZmqEvent =
   | {
@@ -109,8 +129,8 @@ export type ZmqEvent =
        * a {@link ZmqSetupError}.
        */
       readonly reason: 'disconnected' | 'failed'
-      /** The failed socket's error code, such as `EFSM`, when it had one. */
-      readonly code?: string
+      /** For `failed`, the code of the error the socket call failed with, when it had one. */
+      readonly code?: ZmqReconnectCode
     }
 
 /**

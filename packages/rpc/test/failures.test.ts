@@ -172,7 +172,7 @@ describe('unknown outcomes after a side effect may have happened', () => {
       )
     const rejected = await failure(rpc.sendRawTransaction(TX_HEX))
     expect(RpcError.is(rejected)).toBe(true)
-    expect(rejected).toMatchObject({ code: -26, message: 'min relay fee not met', method: 'sendrawtransaction' })
+    expect(rejected).toMatchObject({ rpcCode: -26, message: 'min relay fee not met', method: 'sendrawtransaction' })
 
     node.handler = (_request, response) => {
       response.statusCode = 401
@@ -336,7 +336,7 @@ describe('read retries', () => {
       expectedChain: 'regtest',
       readRetries: 3,
     })
-    await expect(rpc.getBlockHash(99)).rejects.toMatchObject({ code: -8 })
+    await expect(rpc.getBlockHash(99)).rejects.toMatchObject({ rpcCode: -8 })
     expect(node.requests).toHaveLength(1)
   })
 })
@@ -400,7 +400,7 @@ describe('malformed and oversized responses', () => {
       response.statusCode = 500
       response.end(`{"result":null,"error":{"code":-1,"message":"legacy"},"id":${idOf(request.body)}}`)
     }
-    await expect(rpcWith().getBestBlockHash()).rejects.toSatisfy(error => RpcError.is(error) && error.code === -1)
+    await expect(rpcWith().getBestBlockHash()).rejects.toSatisfy(error => RpcError.is(error) && error.rpcCode === -1)
   })
 })
 
@@ -430,8 +430,11 @@ describe('side-effecting calls', () => {
       expect(node.requests).toHaveLength(4)
       // ...but a broadcast gets exactly one attempt.
       node.requests.length = 0
-      await expect(rpc.sendRawTransaction(TX_HEX, { timeoutMs: 5000 })).rejects.toMatchObject({ status: 401 })
-      // The 401 made the chain confirmation stale, so a chain check runs first; the broadcast itself runs once.
+      // The 401 made the chain confirmation stale, so a chain check runs first and fails: the broadcast is not sent.
+      await expect(rpc.sendRawTransaction(TX_HEX, { timeoutMs: 5000 })).rejects.toMatchObject({
+        reason: 'check_failed',
+        cause: { status: 401 },
+      })
       expect(node.calls().filter(call => call.method === 'sendrawtransaction')).toHaveLength(0)
       node.requests.length = 0
       node.results(chainResults('regtest'))
@@ -464,7 +467,7 @@ describe('side-effecting calls', () => {
     expect(performance.now() - readStarted).toBeGreaterThanOrEqual(150)
     const sendStarted = performance.now()
     const error = await failure(rpc.call('lockunspent', [true]))
-    expect(error).toMatchObject({ reason: 'network', code: 'ECONNREFUSED' })
+    expect(error).toMatchObject({ reason: 'network', code: 'ECONNREFUSED', method: 'lockunspent' })
     expect(RpcUnknownOutcomeError.is(error)).toBe(false)
     expect(performance.now() - sendStarted).toBeLessThan(140)
     node = await FakeNode.start() // for afterEach

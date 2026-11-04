@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { parseZmqMessage, SequenceTracker, ZmqFrameError, type ZmqFrameErrorCode } from '../src'
+import { parseZmqMessage, SequenceTracker, ZmqFrameError, ZmqSetupError, type ZmqFrameErrorCode } from '../src'
 
 // qbit Core writes hashes byte-reversed from their internal order, which is
 // the display order RPC uses: the wire bytes read as hex are the RPC hash
@@ -126,7 +126,32 @@ describe('parseZmqMessage', () => {
       return undefined
     })()
     expect(error).toBeInstanceOf(ZmqFrameError)
+    expect(ZmqFrameError.is(error)).toBe(true)
     expect((error as ZmqFrameError).code).toBe(code)
+  })
+})
+
+describe('ZmqFrameError.is', () => {
+  it('recognizes one from the other build by its brand, as instanceof cannot', () => {
+    // What instanceof cannot see: the class of the ESM build seen from the CommonJS one, or the reverse.
+    class OtherBuild extends Error {
+      readonly code = 'frame_count'
+    }
+    Object.defineProperty(OtherBuild.prototype, Symbol.for('qbit-zmq.ZmqFrameError'), { value: true })
+    const foreign = new OtherBuild('malformed')
+    expect(foreign).not.toBeInstanceOf(ZmqFrameError)
+    expect(ZmqFrameError.is(foreign)).toBe(true)
+  })
+
+  it('refuses a look-alike and anything else without the brand', () => {
+    const lookAlike = Object.assign(new Error('Malformed qbit ZMQ message (topic)'), {
+      name: 'ZmqFrameError',
+      code: 'topic',
+    })
+    for (const value of [lookAlike, new ZmqSetupError('module_load', 'no zeromq'), {}, 'topic', 0, null, undefined]) {
+      expect(ZmqFrameError.is(value)).toBe(false)
+    }
+    expect(ZmqSetupError.is(new ZmqFrameError('topic'))).toBe(false)
   })
 })
 

@@ -263,7 +263,7 @@ describe('psbtBumpFee', () => {
       const before = node.requests.length
       const error = await failure(rpc.psbtBumpFee(HASH_A))
       expect(RpcError.is(error)).toBe(true)
-      expect(error).toMatchObject({ code, message, method: 'psbtbumpfee' })
+      expect(error).toMatchObject({ rpcCode: code, message, method: 'psbtbumpfee' })
       expect(node.requests).toHaveLength(before + 1)
     }
   })
@@ -333,7 +333,7 @@ describe('psbtBumpFee', () => {
     await expect(elsewhere.confirmChain()).rejects.toSatisfy(RpcChainGuardError.is)
     node.requests.length = 0
     const mismatch = await failure(elsewhere.psbtBumpFee(HASH_A))
-    expect(mismatch).toMatchObject({ reason: 'mismatch', expected: 'regtest', actual: 'main' })
+    expect(mismatch).toMatchObject({ reason: 'mismatch', expectedChain: 'regtest', actualChain: 'main' })
     expect(node.requests).toHaveLength(0)
 
     // A stale confirmation is checked again first, and the chain having changed refuses the bump.
@@ -342,7 +342,7 @@ describe('psbtBumpFee', () => {
     await stale.confirmChain()
     node.results({ ...chainResults('main'), psbtbumpfee: json(BUMPED) })
     node.requests.length = 0
-    expect(await failure(stale.psbtBumpFee(HASH_A))).toMatchObject({ reason: 'mismatch', actual: 'main' })
+    expect(await failure(stale.psbtBumpFee(HASH_A))).toMatchObject({ reason: 'mismatch', actualChain: 'main' })
     expect(node.calls().map(call => call.method)).toEqual([...CHECK])
 
     const reader = client(['wallet-read', 'wallet-write'])

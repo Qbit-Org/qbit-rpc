@@ -12,6 +12,7 @@ import {
   QbitZmqSubscriber,
   ZmqSetupError,
   type ZmqEvent,
+  type ZmqReconnectCode,
   type ZmqSetupErrorCode,
   type ZmqSocket,
   type ZmqSocketFactory,
@@ -597,6 +598,11 @@ describe('QbitZmqSubscriber setup failures', () => {
       { kind: 'reconnect', attempt: 7, reason: 'failed', code: 'EINVAL' },
     ])
     expect(events[7]?.kind).toBe('message')
+    // Known or not, a code passes through as it is: the type lists libzmq's and stays open.
+    const codes: (ZmqReconnectCode | undefined)[] = events.flatMap(event =>
+      event.kind === 'reconnect' ? [event.code] : []
+    )
+    expect(codes).toEqual([undefined, 'EMFILE', 'EINVAL', 'EAGAIN', 'MODULE_NOT_FOUND', undefined, 'EINVAL'])
     expect(subscriber.health()).toMatchObject({ status: 'receiving', reconnects: 7 })
     const done = iterator.next()
     subscriber.close()

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { QbitRpcClient, RpcUnknownOutcomeError } from '../src'
 import { rpcErrorCode, RPC_INVALID_PARAMETER, RPC_NOT_FOUND, type CoreRpc } from './helpers/core-rpc'
-import { chainResults, FakeNode, HASH_A } from './helpers/fake-node'
+import { chainResults, FakeNode, HASH_A, TX_HEX } from './helpers/fake-node'
 
 // The compile-time proof, checked by `pnpm typecheck:test`: a QbitRpcClient
 // is a CoreRpc as it stands, with no wrapper or cast.
@@ -64,7 +64,7 @@ describe('CoreRpc from qbit-payments core-wallet', () => {
     for (const method of CORE_RPC_METHODS) expect(typeof rpc[method]).toBe('function')
   })
 
-  it('reaches the adapter with node error codes as numbers, and unknown outcomes without one', async () => {
+  it('reaches the adapter with node error codes as rpcCode numbers, and unknown outcomes without one', async () => {
     const rpc = await core()
     node.rpc(call =>
       call.method === 'getmempoolentry'
@@ -81,5 +81,33 @@ describe('CoreRpc from qbit-payments core-wallet', () => {
     expect(RpcUnknownOutcomeError.is(dropped)).toBe(true)
     expect(rpcErrorCode(dropped)).toBeUndefined()
     expect(node.requests.at(-1)!.url).toBe('/wallet/treasury')
+  })
+
+  it('reaches the adapter without a code when a transport error has a string one', async () => {
+    const rpc = await core()
+    await node.close()
+    const refused = await rpc.getBlockCount().catch((e: unknown) => e)
+    expect(refused).toMatchObject({ name: 'RpcTransportError', code: 'ECONNREFUSED' })
+    expect(rpcErrorCode(refused)).toBeUndefined()
+    node = await FakeNode.start() // for afterEach
+  })
+
+  it('reaches the adapter without a code when the node fails the chain re-check, not the call', async () => {
+    node.results(chainResults('regtest'))
+    const rpc = new QbitRpcClient({
+      url: node.url,
+      wallet: 'treasury',
+      auth: { username: 'u', password: 'p' },
+      expectedChain: 'regtest',
+      capabilities: ['wallet-read', 'wallet-write', 'broadcast'],
+      chainCheckMaxAgeMs: 0,
+    })
+    await rpc.confirmChain()
+    node.rpc(() => ({ error: { code: -28, message: 'Loading block index' } }))
+    const error = await asCoreRpc(rpc)
+      .sendRawTransaction(TX_HEX)
+      .catch((e: unknown) => e)
+    expect(error).toMatchObject({ name: 'RpcChainGuardError', reason: 'check_failed', cause: { rpcCode: -28 } })
+    expect(rpcErrorCode(error)).toBeUndefined()
   })
 })

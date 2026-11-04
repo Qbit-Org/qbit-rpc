@@ -60,7 +60,7 @@ describe.runIf(enabled)('qbit Core v1.0.0 regtest', () => {
     expect(header1.ok && header1.value.hash).toBe(genesis)
     expect(count.ok && (count.value as JsonNumber).toSafeInteger()).toBe(info.blocks)
     const [missing] = await rpc.batch([requests.getBlockHash(1_000_000)])
-    expect(!missing.ok && RpcError.is(missing.error) && missing.error.code).toBe(-8)
+    expect(!missing.ok && RpcError.is(missing.error) && missing.error.rpcCode).toBe(-8)
   })
 
   it('confirms the chain by its genesis block, and refuses another expectedGenesisHash', async () => {
@@ -81,8 +81,8 @@ describe.runIf(enabled)('qbit Core v1.0.0 regtest', () => {
     expect(RpcChainGuardError.is(error)).toBe(true)
     expect(error).toMatchObject({
       reason: 'mismatch',
-      expected: 'regtest',
-      actual: 'regtest',
+      expectedChain: 'regtest',
+      actualChain: 'regtest',
       differs: ['genesis_hash'],
       expectedGenesisHash: 'ab'.repeat(32),
       actualGenesisHash: REGTEST_GENESIS,
@@ -109,7 +109,7 @@ describe.runIf(enabled)('qbit Core v1.0.0 regtest', () => {
     const decode = async (psbt: string): Promise<Decoded['tx']> =>
       ((await wallet.call('decodepsbt', [psbt])) as Decoded).tx
     const nodeError = (code?: number) => (error: unknown) =>
-      RpcError.is(error) && (code === undefined || error.code === code)
+      RpcError.is(error) && (code === undefined || error.rpcCode === code)
     const amountTo = (tx: Decoded['tx'], address: string): bigint =>
       tx.vout.find(output => output.scriptPubKey.address === address)!.value.toBits()
 
@@ -296,7 +296,7 @@ describe.runIf(enabled)('qbit Core v1.0.0 regtest', () => {
     await locked.confirmChain()
     expect((await locked.getWalletInfo()).unlockedUntil).toBe(0)
     await expect(locked.walletPassphrase('wrong', 30)).rejects.toSatisfy(
-      error => RpcError.is(error) && error.code === -14
+      error => RpcError.is(error) && error.rpcCode === -14
     )
     await locked.walletPassphrase('smoke-passphrase', 30)
     expect((await locked.getWalletInfo()).unlockedUntil).toBeGreaterThan(0)
@@ -331,7 +331,7 @@ describe.runIf(enabled)('qbit Core v1.0.0 regtest', () => {
     const wallet = client({ wallet: 'smoke', capabilities: ['wallet-read', 'wallet-write', 'broadcast'] })
     await wallet.confirmChain()
     const core: CoreRpc = wallet
-    const nodeError = (code: number) => (error: unknown) => RpcError.is(error) && error.code === code
+    const nodeError = (code: number) => (error: unknown) => RpcError.is(error) && error.rpcCode === code
     const sorted = (outpoints: Outpoint[]): Outpoint[] =>
       [...outpoints].sort((a, b) => `${a.txid}:${a.vout}`.localeCompare(`${b.txid}:${b.vout}`))
     cli('-named', 'createwallet', 'wallet_name=adapter-foreign', 'descriptors=true')
@@ -473,7 +473,7 @@ describe.runIf(enabled)('qbit Core v1.0.0 regtest', () => {
     expect(spent).toEqual({ ok: true, value: null })
     expect(info.ok && info.value.isChange).toBe(true)
     expect(locks).toEqual({ ok: true, value: [] })
-    expect(!gone.ok && RpcError.is(gone.error) && gone.error.code).toBe(-5)
+    expect(!gone.ok && RpcError.is(gone.error) && gone.error.rpcCode).toBe(-5)
   })
 
   // listsinceblock, listtransactions, getbalances and getnewaddress on wallets
@@ -489,7 +489,7 @@ describe.runIf(enabled)('qbit Core v1.0.0 regtest', () => {
     const peer = client({ wallet: 'history-peer', capabilities: ['wallet-read', 'wallet-write'] })
     await wallet.confirmChain()
     await peer.confirmChain()
-    const nodeError = (code: number) => (error: unknown) => RpcError.is(error) && error.code === code
+    const nodeError = (code: number) => (error: unknown) => RpcError.is(error) && error.rpcCode === code
     const mineTo = await peer.getNewAddress({ addressType: 'p2mr' })
     const mine = (blocks = 1, to = mineTo): string[] =>
       JSON.parse(cli('generatetoaddress', String(blocks), to)) as string[]
@@ -718,7 +718,7 @@ describe.runIf(enabled)('qbit Core v1.0.0 regtest', () => {
     await wallet.confirmChain()
     await peer.confirmChain()
     const nodeError = (code: number, message?: RegExp) => (error: unknown) =>
-      RpcError.is(error) && error.code === code && (message === undefined || message.test(error.message))
+      RpcError.is(error) && error.rpcCode === code && (message === undefined || message.test(error.message))
     const payee = (): Promise<string> => peer.getNewAddress({ addressType: 'p2mr' })
     const mine = async (): Promise<void> => {
       cli('generatetoaddress', '1', await payee())

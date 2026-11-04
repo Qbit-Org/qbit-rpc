@@ -37,7 +37,13 @@ export type ZmqMessage =
 
 export type ZmqFrameErrorCode = 'frame_count' | 'topic' | 'body_length' | 'label' | 'sequence_length'
 
-/** A message did not match qbit Core's three-part format. */
+/**
+ * A message did not match qbit Core's three-part format. The `code`, one of
+ * {@link ZmqFrameErrorCode}, says how: not three frames (`frame_count`), a topic
+ * qbit Core does not publish (`topic`), a body of the wrong length for its topic
+ * (`body_length`), an unknown label on a `sequence` message (`label`), or a
+ * counter that is not 4 bytes (`sequence_length`).
+ */
 export class ZmqFrameError extends Error {
   readonly code: ZmqFrameErrorCode
   /** The topic, when the first frame named a known one. */
@@ -49,7 +55,18 @@ export class ZmqFrameError extends Error {
     this.code = code
     if (topic !== undefined) this.topic = topic
   }
+
+  /**
+   * Whether `value` is a `ZmqFrameError` from any copy of this package. A
+   * `Symbol.for` brand is shared across the CommonJS and ESM builds, where
+   * `instanceof` sees two classes.
+   */
+  static is(value: unknown): value is ZmqFrameError {
+    return typeof value === 'object' && value !== null && (value as Record<symbol, unknown>)[FRAME_ERROR_BRAND] === true
+  }
 }
+const FRAME_ERROR_BRAND = Symbol.for('qbit-zmq.ZmqFrameError')
+Object.defineProperty(ZmqFrameError.prototype, FRAME_ERROR_BRAND, { value: true })
 
 // The smallest serializations: an 80-byte header plus a transaction count,
 // and version, input count, output count and locktime. Neither can exceed

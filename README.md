@@ -158,18 +158,17 @@ for await (const event of zmq) {
 
 ## Errors you must handle
 
-All `@qbit-oss/rpc` errors extend `QbitRpcError`; recognize them with
-`X.is(error)`, which also works across the CommonJS and ESM builds.
+Each package has one table of its errors, every class, `reason` and `code`, with
+what to do about each: [`@qbit-oss/rpc`](packages/rpc/README.md#failure-model) and
+[`@qbit-oss/zmq`](packages/zmq/README.md#errors). A test keeps them equal to the
+code. Recognize an error with `X.is(error)`, which also works across the CommonJS
+and ESM builds.
 
-| Error | Meaning | What to do |
-| --- | --- | --- |
-| `RpcUnknownOutcomeError` | A wallet-write or broadcast call may have been executed, but no valid reply arrived (timeout, abort, dropped connection, proxy 5xx, malformed or oversized reply). Never retried. | Reconcile before acting again: look up `txid` for a broadcast, re-read wallet state for a signing call. |
-| `RpcError` | The node answered with an error: `code` and `message` are the node's. | Handle by code, for example -26 rejected, -25 missing inputs, -27 already confirmed, -14 wrong passphrase, -28 node warming up. |
-| `RpcCapabilityError` | Refused before sending: capability not enabled, method not allowlisted, or not batchable. | A programming or configuration error. |
-| `RpcChainGuardError` | A wallet-write or broadcast call before `confirmChain()`, or after a chain check (yours, or the automatic re-check of a stale confirmation) found another chain, genesis block or signet challenge. Nothing was sent. | Call `confirmChain()`. On `mismatch`, `differs` says what differed: check the URL, or set `expectedGenesisHash` or `expectedSignetChallenge` for a node with other chain parameters or a custom signet. |
-| `RpcTransportError` | Connection failed, an HTTP status without a JSON-RPC reply (401 credentials; 403 `rpcallowip`, or an `-rpcwhitelist` that does not allow a method sent; the chain check needs `getblockhash` too), or the cookie file could not be read. | Retry reads later; fix configuration for 401/403. |
-| `RpcTimeoutError`, `RpcAbortedError` | The operation's deadline (`timeoutMs`) expired, or your `AbortSignal` fired. For side-effecting calls these arrive as the `cause` of an `RpcUnknownOutcomeError`. | Retry reads if appropriate. |
-| `RpcResponseError`, `RpcResponseTooLargeError` | The reply was not valid JSON-RPC, a result failed validation (`path` says where), or it passed `maxResponseBytes`. | Treat the node or proxy as misbehaving; do not guess the value. |
+The one to handle first: a side-effecting `@qbit-oss/rpc` call that may have run
+rejects with `RpcUnknownOutcomeError`. Reconcile before acting again. Any other
+rejection is definite: refused, not sent, or the node's own answer (`RpcError`,
+whose number is `rpcCode`). A failed chain re-check is `RpcChainGuardError` with
+`reason: 'check_failed'` and the failure as `cause`: nothing was sent.
 
 `@qbit-oss/zmq` does not throw for bad input from the publisher: malformed
 messages, sequence gaps and socket failures arrive as `malformed`, `gap` and

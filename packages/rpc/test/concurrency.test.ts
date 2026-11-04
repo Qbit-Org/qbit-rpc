@@ -454,7 +454,7 @@ describe('maxConcurrentRequests', () => {
 
     const refused = await queued
     expect(RpcChainGuardError.is(refused)).toBe(true)
-    expect(refused).toMatchObject({ reason: 'mismatch', method: 'sendrawtransaction', actual: 'main' })
+    expect(refused).toMatchObject({ reason: 'mismatch', method: 'sendrawtransaction', actualChain: 'main' })
     expect(methods()).toEqual([...CHECK])
   })
 
