@@ -1,3 +1,4 @@
+import { checkZmqAddress } from './address'
 import {
   parseZmqMessage,
   SequenceTracker,
@@ -26,6 +27,13 @@ export interface ZmqSocket {
 export interface ZmqSocketSettings {
   /** Largest inbound message part, in bytes; libzmq disconnects a peer that sends more. */
   readonly maxMessageSize: number
+  /**
+   * Enable IPv6. libzmq cannot reach an IPv6 address without it, and with it
+   * resolves a host name to IPv6 first, so `localhost` would miss a publisher
+   * on 127.0.0.1. The subscriber sets it only for an IPv6 address, as qbitd
+   * does for its publisher. Default false.
+   */
+  readonly ipv6?: boolean
 }
 
 /** Makes a socket; a custom factory should apply `settings` itself. */
@@ -44,7 +52,13 @@ export const DEFAULT_MAX_MESSAGE_SIZE = MAX_BLOCK_BYTES + 65_536
 export const DEFAULT_STALE_AFTER_MS = 600_000
 
 export interface QbitZmqSubscriberOptions {
-  /** The publisher address, for example `tcp://127.0.0.1:28332` or `ipc:///run/qbitd/zmq.sock`. */
+  /**
+   * The publisher address: `tcp://<host>:<port>`, with an IPv4 address, a
+   * bracketed IPv6 address or a host name and a port from 1 to 65535 (for
+   * example `tcp://127.0.0.1:28332` or `tcp://[::1]:28332`), or
+   * `ipc://<path>` (for example `ipc:///run/qbitd/zmq.sock`). The constructor
+   * throws a `TypeError` for anything else.
+   */
   readonly url: string
   /** Topics to subscribe to; each must be one qbitd publishes at `url`. */
   readonly topics: readonly ZmqTopic[]
@@ -62,7 +76,12 @@ export interface QbitZmqSubscriberOptions {
    * {@link DEFAULT_MAX_MESSAGE_SIZE}, enough for `rawblock`.
    */
   readonly maxMessageSize?: number
-  /** Socket source. Default: a `zeromq` `Subscriber`, loaded on first use. */
+  /**
+   * Socket source. Default: {@link createZeromqSocket}, loaded on first use.
+   * It receives `{ maxMessageSize, ipv6 }`, with `ipv6` true when the url's
+   * host is an IPv6 address, and should apply both. A factory can throw a
+   * {@link ZmqSetupError} to end the iteration instead of being retried.
+   */
   readonly socketFactory?: ZmqSocketFactory
 }
 
@@ -81,8 +100,9 @@ export type ZmqEvent =
       readonly attempt: number
       /**
        * `disconnected`: the connection to the publisher dropped (qbitd stopped
-       * or restarted, or sent a message over `maxMessageSize`). `failed`: a
-       * receive failed.
+       * or restarted, or sent a message over `maxMessageSize`). `failed`:
+       * making, connecting or receiving on the socket failed, other than with
+       * a {@link ZmqSetupError}.
        */
       readonly reason: 'disconnected' | 'failed'
       /** The failed socket's error code, such as `EFSM`, when it had one. */
@@ -96,7 +116,8 @@ export type ZmqEvent =
  * - `receiving`: a message arrived on the current socket within
  *   `staleAfterMs`.
  * - `stale`: the last message is older than `staleAfterMs`.
- * - `closed`: `close()` was called.
+ * - `closed`: `close()` was called, or the iteration ended with a
+ *   {@link ZmqSetupError}.
  */
 export type ZmqHealthStatus = 'unknown' | 'receiving' | 'stale' | 'closed'
 
@@ -110,22 +131,116 @@ export interface ZmqHealth {
   readonly reconnects: number
 }
 
-/** A `zeromq` `Subscriber` with `maxMessageSize` applied. `zeromq` loads lazily, so the parser works without the native addon. */
+/**
+ * Why a {@link ZmqSetupError} was thrown:
+ *
+ * - `module_load`: the `zeromq` module or its native addon could not be
+ *   loaded, or a custom `socketFactory` threw one of Node's module-load errors
+ *   (`MODULE_NOT_FOUND`, `ERR_MODULE_NOT_FOUND`, `ERR_DLOPEN_FAILED`).
+ * - `invalid_address`: the socket's `connect()` refused the url with `EINVAL`,
+ *   or with `ENAMETOOLONG` for an `ipc://` path too long for a Unix socket.
+ * - `unsupported_protocol`: `connect()` failed with `EPROTONOSUPPORT`: this
+ *   libzmq does not support the url's transport.
+ */
+export type ZmqSetupErrorCode = 'module_load' | 'invalid_address' | 'unsupported_protocol'
+
+/**
+ * The subscriber cannot work as configured, and retrying will not help. The
+ * iteration throws it instead of yielding a `reconnect`, and the subscriber is
+ * closed. `cause` is the original error, when there was one.
+ */
+export class ZmqSetupError extends Error {
+  readonly code: ZmqSetupErrorCode
+
+  constructor(code: ZmqSetupErrorCode, message: string, options?: { cause?: unknown }) {
+    super(message, options)
+    this.name = 'ZmqSetupError'
+    this.code = code
+  }
+
+  /**
+   * Whether `value` is a `ZmqSetupError` from any copy of this package. A
+   * `Symbol.for` brand is shared across the CommonJS and ESM builds, where
+   * `instanceof` sees two classes.
+   */
+  static is(value: unknown): value is ZmqSetupError {
+    return typeof value === 'object' && value !== null && (value as Record<symbol, unknown>)[SETUP_ERROR_BRAND] === true
+  }
+}
+const SETUP_ERROR_BRAND = Symbol.for('qbit-zmq.ZmqSetupError')
+Object.defineProperty(ZmqSetupError.prototype, SETUP_ERROR_BRAND, { value: true })
+
+/**
+ * A `zeromq` `Subscriber` with `settings` applied. `zeromq` loads lazily, so
+ * the parser works without the native addon; a failure to load it is a
+ * {@link ZmqSetupError}.
+ */
 export async function createZeromqSocket(
   settings: ZmqSocketSettings = { maxMessageSize: DEFAULT_MAX_MESSAGE_SIZE }
 ): Promise<ZmqSocket> {
-  const zeromq = (await import('zeromq')) as unknown as {
-    Subscriber?: new () => ZmqSocket & { maxMessageSize: number }
+  let zeromq: { Subscriber?: new () => ZmqSocket & { maxMessageSize: number; ipv6: boolean } }
+  try {
+    zeromq = (await import('zeromq')) as unknown as typeof zeromq
+  } catch (error) {
+    throw new ZmqSetupError(
+      'module_load',
+      `Could not load the zeromq module or its native addon (${errorSummary(error)}): install the zeromq dependency with the prebuilt addon for this platform, or build it from source`,
+      { cause: error }
+    )
   }
-  if (typeof zeromq.Subscriber !== 'function') throw new Error('the zeromq module has no Subscriber export')
+  if (typeof zeromq.Subscriber !== 'function') {
+    throw new ZmqSetupError('module_load', 'The zeromq module has no Subscriber export: install zeromq 6')
+  }
   const socket = new zeromq.Subscriber()
   socket.maxMessageSize = settings.maxMessageSize
+  if (settings.ipv6 === true) socket.ipv6 = true
   return socket
 }
 
 function errorCode(error: unknown): string | undefined {
   const code = (error as { code?: unknown } | null)?.code
   return typeof code === 'string' ? code : undefined
+}
+
+function errorSummary(error: unknown): string {
+  const code = errorCode(error)
+  const message = error instanceof Error ? error.message : String(error)
+  return code === undefined ? message : `${code}: ${message}`
+}
+
+/** Node's errors for a module, or a native addon, that cannot be found or loaded. */
+const MODULE_LOAD_CODES: ReadonlySet<string> = new Set([
+  'MODULE_NOT_FOUND',
+  'ERR_MODULE_NOT_FOUND',
+  'ERR_DLOPEN_FAILED',
+])
+
+/** The failure as a {@link ZmqSetupError} if retrying cannot fix it, else `undefined`. */
+function setupError(error: unknown, step: 'create' | 'connect' | 'receive', url: string): ZmqSetupError | undefined {
+  if (ZmqSetupError.is(error)) return error
+  const code = errorCode(error)
+  if (step === 'create' && code !== undefined && MODULE_LOAD_CODES.has(code)) {
+    return new ZmqSetupError(
+      'module_load',
+      `The socket factory could not load a module (${errorSummary(error)}): install it, with its native addon for this platform`,
+      { cause: error }
+    )
+  }
+  if (step !== 'connect') return undefined
+  if (code === 'EINVAL' || code === 'ENAMETOOLONG') {
+    const fix = code === 'EINVAL' ? 'fix the url' : 'use a shorter ipc:// path'
+    return new ZmqSetupError('invalid_address', `connect() refused ${url} (${errorSummary(error)}): ${fix}`, {
+      cause: error,
+    })
+  }
+  if (code === 'EPROTONOSUPPORT') {
+    return new ZmqSetupError(
+      'unsupported_protocol',
+      `connect() does not support the transport of ${url} (${errorSummary(error)}): use one this libzmq supports, such as tcp://`,
+      { cause: error }
+    )
+  }
+  return undefined
 }
 
 /**
@@ -137,6 +252,9 @@ function errorCode(error: unknown): string | undefined {
  * meanwhile are lost and a restarted qbitd's counter can happen to line up.
  * A gap is the signal to reconcile over RPC (for blocks, `getbestblockhash`
  * and walk back with `getblockheader`): ZMQ is a wake-up, not a ledger.
+ * A failure that retrying cannot fix (a `zeromq` module that does not load,
+ * an address `connect()` refuses) ends the iteration with a
+ * {@link ZmqSetupError} instead.
  *
  * One consumer at a time: iterate it with `for await`.
  */
@@ -146,6 +264,7 @@ export class QbitZmqSubscriber implements AsyncIterable<ZmqEvent> {
   readonly #reconnectDelayMs: number
   readonly #staleAfterMs: number
   readonly #maxMessageSize: number
+  readonly #ipv6: boolean
   readonly #socketFactory: ZmqSocketFactory
   readonly #tracker = new SequenceTracker()
   #socket: ZmqSocket | undefined
@@ -158,9 +277,7 @@ export class QbitZmqSubscriber implements AsyncIterable<ZmqEvent> {
 
   constructor(options: QbitZmqSubscriberOptions) {
     if (typeof options !== 'object' || options === null) throw new TypeError('options must be an object')
-    if (typeof options.url !== 'string' || !/^(?:tcp|ipc):\/\/.+/.test(options.url)) {
-      throw new TypeError('url must be a tcp:// or ipc:// ZeroMQ address')
-    }
+    const { ipv6 } = checkZmqAddress(options.url)
     const topics = options.topics
     if (!Array.isArray(topics) || topics.length === 0) throw new TypeError('topics must be a non-empty array')
     for (const topic of topics) {
@@ -184,6 +301,7 @@ export class QbitZmqSubscriber implements AsyncIterable<ZmqEvent> {
     this.#reconnectDelayMs = delay
     this.#staleAfterMs = stale
     this.#maxMessageSize = maxMessageSize
+    this.#ipv6 = ipv6
     this.#socketFactory = options.socketFactory ?? createZeromqSocket
   }
 
@@ -217,8 +335,9 @@ export class QbitZmqSubscriber implements AsyncIterable<ZmqEvent> {
         let socket: ZmqSocket | undefined
         let failure: unknown
         let disconnected = false
+        let step: 'create' | 'connect' | 'receive' = 'create'
         try {
-          socket = await this.#socketFactory({ maxMessageSize: this.#maxMessageSize })
+          socket = await this.#socketFactory({ maxMessageSize: this.#maxMessageSize, ipv6: this.#ipv6 })
           if (this.#closed) break
           const current = socket
           this.#socket = current
@@ -229,7 +348,9 @@ export class QbitZmqSubscriber implements AsyncIterable<ZmqEvent> {
             this.#receivedOnSocket = false
             current.close() // the pending receive rejects, and the loop replaces the socket
           })
+          step = 'connect'
           socket.connect(this.#url)
+          step = 'receive'
           for (const topic of this.#topics) socket.subscribe(topic)
           while (!this.#closed) {
             const frames = await socket.receive()
@@ -260,6 +381,11 @@ export class QbitZmqSubscriber implements AsyncIterable<ZmqEvent> {
           if (this.#socket === socket) this.#socket = undefined
         }
         if (this.#closed) break
+        const fatal = setupError(failure, step, this.#url)
+        if (fatal !== undefined) {
+          this.#closed = true // health() reports closed; the socket is already closed
+          throw fatal
+        }
         attempt += 1
         this.#counts.reconnects += 1
         this.#receivedOnSocket = false

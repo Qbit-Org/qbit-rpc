@@ -56,7 +56,7 @@ import {
   type BatchItem,
   type QbitRpcClientOptions,
 } from '@qbit-oss/rpc'
-import { QbitZmqSubscriber, parseZmqMessage, type ZmqEvent } from '@qbit-oss/zmq'
+import { QbitZmqSubscriber, ZmqSetupError, parseZmqMessage, type ZmqEvent, type ZmqSetupErrorCode } from '@qbit-oss/zmq'
 
 const options: QbitRpcClientOptions = {
   url: 'http://127.0.0.1:48352/',
@@ -81,9 +81,14 @@ export async function send(hex: string): Promise<string | undefined> {
   }
 }
 
-export async function first(): Promise<ZmqEvent | undefined> {
+export async function first(): Promise<ZmqEvent | ZmqSetupErrorCode | undefined> {
   const subscriber = new QbitZmqSubscriber({ url: 'tcp://127.0.0.1:28332', topics: ['hashblock'] })
-  for await (const event of subscriber) return event
+  try {
+    for await (const event of subscriber) return event
+  } catch (error) {
+    if (error instanceof ZmqSetupError) return error.code
+    throw error
+  }
   return undefined
 }
 export const parsed = parseZmqMessage
@@ -122,8 +127,39 @@ for (const zmq of [zmqEsm, zmqCjs]) {
   const socket = await zmq.createZeromqSocket()
   assert.equal(typeof socket.receive, 'function', 'zeromq did not load from the packed build')
   socket.close()
+  assert.throws(() => new zmq.QbitZmqSubscriber({ url: 'tcp://*:28332', topics: ['hashblock'] }), TypeError)
+  const missing = Object.assign(new Error("Cannot find module 'zeromq'"), { code: 'MODULE_NOT_FOUND' })
+  const subscriber = new zmq.QbitZmqSubscriber({
+    url: 'tcp://127.0.0.1:28332',
+    topics: ['hashblock'],
+    socketFactory: () => {
+      throw missing
+    },
+  })
+  await assert.rejects(
+    subscriber[Symbol.asyncIterator]().next(),
+    e => e instanceof zmq.ZmqSetupError && e.name === 'ZmqSetupError' && e.code === 'module_load' && e.cause === missing
+  )
+  assert.equal(subscriber.health().status, 'closed')
 }
-console.log('zmq dual-build parser and zeromq load: PASS')
+for (const [from, to] of [
+  [zmqCjs, zmqEsm],
+  [zmqEsm, zmqCjs],
+]) {
+  const foreign = new from.ZmqSetupError('module_load', 'from the other build')
+  assert.equal(foreign instanceof to.ZmqSetupError, false)
+  assert.equal(to.ZmqSetupError.is(foreign), true, 'ZmqSetupError.is misses the other build')
+  const subscriber = new to.QbitZmqSubscriber({
+    url: 'tcp://127.0.0.1:28332',
+    topics: ['hashblock'],
+    socketFactory: () => {
+      throw foreign
+    },
+  })
+  await assert.rejects(subscriber[Symbol.asyncIterator]().next(), e => e === foreign)
+  assert.equal(subscriber.health().status, 'closed')
+}
+console.log('zmq dual-build parser, zeromq load, address check and ZmqSetupError: PASS')
 `
 
 function typeCheck(tsconfig, cwd) {

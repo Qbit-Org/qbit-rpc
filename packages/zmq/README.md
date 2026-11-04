@@ -4,11 +4,12 @@
 
 A Node.js subscriber and strict parser for qbit Core v1.0.0's ZMQ
 notifications. It depends on the native
-[`zeromq`](https://www.npmjs.com/package/zeromq) addon, loaded only when a
-subscriber starts, so the parser works without it.
+[`zeromq`](https://www.npmjs.com/package/zeromq) addon, loaded at a
+subscriber's first iteration, not when it is constructed, so the parser works
+without it.
 
 ```ts
-import { QbitZmqSubscriber } from '@qbit-oss/zmq'
+import { QbitZmqSubscriber, ZmqSetupError } from '@qbit-oss/zmq'
 
 // qbitd -testnet4 -zmqpubhashblock=tcp://127.0.0.1:28332 -zmqpubsequence=tcp://127.0.0.1:28332
 const zmq = new QbitZmqSubscriber({
@@ -17,22 +18,59 @@ const zmq = new QbitZmqSubscriber({
   staleAfterMs: 10 * 60_000, // the default
 })
 
-for await (const event of zmq) {
-  switch (event.kind) {
-    case 'message':
-      if (event.message.topic === 'hashblock') await onBlock(event.message.hash)
-      break
-    case 'gap':
-      // event.missed is absent when how many were lost is unknown
-      await reconcileOverRpc()
-      break
-    case 'malformed':
-    case 'reconnect':
-      log(event)
-      break
+try {
+  for await (const event of zmq) {
+    switch (event.kind) {
+      case 'message':
+        if (event.message.topic === 'hashblock') await onBlock(event.message.hash)
+        break
+      case 'gap':
+        // event.missed is absent when how many were lost is unknown
+        await reconcileOverRpc()
+        break
+      case 'malformed':
+      case 'reconnect':
+        log(event)
+        break
+    }
   }
+} catch (error) {
+  // A configuration or installation problem that retrying cannot fix.
+  if (ZmqSetupError.is(error)) log(error.code, error.message, error.cause)
+  throw error
 }
 ```
+
+## Addresses
+
+The constructor checks `url` and throws a `TypeError` naming the problem
+unless it is one of:
+
+- `tcp://<host>:<port>`, where the host is an IPv4 address, an IPv6 address in
+  brackets (`tcp://[::1]:28332`, optionally with a zone such as
+  `[fe80::1%eth0]`) or a host name, and the port a decimal number from 1 to
+  65535. libzmq's source form, `tcp://<source>:<port>;<host>:<port>`, also
+  works: it connects from the given local IP address or interface, whose port
+  may be `0` or `*` for any.
+- `ipc://<path>`: a Unix socket path, or `@<name>` in Linux's abstract
+  namespace.
+
+So `tcp://127.0.0.1` (no port), `tcp://127.0.0.1:notaport`, port 0 or above
+65535, `tcp://*:28332` (`*` binds, it does not connect), an empty host, an
+IPv6 address without brackets, a dotted quad with a part above 255, an empty
+`ipc://` path, a control character and any other scheme are refused. libzmq's
+own `connect()` takes some of these and then retries forever without
+connecting, or reads `:93868` and `:28332abc` as port 28332. A host name that
+does not resolve is not refused: it is retried like a node that is down, as
+DNS may come up later.
+
+The socket enables IPv6 only for an IPv6 address: libzmq cannot reach one
+without it, and with it resolves `localhost` to `::1` first, missing a
+publisher on 127.0.0.1. So a host name resolves to IPv4 addresses only, unless
+the source address is IPv6: for a publisher reachable only over IPv6, use its
+bracketed address. A custom
+`socketFactory` receives the setting as `settings.ipv6`, and
+`createZeromqSocket(settings)` applies it.
 
 ## Topics and messages
 
@@ -75,7 +113,8 @@ is a wake-up, not a ledger: on a gap, read the chain over RPC.
   10 minutes, about ten blocks).
 - `stale` when the last message is older than `staleAfterMs`, for example when
   qbitd hangs without dropping the connection.
-- `closed` after `close()`.
+- `closed` after `close()`, or once the iteration has ended with a
+  `ZmqSetupError`. The counters are kept.
 
 `lastMessageAt` is this process's receipt time (`Date.now()`), not a node
 timestamp.
@@ -85,16 +124,36 @@ timestamp.
 The subscriber replaces its socket when the connection to the publisher
 drops (`reason: 'disconnected'`: qbitd stopped or restarted) or a receive fails
 (`reason: 'failed'`), yielding a `reconnect` event, waiting `reconnectDelayMs`
-(default 1 s) and starting again. `close()` closes the socket and ends the
-iteration at once, also during that wait; breaking out of `for await` closes
-the socket too. One consumer at a time.
+(default 1 s) and starting again. A failure to make or connect the socket is
+retried the same way (`reason: 'failed'`, with the error's `code`), unless it
+is one of those below. A node that is down from the start is not a failure:
+libzmq keeps retrying the TCP connection itself, no `reconnect` is yielded,
+health stays `unknown`, and messages arrive once qbitd listens. `close()`
+closes the socket and ends the iteration at once, also during that wait;
+breaking out of `for await` closes the socket too. One consumer at a time.
+
+A failure that retrying cannot fix ends the iteration instead: the iteration
+throws a `ZmqSetupError` with a `code` and the original error as `cause`, no
+`reconnect` is yielded for it, the socket is closed, and the subscriber is
+closed:
+
+| `code` | When |
+| --- | --- |
+| `module_load` | `zeromq` or its native addon cannot be loaded, at the first iteration; or a custom `socketFactory` throws `MODULE_NOT_FOUND`, `ERR_MODULE_NOT_FOUND` or `ERR_DLOPEN_FAILED` |
+| `invalid_address` | the socket's `connect()` throws `EINVAL`, or `ENAMETOOLONG` for an `ipc://` path too long for a Unix socket (over 107 bytes on Linux) |
+| `unsupported_protocol` | `connect()` throws `EPROTONOSUPPORT`: this libzmq lacks the transport |
+
+A custom `socketFactory` can throw a `ZmqSetupError` itself to stop instead of
+being retried. If `close()` comes first, the iteration ends without an error.
+Test for it with `ZmqSetupError.is(error)`, which also recognises one from the
+package's other build (CommonJS or ESM), where `instanceof` does not.
 
 `maxMessageSize` (default `DEFAULT_MAX_MESSAGE_SIZE`, 2,065,536 bytes: qbit's
 2,000,000-byte block limit plus headroom) caps each inbound message part.
 libzmq drops a connection that sends more, and does not reconnect it itself;
 the subscriber replaces the socket, so the oversized message is never
-buffered. A custom `socketFactory` receives `{ maxMessageSize }` and must apply
-it. The receive queue keeps zeromq's default high-water mark of 1,000
+buffered. A custom `socketFactory` receives `{ maxMessageSize, ipv6 }` and must
+apply both. The receive queue keeps zeromq's default high-water mark of 1,000
 messages.
 
 qbitd's ZMQ publisher has no authentication: keep it on loopback or a private

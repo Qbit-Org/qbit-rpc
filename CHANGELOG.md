@@ -38,6 +38,18 @@ version. Nothing has been published yet: both are `0.0.0` and private.
   `unknown` until a message arrives, and clean `close()`.
 - Hashes are reported in the byte order qbitd sends, which is the RPC display
   order. The parser this was ported from reversed them a second time.
+- `QbitZmqSubscriber` checks `url` in the constructor, which throws a
+  `TypeError` unless it is `tcp://<host>:<port>` (an IPv4 address, a bracketed
+  IPv6 address or a host name, a port from 1 to 65535, optionally after a
+  libzmq source address) or `ipc://<path>`: `tcp://127.0.0.1`,
+  `tcp://127.0.0.1:notaport` and `tcp://*:28332` no longer reconnect forever.
+  A `zeromq` addon that cannot be loaded, a custom factory's module-load error,
+  and `EINVAL`, `ENAMETOOLONG` or `EPROTONOSUPPORT` from `connect()` end the
+  iteration with the new `ZmqSetupError` (`code`, `cause`) and leave the
+  subscriber `closed`; a node that is down is still retried. Socket
+  factories receive `ipv6`, true for an IPv6 address, and
+  `createZeromqSocket` applies it: an IPv6 address could not be reached
+  before.
 
 ### Review fixes
 
