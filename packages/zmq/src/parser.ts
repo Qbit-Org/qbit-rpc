@@ -17,12 +17,12 @@ export type ZmqMessage =
   | (Base & { readonly topic: 'hashtx'; readonly txid: string })
   | (Base & {
       readonly topic: 'rawblock'
-      /** The serialized block, as qbit Core stores it. Not decoded here. */
+      /** The serialized block, as qbit Core stores it: a copy of the frame, not decoded here. */
       readonly bytes: Uint8Array
     })
   | (Base & {
       readonly topic: 'rawtx'
-      /** The serialized transaction. Not decoded here. */
+      /** The serialized transaction: a copy of the frame, not decoded here. */
       readonly bytes: Uint8Array
     })
   | (Base & {
@@ -95,7 +95,9 @@ export function parseZmqMessage(frames: readonly Uint8Array[]): ZmqMessage {
       if (body.byteLength < (topic === 'rawblock' ? MIN_RAW_BLOCK : MIN_RAW_TX) || body.byteLength > MAX_RAW_BODY) {
         throw new ZmqFrameError('body_length', topic)
       }
-      return { topic, sequence, bytes: Uint8Array.from(body) }
+      // A copy, so the bytes do not alias the socket's buffer. The constructor
+      // copies a typed array in one go; Uint8Array.from iterates it.
+      return { topic, sequence, bytes: new Uint8Array(body) }
     }
     case 'sequence': {
       if (body.byteLength < 33) throw new ZmqFrameError('body_length', topic)

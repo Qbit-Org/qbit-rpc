@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import {
   createServer,
   type IncomingHttpHeaders,
@@ -245,3 +246,10 @@ export function blockchainInfoJson(
 /** A one-input, one-output non-witness transaction and its txid. */
 export const TX_HEX =
   '0100000001' + 'aa'.repeat(32) + '00000000' + '00' + 'ffffffff' + '01' + '0100000000000000' + '00' + '00000000'
+export const TX_TXID = Buffer.from(
+  createHash('sha256')
+    .update(createHash('sha256').update(Buffer.from(TX_HEX, 'hex')).digest())
+    .digest()
+)
+  .reverse()
+  .toString('hex')

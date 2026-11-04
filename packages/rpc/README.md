@@ -162,7 +162,7 @@ offending value.
 | `getBestBlockHash()`, `getBlockHash(height)` | block hash |
 | `getBlockCount()` | the tip's height |
 | `getBlockHeader(hash)` | `BlockHeader`; checks the hash, `versionHex` and genesis linkage |
-| `getRawTransaction(txid, { blockHash? })` | hex |
+| `getRawTransaction(txid, { blockHash? })` | hex, checked to hash to `txid` |
 | `getRawTransactionVerbose(txid, { blockHash? })` | `DecodedTransaction`, output values as `valueBits` |
 | `getMempoolEntry(txid)` | `MempoolEntry`: sizes, `depends`, `spentBy`, fees as `baseBits` and so on; `RpcError` -5 when not in the mempool |
 | `getTxOut(txid, vout, { includeMempool? })` | `TxOut` with `valueBits` and `coinbase`, or `null` when spent or unknown |
@@ -175,7 +175,7 @@ offending value.
 | `getWalletInfo()` | `WalletInfo`, including `pqcKeyValidation` |
 | `getTransaction(txid)` | `WalletTransaction`; signed `amountBits` and `feeBits` |
 | `listUnspent(options?)` | `UnspentOutput[]` |
-| `getAddressInfo(address)` | `AddressInfo` with the PQC usage fields; checks the address |
+| `getAddressInfo(address)` | `AddressInfo` with the PQC usage fields; checks the address, ignoring case only for bech32 and bech32m |
 | `listLockUnspent()` | `Outpoint[]` (`{ txid, vout }`) |
 | `listSinceBlock({ blockHash?, targetConfirmations?, includeWatchOnly?, includeRemoved?, includeChange? })` | `SinceBlockHistory`: `transactions`, `removed`, `lastBlock`; `RpcError` -5 for an unknown block |
 | `listTransactions({ label?, count?, skip?, includeWatchOnly? })` | `WalletHistoryEntry[]`, the newest `count` (default 10), oldest first |
@@ -350,12 +350,12 @@ copy of it). Scope the client to the wallet (`wallet`), enable `wallet-read`,
 over.
 
 Arguments are checked before sending; invalid ones reject with `TypeError` or
-`RangeError` and nothing is sent. Options are strict: each options or
-arguments object, at every level (`args`, `inputs`, `outputs`, `options`,
-`proof`, and the call options `signal` and `timeoutMs`), takes only the keys
-documented for it. Any other key rejects with a `TypeError` that names it and,
-for the node's spelling or a near miss, the key to use
-(`subtract_fee_from_outputs` → `subtractFeeFromOutputs`, `fee_rate` →
+`RangeError` and nothing is sent. A number argument of `-0` is sent as `0`.
+Options are strict: each options or arguments object, at every level (`args`,
+`inputs`, `outputs`, `options`, `proof`, and the call options `signal` and
+`timeoutMs`), takes only the keys documented for it. Any other key rejects with
+a `TypeError` that names it and, for the node's spelling or a near miss, the key
+to use (`subtract_fee_from_outputs` → `subtractFeeFromOutputs`, `fee_rate` →
 `feeRateBitsPerKvB`, `minconf` → `minConf`), and the unit when it differs
 (`fee_rate` is bits/vB, `feeRateBitsPerKvB` bits per 1,000 vbytes). Inherited
 keys count as the object's own, except keys on `Object.prototype` itself, which
@@ -365,8 +365,8 @@ also an outpoint (a `listUnspent()`, `listSinceBlock()` or `listTransactions()`
 entry, or a decoded transaction input) are allowed and ignored. Only `txid`,
 `vout` and, for an input, `sequence` are read, so a decoded input passed to
 `walletCreateFundedPsbt` keeps its own sequence number. TypeScript catches
-unknown keys only in object literals, not in spread objects or options read
-from configuration.
+unknown keys only in object literals, not in spread objects or options read from
+configuration.
 
 `call()` passes its parameters through unchecked, with one exception: it
 refuses `walletcreatefundedpsbt` options, as they are serialized, that qbit
@@ -388,7 +388,9 @@ bits; the 210,000,000 QBT cap is 2.1e16 bits, above 2^53). Fee rates are
 - Outgoing amounts must be `bigint`s from 0 to the cap and are written as exact
   decimal JSON numbers (`0.00000001`). Numbers, `NaN`, `Infinity`, negative or
   oversized values are refused before sending.
-- `parseQbt(text)` and `formatQbt(bits)` convert at your boundaries.
+- `parseQbt(text)` and `formatQbt(bits)` convert at your boundaries. `parseQbt`
+  reads `-0` and `-0.00000000` as `0n`, without `allowNegative`: zero is not
+  negative.
 - `call()` returns every JSON number as a `JsonNumber`: use `toBits()`,
   `toBigInt()`, `toSafeInteger()` or `toNumber()`. Arithmetic on it throws.
   Pass amounts to `call()` as `formatQbt(bits)` strings, which qbit Core

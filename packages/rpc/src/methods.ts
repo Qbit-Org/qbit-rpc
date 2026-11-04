@@ -62,13 +62,14 @@ function request<T>(
 
 // ---------------------------------------------------------------------------
 // Argument checks. They throw TypeError or RangeError before any request.
+// The numeric ones return -0 as 0, so the sign of zero reaches no request.
 // ---------------------------------------------------------------------------
 
 function argInteger(value: unknown, name: string, min: number, max: number): number {
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < min || value > max) {
     throw new RangeError(`${name} must be an integer from ${min} to ${max}`)
   }
-  return value
+  return value === 0 ? 0 : value
 }
 
 function argFinite(value: unknown, name: string, min: number, max: number, minExclusive = false): number {
@@ -82,7 +83,7 @@ function argFinite(value: unknown, name: string, min: number, max: number, minEx
       `${name} must be a finite number ${minExclusive ? 'above' : 'from'} ${min}${max === Infinity ? '' : ` to ${max}`}`
     )
   }
-  return value
+  return value === 0 ? 0 : value
 }
 
 function argString(value: unknown, name: string, { nonEmpty = false } = {}): string {
@@ -1304,7 +1305,11 @@ export interface ListUnspentOptions {
  * PQC fields report the signature budgets of its keys.
  */
 export interface AddressInfo extends PqcUsage {
-  /** As the node encodes it: a bech32 address in lowercase. */
+  /**
+   * As the node encodes it: a bech32 or bech32m address in lowercase, a base58
+   * address (which qbit Core v1.0.0 makes only on regtest with `-p2mronly=0`)
+   * as it was requested.
+   */
   readonly address: string
   readonly scriptPubKey: string
   readonly isMine: boolean
@@ -1338,12 +1343,28 @@ function parseAddressInfo(requestedAddress: string): (value: unknown) => Address
       labels: field(o, 'labels', R, strings),
       ...pqcUsage(o),
     })
-    // The node lowercases a bech32 address it was given in uppercase.
-    if (info.address.toLowerCase() !== requestedAddress.toLowerCase()) {
-      throw new ResultIssue(`${R}.address`, 'the requested address')
-    }
+    // The node lowercases a bech32 address it was given in uppercase. Case is
+    // part of a base58 address, so anything else must match exactly.
+    const same =
+      info.address === requestedAddress ||
+      (isBech32Form(info.address) &&
+        isBech32Form(requestedAddress) &&
+        info.address.toLowerCase() === requestedAddress.toLowerCase())
+    if (!same) throw new ResultIssue(`${R}.address`, 'the requested address')
     return info
   }
+}
+
+/**
+ * Whether `address` has the form of a bech32 or bech32m string (BIP 173, BIP
+ * 350), which may be written in either case: a human-readable part of
+ * printable ASCII, the separator `1` and at least six data characters (the
+ * checksum alone has six), all in one case. The checksum is left to the node.
+ */
+function isBech32Form(address: string): boolean {
+  const lower = address.toLowerCase()
+  if (address !== lower && address !== address.toUpperCase()) return false
+  return /^[\x21-\x7e]+1[02-9ac-hj-np-z]{6,}$/.test(lower)
 }
 
 /** A transaction output: its txid and output index. */
@@ -1913,13 +1934,21 @@ export const requests = {
     const requested = argHash(blockHash, 'blockHash')
     return request('getblockheader', [requested, true], parseBlockHeader(requested))
   },
-  /** The serialized transaction as hex. Without `-txindex`, only mempool transactions or ones in `blockHash`. */
+  /**
+   * The serialized transaction as hex, checked to hash to `txid`. Without
+   * `-txindex`, only mempool transactions or ones in `blockHash`.
+   */
   getRawTransaction(txid: string, options?: { readonly blockHash?: string }): RpcRequest<string> {
     const o = methodOptions(options, ['blockHash'])
+    const requested = argHash(txid, 'txid')
     return request(
       'getrawtransaction',
-      [argHash(txid, 'txid'), 0, opt(o['blockHash'], v => argHash(v, 'options.blockHash'))],
-      v => hex()(v, R)
+      [requested, 0, opt(o['blockHash'], v => argHash(v, 'options.blockHash'))],
+      v => {
+        const returned = hex()(v, R)
+        if (rawTransactionTxid(returned) !== requested) throw new ResultIssue(R, 'the requested transaction')
+        return returned
+      }
     )
   },
   /** The decoded transaction (verbosity 1). */
@@ -2073,7 +2102,11 @@ export const requests = {
       v => array(v, R, parseUnspent)
     )
   },
-  /** Checks that the reply is about `address`. Rejects with `RpcError` code -5 for an address invalid on this network. */
+  /**
+   * Checks that the reply is about `address`: a bech32 or bech32m address in
+   * either case, any other exactly. Rejects with `RpcError` code -5 for an
+   * address invalid on this network.
+   */
   getAddressInfo(address: string): RpcRequest<AddressInfo> {
     const requested = argString(address, 'address', { nonEmpty: true })
     return request('getaddressinfo', [requested], parseAddressInfo(requested))

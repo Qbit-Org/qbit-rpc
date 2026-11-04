@@ -124,8 +124,17 @@ is a wake-up, not a ledger: on a gap, read the chain over RPC.
 - `closed` after `close()`, or once the iteration has ended with a
   `ZmqSetupError`. The counters are kept.
 
-`lastMessageAt` is this process's receipt time (`Date.now()`), not a node
-timestamp.
+The age of the last message is measured on the monotonic clock
+(`performance.now()`), so a step in the wall clock (an NTP correction, a manual
+change) does not make a fresh subscriber `stale` or an old one `receiving`.
+`lastMessageAt`, like an event's `receivedAt`, is this process's wall-clock
+receipt time (`Date.now()`), for display, not a node timestamp: after a step,
+`Date.now() - lastMessageAt` is not the message's age. `health(now)` reports
+the status at the wall-clock time `now` (default the present), shifting the
+measured age by `now - Date.now()`. On Linux the monotonic clock stops while
+the host is suspended, so time asleep does not count towards `staleAfterMs`.
+Tests that simulate time must fake `performance` as well as `Date`, for
+example `vi.useFakeTimers({ toFake: ['Date', 'performance'] })`.
 
 ## Connection handling
 

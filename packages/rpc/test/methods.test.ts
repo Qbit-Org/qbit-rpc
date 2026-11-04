@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { QbitRpcClient, RpcResponseError, RpcUnknownOutcomeError } from '../src'
-import { blockchainInfoJson, chainResults, FakeNode, HASH_A, HASH_B, TX_HEX } from './helpers/fake-node'
+import { QbitRpcClient, requests, RpcResponseError, RpcUnknownOutcomeError } from '../src'
+import { blockchainInfoJson, chainResults, FakeNode, HASH_A, HASH_B, TX_HEX, TX_TXID } from './helpers/fake-node'
 
 let node: FakeNode
 let rpc: QbitRpcClient
@@ -146,10 +146,10 @@ describe('chain methods', () => {
 
   it('getrawtransaction returns hex, and the verbose form decodes with bits', async () => {
     node.results({ getrawtransaction: JSON.stringify(TX_HEX) })
-    expect(await rpc.getRawTransaction(HASH_A, { blockHash: HASH_B })).toBe(TX_HEX)
-    expect(params()).toEqual([HASH_A, 0, HASH_B])
-    await rpc.getRawTransaction(HASH_A)
-    expect(params()).toEqual([HASH_A, 0])
+    expect(await rpc.getRawTransaction(TX_TXID, { blockHash: HASH_B })).toBe(TX_HEX)
+    expect(params()).toEqual([TX_TXID, 0, HASH_B])
+    await rpc.getRawTransaction(TX_TXID)
+    expect(params()).toEqual([TX_TXID, 0])
 
     const decoded = {
       txid: HASH_A,
@@ -175,6 +175,25 @@ describe('chain methods', () => {
     expect(tx.vin[1]).toMatchObject({ txid: HASH_B, vout: 1, txinwitness: ['aa', 'bb'] })
     node.results({ getrawtransaction: JSON.stringify({ ...decoded, vout: [{ ...decoded.vout[0], n: 1 }] }) })
     await invalid(rpc.getRawTransactionVerbose(HASH_A), 'result.vout[0].n')
+  })
+
+  it('getrawtransaction checks that the hex hashes to the requested txid', async () => {
+    node.results({ getrawtransaction: JSON.stringify(TX_HEX) })
+    expect(await rpc.getRawTransaction(TX_TXID.toUpperCase())).toBe(TX_HEX)
+    // The same transaction with a witness: the txid leaves the witness out.
+    const body = TX_HEX.slice(8, -8)
+    const withWitness = `${TX_HEX.slice(0, 8)}0001${body}010101${TX_HEX.slice(-8)}`
+    node.results({ getrawtransaction: JSON.stringify(withWitness) })
+    expect(await rpc.getRawTransaction(TX_TXID)).toBe(withWitness)
+
+    // A reply about another transaction.
+    node.results({ getrawtransaction: JSON.stringify(TX_HEX) })
+    await invalid(rpc.getRawTransaction(HASH_A), 'result')
+    // Hex that is not a whole transaction: empty, too short, cut off, a trailing byte, no inputs.
+    for (const bad of ['', '00', TX_HEX.slice(0, -2), `${TX_HEX}00`, `${TX_HEX.slice(0, 8)}00${TX_HEX.slice(10)}`]) {
+      node.results({ getrawtransaction: JSON.stringify(bad) })
+      await invalid(rpc.getRawTransaction(TX_TXID), 'result')
+    }
   })
 
   it('getconfirmationtarget sends the value as integer bits and drops the float QBT echo', async () => {
@@ -686,6 +705,38 @@ describe('wallet methods', () => {
     expect(Object.keys(unknown).some(key => key.startsWith('pqc') || key === 'desc')).toBe(false)
   })
 
+  it('getaddressinfo ignores case in bech32 and bech32m addresses only', async () => {
+    // Addresses a qbit Core v1.0.0 regtest node made: P2MR (witness v2), and
+    // with -p2mronly=0 also witness v0, v1, base58 P2PKH and P2SH. It answers
+    // an uppercase bech32 or bech32m address in lowercase, and refuses a
+    // mixed-case one and a base58 one in another case (-5).
+    const bech32 = [
+      'qbrt1zxfk5jzjwfrq9tqc3rcs87876h8p0dtl34f4k45rqdc7xmvtgkqpsfnj4hq',
+      'qbrt1qcht35a2q26h2shjzx82u7c5hjutv9lcn49y5p4',
+      'qbrt1p83jx4ccw2whthzqgw5kdvly5zpnh2c5zpvak5fwl0eleydxnlenqnps8wc',
+    ]
+    for (const address of bech32) {
+      node.results({ getaddressinfo: JSON.stringify({ ...addressInfo, address }) })
+      expect((await rpc.getAddressInfo(address)).address).toBe(address)
+      expect((await rpc.getAddressInfo(address.toUpperCase())).address).toBe(address)
+      // Mixed case is not bech32, so the reply must match it exactly.
+      const mixed = `${address.slice(0, 2).toUpperCase()}${address.slice(2)}`
+      await invalid(rpc.getAddressInfo(mixed), 'result.address')
+    }
+
+    const swapCase = (text: string): string =>
+      [...text].map(c => (c === c.toLowerCase() ? c.toUpperCase() : c.toLowerCase())).join('')
+    for (const address of ['qV5ux1vV8qkvCgfeECyjrqmDZdy9Qzp5L8', 'sMoGRagvb7Wm8JWtPaCJKkrWW33ZVkcSyR']) {
+      node.results({ getaddressinfo: JSON.stringify({ ...addressInfo, address }) })
+      expect((await rpc.getAddressInfo(address)).address).toBe(address)
+      // Case is part of a base58 address: in another case it is another one.
+      for (const other of [address.toLowerCase(), address.toUpperCase(), swapCase(address)]) {
+        node.results({ getaddressinfo: JSON.stringify({ ...addressInfo, address: other }) })
+        await invalid(rpc.getAddressInfo(address), 'result.address')
+      }
+    }
+  })
+
   it('getaddressinfo rejects a reply about another address or with malformed PQC fields', async () => {
     const malformed: [Record<string, unknown>, string][] = [
       [{ address: 'qbrt1zother' }, 'result.address'],
@@ -897,5 +948,21 @@ describe('hex and base64 results', () => {
     )
     await invalidAfterSideEffect(rpc.walletProcessPsbt('cHNidP8='), 'result.psbt')
     await invalid(rpc.finalizePsbt('cHNidP8='), 'result.psbt')
+  })
+})
+
+describe('number arguments', () => {
+  it('send -0 as 0', async () => {
+    // JSON.stringify writes -0 as 0, but a request's params are read before that too.
+    expect(requests.getBlockHash(-0).params).toEqual([0])
+    expect(requests.getTxOut(HASH_A, -0).params).toEqual([HASH_A, 0])
+    expect(requests.listUnspent({ minConf: -0, maxConf: -0 }).params).toEqual([0, 0])
+    expect(requests.walletPassphrase('p', -0).params).toEqual(['p', 0])
+    expect(requests.getConfirmationTarget(1n, { mergeMiningPct: -0 }).params).toEqual([1n, null, 0])
+    expect(() => requests.getConfirmationTarget(1n, { btcHashrate: -0 })).toThrow(RangeError)
+
+    node.results({ getblockhash: JSON.stringify(HASH_A) })
+    await rpc.getBlockHash(-0)
+    expect(node.requests.at(-1)!.body).toContain('"params":[0]')
   })
 })

@@ -21,7 +21,6 @@ describe('parseQbt and formatQbt', () => {
   it.each([
     ['more than 8 decimals', '0.000000001'],
     ['a negative value', '-0.00000001'],
-    ['negative zero', '-0'],
     ['above the cap', '210000000.00000001'],
     ['an exponent', '1e-8'],
     ['Infinity', 'Infinity'],
@@ -37,6 +36,13 @@ describe('parseQbt and formatQbt', () => {
   it('allows signed amounts only on request', () => {
     expect(parseQbt('-0.50000000', { allowNegative: true })).toBe(-50_000_000n)
     expect(() => parseQbt('-210000000.00000001', { allowNegative: true })).toThrow(RangeError)
+  })
+
+  it.each(['-0', '-0.0', '-0.00000000'])('parses negative zero %s as zero, with or without allowNegative', text => {
+    expect(parseQbt(text)).toBe(0n)
+    expect(parseQbt(text, { allowNegative: true })).toBe(0n)
+    expect(formatQbt(parseQbt(text))).toBe('0.00000000')
+    expect(new JsonNumber(text).toBits()).toBe(0n)
   })
 
   it.each([
@@ -93,10 +99,10 @@ describe('amounts through a node', () => {
 
   it('parses result amounts from the reply text, without float loss', async () => {
     node.results({
-      listunspent: `[${utxo('0.00000000')},${utxo('0.00000001')},${utxo('90071992.54740993')},${utxo('210000000.00000000')}]`,
+      listunspent: `[${utxo('0.00000000')},${utxo('-0.00000000')},${utxo('0.00000001')},${utxo('90071992.54740993')},${utxo('210000000.00000000')}]`,
     })
     const amounts = (await rpc.listUnspent()).map(output => output.amountBits)
-    expect(amounts).toEqual([0n, 1n, TWO_53_PLUS_1, MAX_MONEY_BITS])
+    expect(amounts).toEqual([0n, 0n, 1n, TWO_53_PLUS_1, MAX_MONEY_BITS])
     // The same text through JSON.parse would have rounded:
     expect(Number('90071992.54740993') * 1e8).not.toBe(Number(TWO_53_PLUS_1))
   })

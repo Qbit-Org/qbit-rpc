@@ -47,12 +47,26 @@ describe('parseZmqMessage', () => {
 
   it('passes raw blocks and transactions through as copied bytes', () => {
     const block = Buffer.alloc(81, 1)
-    const parsed = parseZmqMessage(msg('rawblock', block))
+    const frames = msg('rawblock', block)
+    const parsed = parseZmqMessage(frames)
     expect(parsed).toMatchObject({ topic: 'rawblock', sequence: 7 })
     expect(parsed.topic === 'rawblock' && Buffer.from(parsed.bytes).equals(block)).toBe(true)
-    block[0] = 9
+    frames[1]![0] = 9
     expect(parsed.topic === 'rawblock' && parsed.bytes[0]).toBe(1)
     expect(parseZmqMessage(msg('rawtx', Buffer.alloc(10)))).toMatchObject({ topic: 'rawtx' })
+  })
+
+  it.each(['rawblock', 'rawtx'] as const)('copies a %s body that is a view into a larger buffer', topic => {
+    // A receive buffer can hold more than the frame, which is a view into it.
+    const received = Buffer.alloc(4096, 0xee)
+    const body = received.subarray(100, 2100).fill(1)
+    const parsed = parseZmqMessage([Buffer.from(topic), body, counter(7)])
+    if (parsed.topic !== 'rawblock' && parsed.topic !== 'rawtx') throw new Error(`parsed as ${parsed.topic}`)
+    expect(parsed.bytes).toEqual(new Uint8Array(2000).fill(1))
+    expect(parsed.bytes.buffer).not.toBe(received.buffer)
+    // Changing the frame, or the buffer around it, afterwards changes nothing parsed.
+    received.fill(9)
+    expect(parsed.bytes).toEqual(new Uint8Array(2000).fill(1))
   })
 
   it.each([
