@@ -6,6 +6,7 @@ import {
   JsonNumber,
   QbitRpcClient,
   requests,
+  RpcCapabilityError,
   RpcChainGuardError,
   RpcError,
   type Outpoint,
@@ -668,5 +669,286 @@ describe.runIf(enabled)('qbit Core v1.0.0 regtest', () => {
     const tips = JSON.parse(cli('getchaintips')) as { hash: string; status: string }[]
     expect(tips.find(tip => tip.hash === blockB)?.status).toBe('valid-fork')
     expect(tips.filter(tip => tip.status === 'invalid')).toEqual([])
+  })
+
+  // psbtbumpfee on wallets this case creates, funded from the script's smoke
+  // wallet: a stuck payment bumped and replaced through the typed methods, the
+  // option names the node reads, what each path leaves in the wallet, and a
+  // bump that loses the race with the original's confirmation. It mines what
+  // it leaves in the mempool.
+  it('bumps a stuck payment with psbtBumpFee and broadcasts the replacement', async () => {
+    cli('-named', 'createwallet', 'wallet_name=bump', 'descriptors=true')
+    cli('-named', 'createwallet', 'wallet_name=bump-peer', 'descriptors=true')
+    const wallet = client({ wallet: 'bump', capabilities: ['wallet-read', 'wallet-write', 'broadcast'] })
+    const peer = client({ wallet: 'bump-peer', capabilities: ['wallet-write'] })
+    await expect(wallet.psbtBumpFee('00'.repeat(32))).rejects.toSatisfy(RpcChainGuardError.is)
+    await expect(
+      client({ wallet: 'bump', capabilities: ['wallet-read'] }).psbtBumpFee('00'.repeat(32))
+    ).rejects.toSatisfy(RpcCapabilityError.is)
+    await wallet.confirmChain()
+    await peer.confirmChain()
+    const nodeError = (code: number, message?: RegExp) => (error: unknown) =>
+      RpcError.is(error) && error.code === code && (message === undefined || message.test(error.message))
+    const payee = (): Promise<string> => peer.getNewAddress({ addressType: 'p2mr' })
+    const mine = async (): Promise<void> => {
+      cli('generatetoaddress', '1', await payee())
+    }
+    type DecodedPsbt = {
+      tx: {
+        txid: string
+        vin: { txid: string; vout: JsonNumber; sequence: JsonNumber }[]
+        vout: { value: JsonNumber; scriptPubKey: { address?: string } }[]
+      }
+      fee: JsonNumber
+    }
+    const decode = async (psbt: string): Promise<DecodedPsbt> =>
+      (await wallet.call('decodepsbt', [psbt])) as DecodedPsbt
+    const spends = ({ tx }: DecodedPsbt): string[] =>
+      tx.vin.map(input => `${input.txid}:${input.vout.toSafeInteger()}`).sort()
+    const amountTo = ({ tx }: DecodedPsbt, address: string): bigint =>
+      tx.vout.find(output => output.scriptPubKey.address === address)!.value.toBits()
+
+    // Six confirmed coins of 10 QBT.
+    const funder = client({ wallet: 'smoke', capabilities: ['wallet-write', 'broadcast'] })
+    await funder.confirmChain()
+    const coins: { address: string; amountBits: bigint }[] = []
+    for (let i = 0; i < 6; i++) {
+      coins.push({ address: await wallet.getNewAddress({ addressType: 'p2mr' }), amountBits: 1_000_000_000n })
+    }
+    const funding = await funder.walletCreateFundedPsbt({ outputs: coins })
+    await funder.sendRawTransaction((await funder.walletProcessPsbt(funding.psbt)).hex!)
+    await mine()
+
+    // Everything a bump could change: keys, coins, locks, balances, history
+    // and the original. The public descriptor listing leaves P2MR out.
+    const state = async (txid: string) => ({
+      info: await wallet.getWalletInfo(),
+      balances: await wallet.getBalances(),
+      locks: await wallet.listLockUnspent(),
+      unspent: await wallet.listUnspent({ minConf: 0 }),
+      history: await wallet.listTransactions({ count: 1000 }),
+      original: await wallet.getTransaction(txid),
+      changeIndex: (
+        JSON.parse(cli('-rpcwallet=bump', 'listdescriptors', 'true')) as {
+          descriptors: { internal: boolean; next_index: number }[]
+        }
+      ).descriptors
+        .filter(descriptor => descriptor.internal)
+        .reduce((sum, descriptor) => sum + descriptor.next_index, 0),
+    })
+    type State = Awaited<ReturnType<typeof state>>
+    /** Change keys taken between two states, by the descriptor's next index and the change keypool. */
+    const taken = (a: State, b: State) => ({
+      nextIndex: b.changeIndex - a.changeIndex,
+      keypool: a.info.keypoolSizeHdInternal! - b.info.keypoolSizeHdInternal!,
+    })
+    const rest = (s: State) => ({ ...s, info: { ...s.info, keypoolSizeHdInternal: 0 }, changeIndex: 0 })
+
+    // A payment with change, replaceable, stuck at 1 bit/vB.
+    const recipient = await payee()
+    const built = await wallet.walletCreateFundedPsbt({
+      outputs: [{ address: recipient, amountBits: 100_000_000n }],
+      options: { feeRateBitsPerKvB: 1000n, replaceable: true, changeType: 'p2mr' },
+    })
+    expect(built.changePos).toBeGreaterThanOrEqual(0)
+    const originalHex = (await wallet.walletProcessPsbt(built.psbt)).hex!
+    const original = await wallet.sendRawTransaction(originalHex)
+    const originalTx = await decode(built.psbt)
+    const changeAddress = originalTx.tx.vout[built.changePos]!.scriptPubKey.address!
+
+    // With change: the bump spends the same inputs, pays the recipient the
+    // same, and takes nothing from the wallet, however often it is called.
+    const before = await state(original)
+    const bumped = await wallet.psbtBumpFee(original, { feeRateBitsPerKvB: 4000n })
+    expect(bumped.originalFeeBits).toBe(built.feeBits)
+    expect(bumped.feeBits).toBeGreaterThan(bumped.originalFeeBits)
+    expect(bumped.errors).toEqual([])
+    const bumpTx = await decode(bumped.psbt)
+    expect(bumpTx.fee.toBits()).toBe(bumped.feeBits)
+    expect(spends(bumpTx)).toEqual(spends(originalTx))
+    expect(amountTo(bumpTx, recipient)).toBe(100_000_000n)
+    await wallet.psbtBumpFee(original, { feeRateBitsPerKvB: 4000n })
+    await wallet.psbtBumpFee(original)
+    await wallet.psbtBumpFee(original, { originalChangeIndex: built.changePos, feeRateBitsPerKvB: 3000n })
+    await wallet.psbtBumpFee(original, {
+      outputs: [
+        { address: recipient, amountBits: 100_000_000n },
+        { address: changeAddress, amountBits: 500_000_000n },
+      ],
+      feeRateBitsPerKvB: 3000n,
+    })
+    await expect(wallet.psbtBumpFee(original, { feeRateBitsPerKvB: 1100n })).rejects.toSatisfy(
+      nodeError(-8, /Insufficient total fee/)
+    )
+    await expect(wallet.psbtBumpFee('ab'.repeat(32))).rejects.toSatisfy(nodeError(-5))
+    expect(await state(original)).toEqual(before)
+
+    // Every option name the client sends changes what the node does.
+    expect((await wallet.psbtBumpFee(original, { feeRateBitsPerKvB: 8000n })).feeBits).toBeGreaterThan(bumped.feeBits)
+    expect((await wallet.psbtBumpFee(original, { confTarget: 2, estimateMode: 'economical' })).feeBits).toBeGreaterThan(
+      bumped.originalFeeBits
+    )
+    for (const key of ['conf_target', 'estimate_mode']) {
+      const options = { fee_rate: 4, [key]: key === 'conf_target' ? 2 : 'economical' }
+      await expect(wallet.call('psbtbumpfee', [original, options])).rejects.toSatisfy(
+        nodeError(-8, new RegExp(`Cannot specify both ${key}`))
+      )
+    }
+    for (const replaceable of [true, false]) {
+      const { tx } = await decode((await wallet.psbtBumpFee(original, { feeRateBitsPerKvB: 4000n, replaceable })).psbt)
+      expect(tx.vin.every(input => input.sequence.toSafeInteger() === (replaceable ? 0xfffffffd : 0xfffffffe))).toBe(
+        true
+      )
+    }
+    // original_change_index pointed at the payment: the payment pays the extra fee.
+    const fromPayment = await wallet.psbtBumpFee(original, {
+      originalChangeIndex: 1 - built.changePos,
+      feeRateBitsPerKvB: 4000n,
+    })
+    expect(amountTo(await decode(fromPayment.psbt), recipient)).toBe(
+      100_000_000n - (fromPayment.feeBits - fromPayment.originalFeeBits)
+    )
+    // outputs replace the original's; with its change address among them, that output takes the rest.
+    const otherPayee = await payee()
+    const redirected = await decode(
+      (
+        await wallet.psbtBumpFee(original, {
+          outputs: [
+            { address: otherPayee, amountBits: 100_000_000n },
+            { address: changeAddress, amountBits: 100_000_000n },
+          ],
+        })
+      ).psbt
+    )
+    expect(amountTo(redirected, otherPayee)).toBe(100_000_000n)
+    expect(redirected.tx.vout.some(output => output.scriptPubKey.address === recipient)).toBe(false)
+    // The node refuses the exclusive pair, and any key it does not read: none is accepted and then ignored.
+    await expect(
+      wallet.call('psbtbumpfee', [original, { outputs: [{ [recipient]: 1 }], original_change_index: 0 }])
+    ).rejects.toSatisfy(nodeError(-8))
+    for (const key of [
+      'subtract_fee_from_outputs',
+      'feeRate',
+      'estimateMode',
+      'originalChangeIndex',
+      'change_address',
+    ]) {
+      await expect(wallet.call('psbtbumpfee', [original, { [key]: 0 }])).rejects.toSatisfy(
+        nodeError(-3, new RegExp(`Unexpected key ${key}`))
+      )
+    }
+    await expect(wallet.psbtBumpFee(original, { fee_rate: 4 } as never)).rejects.toThrow(
+      /use options\.feeRateBitsPerKvB/
+    )
+    expect(await state(original)).toEqual(before)
+
+    // Outputs without the original's change address: the rest goes to a new
+    // change key, taken for good.
+    await wallet.psbtBumpFee(original, {
+      outputs: [{ address: recipient, amountBits: 100_000_000n }],
+      feeRateBitsPerKvB: 4000n,
+    })
+    const afterOutputs = await state(original)
+    expect(taken(before, afterOutputs)).toEqual({ nextIndex: 1, keypool: 1 })
+    expect(rest(afterOutputs)).toEqual(rest(before))
+
+    // Sign, store the hex, broadcast: the replacement takes the original's place.
+    const signed = await wallet.walletProcessPsbt(bumped.psbt)
+    expect(signed.complete).toBe(true)
+    const [accepted] = await wallet.testMempoolAccept([signed.hex!])
+    expect(accepted).toMatchObject({ allowed: true, fees: { baseBits: bumped.feeBits } })
+    const replacement = await wallet.sendRawTransaction(signed.hex!)
+    expect(replacement).toBe(accepted!.txid)
+    await expect(wallet.getMempoolEntry(original)).rejects.toSatisfy(nodeError(-5))
+    expect((await wallet.getMempoolEntry(replacement)).fees.baseBits).toBe(bumped.feeBits)
+    // Only bumpfee names the replacement; the wallet sees it as a conflict.
+    const replaced = await wallet.getTransaction(original)
+    expect(replaced).toMatchObject({
+      feeBits: -bumped.originalFeeBits,
+      confirmations: 0,
+      trusted: false,
+      walletConflicts: [replacement],
+      mempoolConflicts: [replacement],
+    })
+    expect(replaced).not.toHaveProperty('replacedByTxid')
+    const replacing = await wallet.getTransaction(replacement)
+    expect(replacing).toMatchObject({
+      feeBits: -bumped.feeBits,
+      amountBits: -100_000_000n,
+      confirmations: 0,
+      trusted: true,
+      walletConflicts: [original],
+      mempoolConflicts: [],
+    })
+    expect(replacing).not.toHaveProperty('replacesTxid')
+    // Sending the stored hex again is harmless; the original is refused.
+    expect(await wallet.sendRawTransaction(signed.hex!)).toBe(replacement)
+    await expect(wallet.sendRawTransaction(originalHex)).rejects.toSatisfy(nodeError(-26))
+    // Mined: the original is conflicted and can no longer be bumped or sent.
+    await mine()
+    expect((await wallet.getTransaction(original)).confirmations).toBe(-1)
+    expect((await wallet.getTransaction(replacement)).confirmations).toBe(1)
+    await expect(wallet.psbtBumpFee(original)).rejects.toSatisfy(nodeError(-1, /is already spent/))
+    await expect(wallet.sendRawTransaction(originalHex)).rejects.toSatisfy(nodeError(-25))
+
+    // A bump signed while the original was stuck, then the original confirms first.
+    const racedBuilt = await wallet.walletCreateFundedPsbt({
+      outputs: [{ address: await payee(), amountBits: 100_000_000n }],
+      options: { feeRateBitsPerKvB: 1000n, replaceable: true },
+    })
+    const raced = await wallet.sendRawTransaction((await wallet.walletProcessPsbt(racedBuilt.psbt)).hex!)
+    const late = await wallet.walletProcessPsbt((await wallet.psbtBumpFee(raced, { feeRateBitsPerKvB: 4000n })).psbt)
+    await mine()
+    expect((await wallet.getTransaction(raced)).confirmations).toBe(1)
+    await expect(wallet.psbtBumpFee(raced)).rejects.toSatisfy(nodeError(-1, /is already spent/))
+    expect((await wallet.testMempoolAccept([late.hex!]))[0]).toMatchObject({
+      allowed: false,
+      rejectReason: 'missing-inputs',
+    })
+    await expect(wallet.sendRawTransaction(late.hex!)).rejects.toSatisfy(nodeError(-25))
+
+    // No change: the wallet adds an input and a change output, and each call
+    // takes a change key for good, for a different transaction. A failed call
+    // takes none.
+    const [coin] = (await wallet.listUnspent()).filter(unspent => unspent.amountBits === 1_000_000_000n)
+    const whole = await wallet.walletCreateFundedPsbt({
+      inputs: [coin!],
+      outputs: [{ address: await payee(), amountBits: coin!.amountBits }],
+      options: { addInputs: false, subtractFeeFromOutputs: [0], feeRateBitsPerKvB: 1000n, replaceable: true },
+    })
+    expect(whole.changePos).toBe(-1)
+    const wholeTxid = await wallet.sendRawTransaction((await wallet.walletProcessPsbt(whole.psbt)).hex!)
+    const s0 = await state(wholeTxid)
+    const first = await decode((await wallet.psbtBumpFee(wholeTxid, { feeRateBitsPerKvB: 4000n })).psbt)
+    const s1 = await state(wholeTxid)
+    expect(taken(s0, s1)).toEqual({ nextIndex: 1, keypool: 1 })
+    expect(rest(s1)).toEqual(rest(s0))
+    expect([first.tx.vin.length, first.tx.vout.length]).toEqual([2, 2])
+    const second = await decode((await wallet.psbtBumpFee(wholeTxid, { feeRateBitsPerKvB: 4000n })).psbt)
+    const s2 = await state(wholeTxid)
+    expect(taken(s1, s2)).toEqual({ nextIndex: 1, keypool: 1 })
+    expect(second.tx.txid).not.toBe(first.tx.txid)
+    await expect(
+      wallet.psbtBumpFee(wholeTxid, {
+        outputs: [{ address: recipient, amountBits: 100_000_000_000n }],
+        feeRateBitsPerKvB: 4000n,
+      })
+    ).rejects.toSatisfy(nodeError(-4, /Insufficient funds/))
+    expect(await state(wholeTxid)).toEqual(s2)
+
+    // A non-replaceable original: the node bumps it, and its mempool takes the replacement.
+    const pinned = await wallet.walletCreateFundedPsbt({
+      outputs: [{ address: await payee(), amountBits: 100_000_000n }],
+      options: { feeRateBitsPerKvB: 1000n, replaceable: false },
+    })
+    const pinnedTxid = await wallet.sendRawTransaction((await wallet.walletProcessPsbt(pinned.psbt)).hex!)
+    expect((await wallet.getTransaction(pinnedTxid)).bip125Replaceable).toBe('no')
+    const pinnedBump = await wallet.walletProcessPsbt(
+      (await wallet.psbtBumpFee(pinnedTxid, { feeRateBitsPerKvB: 4000n })).psbt
+    )
+    expect((await wallet.testMempoolAccept([pinnedBump.hex!]))[0]).toMatchObject({ allowed: true })
+
+    await mine()
+    expect(await wallet.call('getrawmempool')).toEqual([])
   })
 })

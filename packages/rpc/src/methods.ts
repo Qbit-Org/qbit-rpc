@@ -239,6 +239,11 @@ function maxFeeRateParam(value: unknown, name: string): unknown {
   return rawDecimal(formatQbt(bits))
 }
 
+/** A wallet `fee_rate` option: bits per 1,000 vbytes, sent as bits/vB with 3 decimals. */
+function feeRateParam(value: unknown, name: string): unknown {
+  return rawDecimal(formatBitsPerVbyte(assertBits(value, name)))
+}
+
 const R = 'result'
 
 // ---------------------------------------------------------------------------
@@ -1389,7 +1394,16 @@ export interface WalletHistoryEntry {
   readonly wtxid: string
   /** txids of wallet transactions spending the same inputs. */
   readonly walletConflicts: readonly string[]
-  /** On a replaced transaction's entries. Its replacement is listed too, so do not count both. */
+  /**
+   * On a replaced transaction's entries, when `bumpfee` replaced it. Its
+   * replacement is listed too, so do not count both. A replacement sent with
+   * `sendRawTransaction` (as after `psbtBumpFee`) sets neither this nor
+   * `replacesTxid`: the replaced transaction lists it in `walletConflicts`
+   * (and in `mempoolConflicts` while it is in the mempool), and has negative
+   * `confirmations` once it is mined. Count the two as one payment: if the
+   * replacement leaves the mempool unmined, both are unconfirmed and
+   * `mempoolConflicts` is empty again.
+   */
   readonly replacedByTxid?: string
   readonly replacesTxid?: string
   /** txids of mempool transactions that conflict with this one or an ancestor. */
@@ -1671,6 +1685,59 @@ function parseFinalizedPsbt(value: unknown): FinalizedPsbt {
   })
 }
 
+export interface PsbtBumpFeeOptions {
+  /**
+   * The new fee rate in bits per 1,000 vbytes (`1250n` is 1.25 bits/vB): at
+   * least the original's plus the node's incremental relay fee. Exclusive with
+   * `confTarget` and `estimateMode`. Default: the wallet's estimate.
+   */
+  readonly feeRateBitsPerKvB?: bigint
+  /** Blocks for the wallet's estimate, 1 to 1,008. Default: the wallet's `-txconfirmtarget`. */
+  readonly confTarget?: number
+  readonly estimateMode?: FeeEstimateMode
+  /** Default true: inputs signal BIP 125 (sequence 0xfffffffd); false sets 0xfffffffe. */
+  readonly replaceable?: boolean
+  /**
+   * Outputs for the replacement instead of the original's, as
+   * `walletCreateFundedPsbt` takes them. Without the original's change
+   * address among them, the rest goes to a new change key. Exclusive with
+   * `originalChangeIndex`.
+   */
+  readonly outputs?: readonly FundedPsbtOutput[]
+  /**
+   * The original output that pays for the bump and takes the rest, whatever it
+   * pays: pointing it at a payment makes that payment smaller. Default: the
+   * change output the wallet recognises.
+   */
+  readonly originalChangeIndex?: number
+}
+
+/** `psbtbumpfee`: an unsigned replacement. */
+export interface BumpedPsbt {
+  /** Spends every input of the original, and maybe more. Sign it with `walletProcessPsbt`. */
+  readonly psbt: string
+  /** The original's fee. */
+  readonly originalFeeBits: bigint
+  /**
+   * The replacement's fee. With `outputs` and no `feeRateBitsPerKvB`, it can
+   * be at most `originalFeeBits`, and the mempool then refuses the
+   * replacement (`RpcError` -26).
+   */
+  readonly feeBits: bigint
+  /** qbit Core v1.0.0 returned none with a PSBT in any case checked; it rejects the call instead. */
+  readonly errors: readonly string[]
+}
+
+function parseBumpedPsbt(value: unknown): BumpedPsbt {
+  const o = object(value, R)
+  return {
+    psbt: field(o, 'psbt', R, base64),
+    originalFeeBits: field(o, 'origfee', R, amount),
+    feeBits: field(o, 'fee', R, amount),
+    errors: field(o, 'errors', R, strings),
+  }
+}
+
 const parseNull = (value: unknown): null => nullValue(value, R)
 
 /** An address the wallet returns: bech32 or base58 characters only. */
@@ -1709,6 +1776,15 @@ const FUNDED_PSBT_OPTIONS = keysOf<NonNullable<WalletCreateFundedPsbtArgs['optio
   estimateMode: true,
 })
 
+const PSBT_BUMP_FEE_OPTIONS = keysOf<PsbtBumpFeeOptions>({
+  feeRateBitsPerKvB: true,
+  confTarget: true,
+  estimateMode: true,
+  replaceable: true,
+  outputs: true,
+  originalChangeIndex: true,
+})
+
 const DATA_PQC_HASH_PROOF = keysOf<DataPqcHashProof>({
   address: true,
   messageHash: true,
@@ -1739,9 +1815,7 @@ function fundedPsbtOptions(value: unknown): Record<string, unknown> | undefined 
     change_position: opt(o['changePosition'], v => argInteger(v, 'args.options.changePosition', 0, 0x7fff_ffff)),
     change_type: opt(o['changeType'], v => argString(v, 'args.options.changeType', { nonEmpty: true })),
     lock_unspents: opt(o['lockUnspents'], v => argBoolean(v, 'args.options.lockUnspents')),
-    fee_rate: opt(o['feeRateBitsPerKvB'], v =>
-      rawDecimal(formatBitsPerVbyte(assertBits(v, 'args.options.feeRateBitsPerKvB')))
-    ),
+    fee_rate: opt(o['feeRateBitsPerKvB'], v => feeRateParam(v, 'args.options.feeRateBitsPerKvB')),
     subtractFeeFromOutputs: opt(o['subtractFeeFromOutputs'], v => {
       if (!Array.isArray(v)) throw new TypeError('args.options.subtractFeeFromOutputs must be an array')
       return v.map((index, i) => argInteger(index, `args.options.subtractFeeFromOutputs[${i}]`, 0, 0x7fff_ffff))
@@ -1752,6 +1826,26 @@ function fundedPsbtOptions(value: unknown): Record<string, unknown> | undefined 
     estimate_mode: opt(o['estimateMode'], v => argOneOf(v, 'args.options.estimateMode', FEE_MODES)),
   })
   return out
+}
+
+/**
+ * `outputs` as `walletcreatefundedpsbt` and `psbtbumpfee` take them: a
+ * non-empty array of `{ address, amountBits }`, sent as `{ [address]: amount }`,
+ * or `{ data }`.
+ */
+function outputsParam(value: unknown, name: string): Record<string, unknown>[] {
+  if (!Array.isArray(value) || value.length === 0) throw new TypeError(`${name} must be a non-empty array`)
+  return value.map((output: unknown, i) => {
+    const p = argOptions(output, `${name}[${i}]`, ['address', 'amountBits', 'data'])
+    if (p['data'] !== undefined) {
+      if (p['address'] !== undefined || p['amountBits'] !== undefined) {
+        throw new TypeError(`${name}[${i}] must be either { address, amountBits } or { data }`)
+      }
+      return { data: argHex(p['data'], `${name}[${i}].data`) }
+    }
+    const address = argString(p['address'], `${name}[${i}].address`, { nonEmpty: true })
+    return { [address]: qbtParam(p['amountBits'], `${name}[${i}].amountBits`) }
+  })
 }
 
 /**
@@ -2012,8 +2106,7 @@ export const requests = {
 
   walletCreateFundedPsbt(args: WalletCreateFundedPsbtArgs): RpcRequest<FundedPsbt> {
     const a = argOptions(args, 'args', FUNDED_PSBT_ARGS)
-    const outputs = a['outputs']
-    if (!Array.isArray(outputs) || outputs.length === 0) throw new TypeError('args.outputs must be a non-empty array')
+    const outputs = outputsParam(a['outputs'], 'args.outputs')
     const inputs = opt(a['inputs'], v => {
       if (!Array.isArray(v)) throw new TypeError('args.inputs must be an array')
       return v.map((input, i) => {
@@ -2027,22 +2120,11 @@ export const requests = {
         })
       })
     })
-    const serializedOutputs = outputs.map((output: unknown, i) => {
-      const p = argOptions(output, `args.outputs[${i}]`, ['address', 'amountBits', 'data'])
-      if (p['data'] !== undefined) {
-        if (p['address'] !== undefined || p['amountBits'] !== undefined) {
-          throw new TypeError(`args.outputs[${i}] must be either { address, amountBits } or { data }`)
-        }
-        return { data: argHex(p['data'], `args.outputs[${i}].data`) }
-      }
-      const address = argString(p['address'], `args.outputs[${i}].address`, { nonEmpty: true })
-      return { [address]: qbtParam(p['amountBits'], `args.outputs[${i}].amountBits`) }
-    })
     return request(
       'walletcreatefundedpsbt',
       [
         inputs ?? [],
-        serializedOutputs,
+        outputs,
         opt(a['locktime'], v => argInteger(v, 'args.locktime', 0, 0xffff_ffff)),
         fundedPsbtOptions(a['options']),
         opt(a['bip32derivs'], v => argBoolean(v, 'args.bip32derivs')),
@@ -2081,6 +2163,49 @@ export const requests = {
       [argBase64(psbt, 'psbt'), opt(o['extract'], v => argBoolean(v, 'options.extract'))],
       parseFinalizedPsbt
     )
+  },
+  /**
+   * An unsigned replacement for the wallet's unconfirmed transaction `txid`,
+   * paying a higher fee. It spends every input of the original and may add
+   * more; nothing is signed or sent. Sign it with `walletProcessPsbt`, store
+   * the hex, then `sendRawTransaction`. It needs the wallet unlocked (`RpcError`
+   * -13 otherwise). Side-effecting all the same: when the original has no change
+   * output the wallet recognises, or `outputs` leave out its change address,
+   * each call takes change keys from the keypool for good. A lost reply is an
+   * `RpcUnknownOutcomeError`; calling again is safe, at worst using up more
+   * change keys. The change position is random, so a repeat call can return
+   * another transaction. Rejects with `RpcError` -5 for a transaction the
+   * wallet does not know, -8 for a fee rate too low or a transaction with
+   * descendants, -1 once the original or a replacement is mined (an input "is
+   * already spent"), and -4 for insufficient funds or a fee above `-maxtxfee`.
+   */
+  psbtBumpFee(txid: string, options?: PsbtBumpFeeOptions): RpcRequest<BumpedPsbt> {
+    const requested = argHash(txid, 'txid')
+    const o = methodOptions(options, PSBT_BUMP_FEE_OPTIONS)
+    if (o['feeRateBitsPerKvB'] !== undefined && (o['confTarget'] !== undefined || o['estimateMode'] !== undefined)) {
+      throw new TypeError('options.feeRateBitsPerKvB excludes options.confTarget and options.estimateMode')
+    }
+    if (o['outputs'] !== undefined && o['originalChangeIndex'] !== undefined) {
+      throw new TypeError('options.outputs excludes options.originalChangeIndex')
+    }
+    // Key names as qbit Core v1.0.0's psbtbumpfee reads them. It refuses any
+    // other key (-3), so none is accepted and then ignored; each was checked
+    // against a live node: see test/regtest/smoke.test.ts.
+    const bump = compact<Record<string, unknown>>({
+      fee_rate: opt(o['feeRateBitsPerKvB'], v => {
+        // The node never takes a zero rate: the new fee must exceed the original's.
+        if (v === 0n) throw new RangeError('options.feeRateBitsPerKvB must be above 0')
+        return feeRateParam(v, 'options.feeRateBitsPerKvB')
+      }),
+      conf_target: opt(o['confTarget'], v => argInteger(v, 'options.confTarget', 1, 1008)),
+      estimate_mode: opt(o['estimateMode'], v => argOneOf(v, 'options.estimateMode', FEE_MODES)),
+      replaceable: opt(o['replaceable'], v => argBoolean(v, 'options.replaceable')),
+      outputs: opt(o['outputs'], v => outputsParam(v, 'options.outputs')),
+      original_change_index: opt(o['originalChangeIndex'], v =>
+        argInteger(v, 'options.originalChangeIndex', 0, 0xffff_ffff)
+      ),
+    })
+    return request('psbtbumpfee', [requested, Object.keys(bump).length > 0 ? bump : undefined], parseBumpedPsbt)
   },
   /** Unlocks the wallet for `timeoutSeconds` (qbit Core caps it at 100,000,000). The passphrase is never logged or put in an error. */
   walletPassphrase: (passphrase: string, timeoutSeconds: number): RpcRequest<null> =>

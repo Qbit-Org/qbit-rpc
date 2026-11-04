@@ -57,6 +57,7 @@ describe('capabilities', () => {
       [rpc.walletPassphrase('secret passphrase', 10), 'wallet-write'],
       [rpc.walletProcessPsbt('cHNidP8='), 'wallet-write'],
       [rpc.finalizePsbt('cHNidP8='), 'wallet-write'],
+      [rpc.psbtBumpFee(HASH_A), 'wallet-write'],
       [rpc.sendRawTransaction(TX_HEX), 'broadcast'],
       [rpc.testMempoolAccept([TX_HEX]), 'broadcast'],
     ]
@@ -72,6 +73,7 @@ describe('capabilities', () => {
     const rpc = client(['wallet-read', 'wallet-write', 'broadcast'])
     await rpc.confirmChain()
     const before = node.requests.length
+    // bumpfee signs and broadcasts; psbtbumpfee, which returns an unsigned PSBT, is allowlisted.
     for (const method of ['sendmany', 'sendtoaddress', 'send', 'sendall', 'bumpfee', 'dumpwallet', 'stop', '']) {
       const error = await rpc.call(method, []).then(
         () => expect.fail('expected a refusal'),
@@ -94,6 +96,7 @@ describe('capabilities', () => {
     expect((await refusal(rpc.batch([requests.testMempoolAccept([TX_HEX])]))).reason).toBe('not_batchable')
     expect((await refusal(rpc.batch([requests.getRawChangeAddress()]))).reason).toBe('not_batchable')
     expect((await refusal(rpc.batch([requests.getBalances(), requests.getNewAddress()]))).reason).toBe('not_batchable')
+    expect((await refusal(rpc.batch([requests.psbtBumpFee(HASH_A)]))).reason).toBe('not_batchable')
     const lock = requests.lockUnspent(true, [{ txid: HASH_A, vout: 0 }])
     expect((await refusal(rpc.batch([requests.listLockUnspent(), lock]))).reason).toBe('not_batchable')
     expect((await refusal(client().batch([requests.getWalletInfo()]))).reason).toBe('not_enabled')
@@ -158,6 +161,9 @@ describe('capabilities', () => {
         'listlockunspent',
         'getrawchangeaddress',
         'lockunspent',
+        'finalizepsbt',
+        'psbtbumpfee',
+        'bumpfee',
       ].map(method => [method, METHOD_POLICIES[method]])
     )
     expect(policies).toEqual({
@@ -168,6 +174,10 @@ describe('capabilities', () => {
       listlockunspent: { capability: 'wallet-read', sideEffects: false },
       getrawchangeaddress: { capability: 'wallet-write', sideEffects: true },
       lockunspent: { capability: 'wallet-write', sideEffects: true },
+      finalizepsbt: { capability: 'wallet-write', sideEffects: false },
+      // It signs nothing, but can take change keys for good.
+      psbtbumpfee: { capability: 'wallet-write', sideEffects: true },
+      bumpfee: undefined,
     })
   })
 
@@ -186,6 +196,7 @@ describe('chain guard', () => {
       rpc.lockUnspent(false, [{ txid: HASH_A, vout: 0 }]),
       rpc.getRawChangeAddress(),
       rpc.getNewAddress(),
+      rpc.psbtBumpFee(HASH_A),
     ]) {
       const error = await promise.then(
         () => expect.fail('expected a refusal'),

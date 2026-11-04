@@ -142,7 +142,8 @@ and again as soon as the connection drops.
 - **Typed methods** cover the list in the [`@qbit-oss/rpc` README](packages/rpc/README.md#typed-methods).
   Other allowlisted methods are untyped through `call()`. `sendmany`,
   `sendtoaddress`, `send`, `sendall` and `bumpfee` are excluded on purpose:
-  they sign and broadcast in one step.
+  they sign and broadcast in one step. `psbtbumpfee` returns an unsigned PSBT
+  instead, so it is allowlisted and typed.
 - `getwalletinfo` in qbit Core v1.0.0 has no per-key PQC signature counts; they
   appear on `walletprocesspsbt` and `getaddressinfo` replies.
 - No custom TLS options (CA bundles, client certificates) for HTTPS endpoints,

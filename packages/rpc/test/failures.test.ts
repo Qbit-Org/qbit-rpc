@@ -126,6 +126,7 @@ describe('unknown outcomes after a side effect may have happened', () => {
     ['call(lockunspent)', (rpc: QbitRpcClient) => rpc.call('lockunspent', [false])],
     ['lockunspent', (rpc: QbitRpcClient) => rpc.lockUnspent(false, [{ txid: HASH_A, vout: 0 }])],
     ['getrawchangeaddress', (rpc: QbitRpcClient) => rpc.getRawChangeAddress({ addressType: 'p2mr' })],
+    ['psbtbumpfee', (rpc: QbitRpcClient) => rpc.psbtBumpFee(HASH_A, { feeRateBitsPerKvB: 4000n })],
   ])('treats a dropped reply to %s as unknown', async (_name, run) => {
     const rpc = await confirmed({ readRetries: 3 })
     node.handler = (_request, response) => response.socket?.destroy()

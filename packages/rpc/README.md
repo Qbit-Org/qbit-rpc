@@ -45,12 +45,14 @@ Every method, typed or through `call()`, must be on the allowlist
 | --- | --- |
 | none (read) | `getblockchaininfo`, `getnetworkinfo`, `getbestblockhash`, `getblockcount`, `getblockhash`, `getblockheader`, `getrawtransaction`, `getmempoolentry`, `gettxout`, `getconfirmationtarget`, `estimatesmartfee`, `validateaddress`, `verifydatapqchash`; untyped: `getblock`, `getchaintips`, `getmempoolinfo`, `getrawmempool`, `decoderawtransaction`, `decodepsbt`, `analyzepsbt`, `getorphanmetrics`, `getarchivepeers`, `getindexinfo`, `getzmqnotifications`, `uptime` |
 | `wallet-read` | `getwalletinfo`, `gettransaction`, `listunspent`, `getaddressinfo`, `listlockunspent`, `listsinceblock`, `listtransactions`, `getbalances`; untyped: `listwallets` |
-| `wallet-write` | `walletcreatefundedpsbt`, `walletprocesspsbt`, `finalizepsbt`, `walletpassphrase`, `walletlock`, `getrawchangeaddress`, `lockunspent`, `getnewaddress` |
+| `wallet-write` | `walletcreatefundedpsbt`, `walletprocesspsbt`, `finalizepsbt`, `psbtbumpfee`, `walletpassphrase`, `walletlock`, `getrawchangeaddress`, `lockunspent`, `getnewaddress` |
 | `broadcast` | `testmempoolaccept`, `sendrawtransaction` |
 
-`sendmany`, `sendtoaddress`, `send`, `sendall`, `bumpfee` and `psbtbumpfee` are
-not allowlisted: they sign and broadcast in one step, so you cannot store the
-signed transaction before it leaves the node. `finalizepsbt` and
+`sendmany`, `sendtoaddress`, `send`, `sendall` and `bumpfee` are not
+allowlisted: they sign and broadcast in one step, so you cannot store the signed
+transaction before it leaves the node. `psbtbumpfee` is allowlisted: it returns
+an unsigned PSBT and signs and broadcasts nothing (see
+[Bumping a stuck payment](#bumping-a-stuck-payment)). `finalizepsbt` and
 `testmempoolaccept` change nothing, but are gated with the steps they belong to.
 
 ### Chain guard
@@ -131,6 +133,7 @@ offending value.
 | `walletCreateFundedPsbt({ inputs?, outputs, locktime?, options?, bip32derivs?, version? })` | `{ psbt, feeBits, changePos }` |
 | `walletProcessPsbt(psbt, { sign?, sighashType?, bip32derivs?, finalize? })` | `ProcessedPsbt` with the PQC usage fields |
 | `finalizePsbt(psbt, { extract? })` | `{ psbt?, hex?, complete }` |
+| `psbtBumpFee(txid, { feeRateBitsPerKvB?, confTarget?, estimateMode?, replaceable?, outputs?, originalChangeIndex? })` | `BumpedPsbt`: `{ psbt, originalFeeBits, feeBits, errors }`, the PSBT unsigned |
 | `walletPassphrase(passphrase, timeoutSeconds)`, `walletLock()` | nothing |
 | `getRawChangeAddress({ addressType? })` | a new change address |
 | `getNewAddress({ label?, addressType? })` | a new receiving address, filed under `label` |
@@ -161,6 +164,58 @@ under `label` (the default label, `''`, when left out; `*` is refused before
 sending, as qbit Core reserves it). It is side-effecting too: never retried,
 and a lost reply is an `RpcUnknownOutcomeError`, since a second call would hand
 out a second address.
+
+### Bumping a stuck payment
+
+```ts
+const bump = await rpc.psbtBumpFee(txid, { feeRateBitsPerKvB: 4_000n }) // 4 bits/vB
+const signed = await rpc.walletProcessPsbt(bump.psbt)
+if (!signed.complete) throw new Error('the wallet could not sign every input')
+await store(txid, signed.hex!) // before it leaves the node
+await rpc.sendRawTransaction(signed.hex!)
+```
+
+`psbtBumpFee` builds a replacement (RBF) for one of the wallet's unconfirmed
+transactions, with a higher fee, and returns it as an unsigned PSBT: nothing is
+signed or sent. The replacement spends every input of the original, so at most
+one of the two can confirm, and it may add inputs. The outputs stay as they
+were unless you pass `outputs`; the extra fee comes out of the change output the
+wallet recognises, or out of `originalChangeIndex`, whatever that output pays
+(pointing it at a payment makes the payment smaller). `feeRateBitsPerKvB` must
+be at least the original's rate plus the node's incremental relay fee
+(`RpcError` -8 otherwise). Without it the wallet estimates, and with `outputs`
+that shrink the transaction the estimate can come to no more than
+`originalFeeBits`, which the mempool refuses (-26): compare the two, or pass a
+fee rate. qbit Core v1.0.0 also bumps a transaction that did not signal BIP 125,
+and its mempool took that replacement on regtest. The wallet must be unlocked
+(-13). Check `complete` after signing: with inputs of another wallet, it is
+false.
+
+It is a side-effecting wallet-write call although it signs nothing: when the
+original has no change output the wallet recognises, or `outputs` leave out its
+change address, each call takes change keys from the keypool for good, and each
+returns another transaction. It is never retried, and a lost reply is an
+`RpcUnknownOutcomeError`. That is safe to resolve by calling again, since nothing
+was signed or sent; at worst it uses up more change keys. The change position is
+random, so even a repeat call that takes no key can return another PSBT and
+txid: never reconcile by the txid of a bump.
+
+Reconcile by the original's txid and the txid of each replacement you actually
+broadcast, which is why the signed hex is stored first. After an unknown
+outcome from `sendRawTransaction`, look both up (`getTransaction`) instead of
+building the payment again: they spend the same inputs, so at most one
+confirms, and sending the stored hex again returns the same txid while it is in
+the mempool (-27 once it is mined). If the original confirms first, the bump
+loses the race: `psbtBumpFee` rejects with -1 (an input "is already spent"), and
+a replacement signed earlier is refused with -25 (`testMempoolAccept` reports
+`missing-inputs`); the payment went through as it was. Once a replacement
+confirms, the original has negative `confirmations`, and sending it again fails
+with -25. qbit Core names the replacement (`replacedByTxid`, `replacesTxid`)
+only when `bumpfee` made it: after `psbtBumpFee` and `sendRawTransaction`, the
+original lists it in `walletConflicts` (and in `mempoolConflicts` while it is
+in the mempool) and is no longer `trusted`. To bump again, bump the replacement you broadcast: the wallet still
+bumps the original, but that fee only has to beat the original's, and the
+mempool refuses it (-26) unless it beats the replacement's too.
 
 ### Wallet history
 
@@ -214,8 +269,15 @@ negative `confirmations`, with no `receive` entry in `details`.
 To add up what the wallet sent, take `send` entries without `includeChange`
 (which adds each change output as a `send` and a `receive` entry), count each
 `txid` and `vout` once, and skip `abandoned` entries and those with negative
-`confirmations`. A replaced transaction's entries have `replacedByTxid`, and its
-replacement is listed too, so skip those as well.
+`confirmations`. A transaction that `bumpfee` replaced has `replacedByTxid` on
+its entries, and its replacement is listed too, so skip those as well. A
+replacement sent with `sendRawTransaction`, as after `psbtBumpFee`, sets no
+`replacedByTxid`, but the original lists it in `walletConflicts`, which stays
+set even if the replacement leaves the mempool unmined. Count the original and
+the transactions in its `walletConflicts` as one payment: once one of them is
+mined the others have negative `confirmations`, and until then count only one
+of them. Don't rely on `mempoolConflicts` alone: it is empty again when
+neither is in the mempool.
 
 `listTransactions` lists the newest `count` entries after skipping the newest
 `skip`, without change outputs. A `label` keeps incoming entries paying to that
@@ -257,6 +319,7 @@ from configuration.
 refuses `walletcreatefundedpsbt` options, as they are serialized, that qbit
 Core v1.0.0 accepts and then ignores, so far `subtract_fee_from_outputs` (the node reads
 `subtractFeeFromOutputs`; with the other name the wallet pays the fee).
+`psbtbumpfee` has none: qbit Core refuses every option key it does not read.
 
 ## Amounts
 

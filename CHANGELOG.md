@@ -28,6 +28,13 @@ version. Nothing has been published yet: both are `0.0.0` and private.
 - Typed errors, `RpcUnknownOutcomeError` for side-effecting calls whose outcome
   is unknown, one deadline per operation, opt-in read retries, a response size
   cap, and JSON-RPC batches for reads with per-item results.
+- A typed, validated `psbtBumpFee` (`psbtbumpfee`, wallet-write) bumps a stuck
+  payment's fee with RBF and returns the replacement as an unsigned PSBT, for
+  the sign, store and broadcast steps. It was left out as signing and
+  broadcasting, which only `bumpfee` does. It is side-effecting (never retried,
+  unknown outcome when the reply is lost), as it can take change keys from the
+  keypool for good. Options, errors and replies were checked against a qbit
+  Core v1.0.0 regtest node, and the smoke test bumps and replaces a payment.
 
 ### @qbit-oss/zmq
 
