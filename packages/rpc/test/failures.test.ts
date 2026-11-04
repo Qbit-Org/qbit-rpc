@@ -19,7 +19,7 @@ import {
   RpcUnknownOutcomeError,
   type Capability,
 } from '../src'
-import { blockchainInfoJson, FakeNode, HASH_A, TX_HEX } from './helpers/fake-node'
+import { chainResults, FakeNode, HASH_A, TX_HEX } from './helpers/fake-node'
 
 let node: FakeNode
 
@@ -42,7 +42,7 @@ async function confirmed(
   options: { capabilities?: Capability[]; readRetries?: number; timeoutMs?: number } = {}
 ): Promise<QbitRpcClient> {
   const previous = node.handler
-  node.results({ getblockchaininfo: blockchainInfoJson('regtest') })
+  node.results(chainResults('regtest'))
   const rpc = new QbitRpcClient({
     url: node.url,
     auth: { username: 'u', password: 'p' },
@@ -163,9 +163,9 @@ describe('unknown outcomes after a side effect may have happened', () => {
       auth: { username: 'u', password: 'p' },
       expectedChain: 'regtest',
       capabilities: ['broadcast'],
-      maxResponseBytes: 1024,
+      maxResponseBytes: 2048,
     })
-    node.results({ getblockchaininfo: blockchainInfoJson('regtest') })
+    node.results(chainResults('regtest'))
     await rpc.confirmChain()
     node.handler = (request, response) => respond(response, idOf(request.body))
     const error = await failure(rpc.sendRawTransaction(TX_HEX))
@@ -202,7 +202,7 @@ describe('unknown outcomes after a side effect may have happened', () => {
       expectedChain: 'regtest',
       capabilities: ['broadcast'],
     })
-    node.results({ getblockchaininfo: blockchainInfoJson('regtest') })
+    node.results(chainResults('regtest'))
     await expect(offline.confirmChain()).rejects.toMatchObject({ reason: 'network', code: 'ECONNREFUSED' })
   })
 })
@@ -427,7 +427,7 @@ describe('side-effecting calls', () => {
         readRetries: 3,
         retryDelayMs: 1,
       })
-      node.results({ getblockchaininfo: blockchainInfoJson('regtest') })
+      node.results(chainResults('regtest'))
       await rpc.confirmChain()
       node.requests.length = 0
       // A cookie 401 is retryable for reads (the cookie may have rotated)...
@@ -443,7 +443,7 @@ describe('side-effecting calls', () => {
       // The 401 made the chain confirmation stale, so a chain check runs first; the broadcast itself runs once.
       expect(node.calls().filter(call => call.method === 'sendrawtransaction')).toHaveLength(0)
       node.requests.length = 0
-      node.results({ getblockchaininfo: blockchainInfoJson('regtest') })
+      node.results(chainResults('regtest'))
       await rpc.confirmChain()
       node.requests.length = 0
       node.handler = (_request, response) => {

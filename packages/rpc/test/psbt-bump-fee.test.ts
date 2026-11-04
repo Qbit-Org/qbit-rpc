@@ -12,7 +12,7 @@ import {
   type Capability,
   type QbitRpcClientOptions,
 } from '../src'
-import { blockchainInfoJson, FakeNode, HASH_A } from './helpers/fake-node'
+import { chainResults, CHECK, FakeNode, HASH_A } from './helpers/fake-node'
 
 let node: FakeNode
 
@@ -38,7 +38,7 @@ function client(
 
 async function confirmed(options: Partial<QbitRpcClientOptions> = {}): Promise<QbitRpcClient> {
   const rpc = client(['wallet-read', 'wallet-write'], options)
-  node.results({ getblockchaininfo: blockchainInfoJson('regtest') })
+  node.results(chainResults('regtest'))
   await rpc.confirmChain()
   node.requests.length = 0
   return rpc
@@ -262,7 +262,7 @@ describe('psbtBumpFee', () => {
     expect(error).toMatchObject({ method: 'psbtbumpfee' })
     expect(node.requests).toHaveLength(1)
     // An HTTP 5xx is not retried either. (The dropped connection made the chain stale: confirm it again.)
-    node.results({ getblockchaininfo: blockchainInfoJson('regtest') })
+    node.results(chainResults('regtest'))
     await rpc.confirmChain()
     node.requests.length = 0
     node.handler = (_request, response) => {
@@ -287,7 +287,7 @@ describe('psbtBumpFee', () => {
   })
 
   it('needs wallet-write, a confirmed chain on the expected chain, and is not batchable', async () => {
-    node.results({ getblockchaininfo: blockchainInfoJson('regtest'), psbtbumpfee: json(BUMPED) })
+    node.results({ ...chainResults('regtest'), psbtbumpfee: json(BUMPED) })
     const refusal = async (promise: Promise<unknown>): Promise<RpcCapabilityError> => {
       const error = await failure(promise)
       expect(RpcCapabilityError.is(error)).toBe(true)
@@ -311,10 +311,10 @@ describe('psbtBumpFee', () => {
     expect(node.requests).toHaveLength(0)
     await writer.confirmChain()
     expect((await writer.psbtBumpFee(HASH_A)).feeBits).toBe(15444n)
-    expect(node.calls().map(call => call.method)).toEqual(['getblockchaininfo', 'psbtbumpfee'])
+    expect(node.calls().map(call => call.method)).toEqual([...CHECK, 'psbtbumpfee'])
 
     // Another chain: refused, and nothing but the chain check is sent.
-    node.results({ getblockchaininfo: blockchainInfoJson('main'), psbtbumpfee: json(BUMPED) })
+    node.results({ ...chainResults('main'), psbtbumpfee: json(BUMPED) })
     const elsewhere = client(['wallet-write'])
     await expect(elsewhere.confirmChain()).rejects.toSatisfy(RpcChainGuardError.is)
     node.requests.length = 0
@@ -324,12 +324,12 @@ describe('psbtBumpFee', () => {
 
     // A stale confirmation is checked again first, and the chain having changed refuses the bump.
     const stale = client(['wallet-write'], { chainCheckMaxAgeMs: 0 })
-    node.results({ getblockchaininfo: blockchainInfoJson('regtest') })
+    node.results(chainResults('regtest'))
     await stale.confirmChain()
-    node.results({ getblockchaininfo: blockchainInfoJson('main'), psbtbumpfee: json(BUMPED) })
+    node.results({ ...chainResults('main'), psbtbumpfee: json(BUMPED) })
     node.requests.length = 0
     expect(await failure(stale.psbtBumpFee(HASH_A))).toMatchObject({ reason: 'mismatch', actual: 'main' })
-    expect(node.calls().map(call => call.method)).toEqual(['getblockchaininfo'])
+    expect(node.calls().map(call => call.method)).toEqual([...CHECK])
 
     const reader = client(['wallet-read', 'wallet-write'])
     expect((await refusal(reader.batch([requests.getBalances(), requests.psbtBumpFee(HASH_A)]))).reason).toBe(

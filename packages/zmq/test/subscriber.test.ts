@@ -1,4 +1,5 @@
 import { createRequire } from 'node:module'
+import { createServer, type AddressInfo } from 'node:net'
 import { fileURLToPath } from 'node:url'
 
 import { describe, expect, it } from 'vitest'
@@ -664,6 +665,36 @@ describe('QbitZmqSubscriber over loopback with zeromq', () => {
     }
   }
 
+  /** A loopback port that was free a moment ago: bound by a Node.js server, closed before this returns. */
+  async function unusedPort(): Promise<number> {
+    const server = createServer()
+    await new Promise<void>((resolve, reject) => server.once('error', reject).listen(0, '127.0.0.1', resolve))
+    const { port } = server.address() as AddressInfo
+    await new Promise<void>((resolve, reject) => server.close(error => (error ? reject(error) : resolve())))
+    return port
+  }
+
+  /**
+   * A Publisher bound to `url`, which a closed one may still hold: libzmq
+   * releases the port asynchronously after close(), so bind again while the
+   * port is in use, for up to 2 s. That is well inside the test's timeout, so
+   * a port that stays held fails with EADDRINUSE, not a generic timeout.
+   */
+  async function bindWhenFree(url: string): Promise<Publisher> {
+    const deadline = Date.now() + 2000
+    for (;;) {
+      const publisher = new Publisher()
+      try {
+        await publisher.bind(url)
+        return publisher
+      } catch (error) {
+        publisher.close()
+        if ((error as { code?: unknown }).code !== 'EADDRINUSE' || Date.now() > deadline) throw error
+        await new Promise(resolve => setTimeout(resolve, 10))
+      }
+    }
+  }
+
   async function publishUntilReceived(publisher: Publisher, events: ZmqEvent[], first: number): Promise<number> {
     let next = first
     const start = events.length
@@ -689,8 +720,7 @@ describe('QbitZmqSubscriber over loopback with zeromq', () => {
       await expect.poll(() => subscriber.health().status, { timeout: 5000 }).toBe('unknown')
       expect(events.some(e => e.kind === 'reconnect' && e.reason === 'disconnected')).toBe(true)
       // qbitd restarts; its counter happens to continue where the old one stopped.
-      publisher = new Publisher()
-      await publisher.bind(url)
+      publisher = await bindWhenFree(url)
       const before = events.length
       await publishUntilReceived(publisher, events, next)
       const gaps = events.slice(before).filter(e => e.kind === 'gap')
@@ -730,10 +760,9 @@ describe('QbitZmqSubscriber over loopback with zeromq', () => {
   })
 
   it('keeps waiting for a node that is down, receives once it binds, and reconnects when it stops', async () => {
-    const probe = new Publisher()
-    await probe.bind('tcp://127.0.0.1:0')
-    const url = probe.lastEndpoint!
-    probe.close() // nothing listens on the port now
+    // A port nothing listens on. A zeromq socket would not do: libzmq unbinds
+    // it asynchronously after close(), so the subscriber could still reach it.
+    const url = `tcp://127.0.0.1:${await unusedPort()}`
     const subscriber = new QbitZmqSubscriber({ url, topics: ['hashblock'], reconnectDelayMs: 50 })
     const { events, stop } = collect(subscriber)
     let publisher: Publisher | undefined
@@ -742,16 +771,14 @@ describe('QbitZmqSubscriber over loopback with zeromq', () => {
       await new Promise(resolve => setTimeout(resolve, 500))
       expect(events).toEqual([])
       expect(subscriber.health()).toMatchObject({ status: 'unknown', reconnects: 0 })
-      publisher = new Publisher()
-      await publisher.bind(url)
+      publisher = await bindWhenFree(url)
       const next = await publishUntilReceived(publisher, events, 0)
       expect(subscriber.health().status).toBe('receiving')
       publisher.close() // the node stops again
       await expect
         .poll(() => events.some(e => e.kind === 'reconnect' && e.reason === 'disconnected'), { timeout: 5000 })
         .toBe(true)
-      publisher = new Publisher()
-      await publisher.bind(url)
+      publisher = await bindWhenFree(url)
       const before = events.length
       await publishUntilReceived(publisher, events, next)
       expect(events.slice(before).some(e => e.kind === 'message')).toBe(true)

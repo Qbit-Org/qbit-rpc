@@ -20,15 +20,14 @@ import {
 } from '../src'
 import { Limiter } from '../src/limiter'
 import { HttpTransport } from '../src/transport'
-import { blockchainInfoJson, FakeNode, HASH_A, TX_HEX, type RecordedRequest, type RpcCall } from './helpers/fake-node'
+import { CHECK, chainResults, FakeNode, HASH_A, TX_HEX, type RecordedRequest, type RpcCall } from './helpers/fake-node'
 
 const WORK_QUEUE_BODY = 'Work queue depth exceeded'
 const ADDRESS = 'bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080'
 const RESULTS: Record<string, string> = {
-  getblockchaininfo: blockchainInfoJson('regtest'),
+  ...chainResults('regtest'),
   getblockcount: '10',
   getbestblockhash: JSON.stringify(HASH_A),
-  getblockhash: JSON.stringify(HASH_A),
   getrawchangeaddress: JSON.stringify(ADDRESS),
   finalizepsbt: '{"psbt":"cHNidP8=","complete":false}',
   walletlock: 'null',
@@ -43,10 +42,11 @@ afterEach(async () => {
   await node.close()
 })
 
-/** Answer a request from RESULTS, single or batch. */
-function answer(request: RecordedRequest, response: ServerResponse): void {
+/** Answer a request from RESULTS, single or batch, with `results` in place of some methods' result texts. */
+function answer(request: RecordedRequest, response: ServerResponse, results: Record<string, string> = {}): void {
   const parsed = JSON.parse(request.body) as RpcCall | RpcCall[]
-  const one = (call: RpcCall): string => `{"jsonrpc":"2.0","result":${RESULTS[call.method]},"id":${String(call.id)}}`
+  const one = (call: RpcCall): string =>
+    `{"jsonrpc":"2.0","result":${results[call.method] ?? RESULTS[call.method]},"id":${String(call.id)}}`
   response.end(Array.isArray(parsed) ? `[${parsed.map(one).join(',')}]` : one(parsed))
 }
 
@@ -93,10 +93,11 @@ function workQueue(capacity: number, holdUntilSeen?: number): { peak: number; re
 }
 
 interface Held {
+  /** The method, or `check` for a chain check and `batch` for another batch. */
   readonly method: string
   readonly response: ServerResponse
-  /** Answer from RESULTS, or with `result` as the raw result text. */
-  answer(result?: string): void
+  /** Answer from RESULTS, with `results` in place of some methods' result texts. */
+  answer(results?: Record<string, string>): void
 }
 
 /** Hold every request until the test answers it; the list is in arrival order. */
@@ -105,12 +106,9 @@ function holdRequests(): Held[] {
   node.handler = (request, response) => {
     const parsed = JSON.parse(request.body) as RpcCall | RpcCall[]
     held.push({
-      method: Array.isArray(parsed) ? 'batch' : parsed.method,
+      method: !Array.isArray(parsed) ? parsed.method : parsed[0]?.method === 'getblockchaininfo' ? 'check' : 'batch',
       response,
-      answer: result =>
-        result === undefined || Array.isArray(parsed)
-          ? answer(request, response)
-          : response.end(`{"jsonrpc":"2.0","result":${result},"id":${String(parsed.id)}}`),
+      answer: results => answer(request, response, results),
     })
   }
   return held
@@ -356,7 +354,7 @@ describe('maxConcurrentRequests', () => {
       (request, response) => response.end(`{"jsonrpc":"2.0","result":"ten","id":${idOf(request)}}`),
       RpcResponseError,
     ],
-    ['an oversized reply', getBlockCount, respondWith(200, 'x'.repeat(2048)), RpcResponseTooLargeError],
+    ['an oversized reply', getBlockCount, respondWith(200, 'x'.repeat(4096)), RpcResponseTooLargeError],
     ['a timeout after sending', rpc => rpc.walletLock({ timeoutMs: 150 }), hang, RpcUnknownOutcomeError],
     ['a read timeout after sending', rpc => rpc.getBlockCount({ timeoutMs: 30 }), hang, RpcTimeoutError],
     [
@@ -374,7 +372,7 @@ describe('maxConcurrentRequests', () => {
     ['a failed batch', rpc => rpc.batch([requests.getBlockCount()]), respondWith(500), RpcTransportError],
   ]
   it.each(failing)('frees the slot after %s', async (_name, run, respond, expected) => {
-    const rpc = await confirmed({ maxConcurrentRequests: 1, maxResponseBytes: 1024 })
+    const rpc = await confirmed({ maxConcurrentRequests: 1, maxResponseBytes: 2048 })
     node.handler = respond
     expect(expected.is(await failure(run(rpc)))).toBe(true)
     node.handler = answer
@@ -421,14 +419,7 @@ describe('maxConcurrentRequests', () => {
     const rpc = await confirmed({ maxConcurrentRequests: 1, chainCheckMaxAgeMs: 0 })
     const queue = workQueue(1)
     await Promise.all([rpc.walletLock(), rpc.walletLock(), rpc.walletLock()])
-    expect(methods()).toEqual([
-      'getblockchaininfo',
-      'walletlock',
-      'getblockchaininfo',
-      'walletlock',
-      'getblockchaininfo',
-      'walletlock',
-    ])
+    expect(methods()).toEqual([...CHECK, 'walletlock', ...CHECK, 'walletlock', ...CHECK, 'walletlock'])
     expect(queue).toEqual({ peak: 1, rejected: 0 })
   })
 
@@ -438,7 +429,7 @@ describe('maxConcurrentRequests', () => {
     const guardedCall = rpc.walletLock()
     await expect.poll(() => held.length).toBe(1)
     const read = rpc.getBlockCount()
-    expect(held[0]!.method).toBe('getblockchaininfo')
+    expect(held[0]!.method).toBe('check')
     held[0]!.answer()
     await expect.poll(() => held.length).toBe(2)
     expect(held[1]!.method).toBe('walletlock')
@@ -458,13 +449,13 @@ describe('maxConcurrentRequests', () => {
     const check = failure(rpc.confirmChain())
     await expect.poll(() => held.length).toBe(1)
     const queued = failure(rpc.sendRawTransaction(TX_HEX))
-    held[0]!.answer(blockchainInfoJson('main'))
+    held[0]!.answer(chainResults('main'))
     expect(RpcChainGuardError.is(await check)).toBe(true)
 
     const refused = await queued
     expect(RpcChainGuardError.is(refused)).toBe(true)
     expect(refused).toMatchObject({ reason: 'mismatch', method: 'sendrawtransaction', actual: 'main' })
-    expect(methods()).toEqual(['getblockchaininfo'])
+    expect(methods()).toEqual([...CHECK])
   })
 
   it('re-checks a queued guarded call whose confirmation went stale during its wait', async () => {
@@ -479,7 +470,7 @@ describe('maxConcurrentRequests', () => {
     await read
     node.handler = answer
     await queued
-    expect(methods()).toEqual(['getblockcount', 'getblockchaininfo', 'walletlock'])
+    expect(methods()).toEqual(['getblockcount', ...CHECK, 'walletlock'])
   })
 
   it('frees the slot during a retry backoff, and the retry queues again', async () => {

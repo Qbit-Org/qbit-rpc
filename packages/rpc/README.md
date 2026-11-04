@@ -29,9 +29,11 @@ const info = await rpc.getBlockchainInfo()
 | `wallet` | none | Sends every call to `/wallet/<name>` (URL-encoded). Needed for wallet calls when several wallets are loaded. |
 | `auth` | required | `{ username, password }` (HTTP Basic), or `{ cookieFile }` for a loopback endpoint only. The cookie is read again for every request, so `qbitd` can restart and rotate it. |
 | `expectedChain` | required | `main`, `test`, `testnet4`, `signet` or `regtest`. |
+| `expectedGenesisHash` | `expectedChain`'s, see [Chain guard](#chain-guard) | The genesis block hash every chain check expects from `getblockhash 0`: 64 hex characters, either case (compared in lowercase). Set it for a node built with other chain parameters. |
+| `expectedSignetChallenge` | `51` on signet | The `signet_challenge` every chain check expects: non-empty hex of whole bytes (the challenge script), either case (compared in lowercase). Only with `expectedChain: 'signet'`. |
 | `capabilities` | `[]` | Any of `wallet-read`, `wallet-write`, `broadcast`. |
 | `timeoutMs` | 30,000 | One deadline per operation: any wait for a request slot, cookie read, every attempt and every backoff. Override per call. |
-| `maxResponseBytes` | 16 MiB | Larger replies fail with `RpcResponseTooLargeError` (or an unknown outcome for side-effecting calls). |
+| `maxResponseBytes` | 16 MiB | Larger replies fail with `RpcResponseTooLargeError` (or an unknown outcome for side-effecting calls). Leave a few KiB at least: the chain check's batched reply (`getblockchaininfo` and `getblockhash 0`) must fit, or every check fails. |
 | `readRetries` | 0 | Opt-in retries for methods without side effects (see below). |
 | `retryDelayMs` | 250 | First backoff; doubles per retry, capped at 10 s, never past the deadline. |
 | `chainCheckMaxAgeMs` | 10,000 | How long a chain confirmation stays fresh before a wallet-write or broadcast call re-checks it. 0 re-checks before every such call. |
@@ -62,21 +64,60 @@ an unsigned PSBT and signs and broadcasts nothing (see
 
 ### Chain guard
 
-`wallet-write` and `broadcast` calls also need `await rpc.confirmChain()`,
-which compares `getblockchaininfo.chain` with `expectedChain`. Until it has
-matched, or after a check found another chain, they throw `RpcChainGuardError`
-(`reason: 'unconfirmed'` or `'mismatch'`) without sending anything.
+`wallet-write` and `broadcast` calls also need `await rpc.confirmChain()`.
+Each chain check sends `getblockchaininfo` and `getblockhash 0` as one JSON-RPC
+batch, so one node answers both in one round trip, and compares three things:
+`chain` with `expectedChain`, the genesis block hash with `expectedGenesisHash`,
+and on signet `signet_challenge` with `expectedSignetChallenge` (a signet node
+that reports no challenge differs). Until a check has matched all three, or
+after one found any of them different, they throw `RpcChainGuardError`
+(`reason: 'unconfirmed'` or `'mismatch'`) without sending anything. On
+`mismatch`, `differs` lists what differed (`chain`, `genesis_hash`,
+`signet_challenge`), `actual`, `actualGenesisHash` and `actualSignetChallenge`
+hold what the node reported, `expectedGenesisHash` and
+`expectedSignetChallenge` what the client expects, and the message names each
+difference. A chain name or challenge that differs is recorded as a `mismatch`
+even when the `getblockhash 0` reply failed; `actualGenesisHash` is then
+absent. A malformed constructor value is a `TypeError`, as is
+`expectedSignetChallenge` without `expectedChain: 'signet'`.
+
+| `expectedChain` | Default `expectedGenesisHash` |
+| --- | --- |
+| `main` | `0000000000004d60aa5d46013991d0a0e2995d89ee98e53068ae196d763e79f2` |
+| `test` | `0000c20791706c6940a43d75db44d1ae9dadeb637cedfbaa5cf293435eeaab3c` |
+| `testnet4` | `000000000000796fe86bbc0bf1b66a07e4b4c0676f74b54cf7e5ce8b3f1a0090` |
+| `signet` | `0000000a5698c727f05cbdaeaff3e48b48ab187aeb03414e783ea81fed14d65c` |
+| `regtest` | `0ee96aa77c4b600850e349344fa21b107e805f5370ddc7a6189db12cf69acce6` |
+
+These are the genesis hashes qbit Core v1.0.0 asserts
+(`src/kernel/chainparams.cpp`), exported as `QBIT_GENESIS_HASHES`.
+`expectedSignetChallenge` defaults to `51` (`QBIT_DEFAULT_SIGNET_CHALLENGE`),
+the challenge of qbit Core's default signet. What the check still cannot tell
+apart:
+
+- **Any two regtest nodes.** Every regtest node has the same genesis block.
+- **The default signet and a look-alike.** Every signet has the same genesis
+  block, so only the challenge tells signets apart, and `51` (OP_TRUE) is an
+  open challenge: anyone can mine a separate signet with it. Pin a signet by a
+  challenge only its operators can meet.
+- **Two nodes of the same chain behind one URL** (see the end of this section).
+
+Where `-rpcwhitelist` applies, the RPC user needs `getblockhash` as well as
+`getblockchaininfo`, and a proxy in between must pass JSON-RPC batches.
 
 A confirmation goes stale after `chainCheckMaxAgeMs` (default 10 s), and at
 once on a connection error (including a reset keep-alive connection whose read
 then succeeded on another attempt), an HTTP 401, or a changed cookie (qbitd
 writes a new one each time it starts). A wallet-write or broadcast call made
-while it is stale first runs `getblockchaininfo` again, under the call's own
-deadline. If that check fails, the call fails without being sent (a plain
-error, never an unknown outcome; the error names `getblockchaininfo`). If it
-finds another chain, the call is refused and so is every later one until
-`confirmChain()` matches again. `rpc.chainStatus` is `unconfirmed`,
-`confirmed`, `stale` or `mismatch`.
+while it is stale first runs the check again, under the call's own deadline
+and in the same attempt, with no timer of its own. If that check fails, the
+call fails without being sent (a plain error, never an unknown outcome; the
+error names `getblockchaininfo`, or `getblockhash` for an error or an invalid
+reply to that request), unless the chain name or challenge already differed,
+which is a mismatch. If it finds another chain, genesis block or signet
+challenge, the call is refused and so is every later one until `confirmChain()`
+matches again. `rpc.chainStatus` is `unconfirmed`, `confirmed`, `stale` or
+`mismatch`.
 
 The guard decides after a call's last wait, as it hands the request to the
 transport: a mismatch recorded by another check while the call read its
@@ -99,8 +140,9 @@ only a `confirmChain()` begun after it can clear it, and one that sees a
 mismatch recorded while it runs throws it.
 
 The check and the call are separate requests. Behind a load balancer or DNS
-name that can switch nodes, they can reach different nodes: point the client
-at one node.
+name that can switch nodes, they can reach different nodes of the same chain
+(or the check can reach the right node and the call another one): point the
+client at one node.
 
 ## Typed methods
 
@@ -361,8 +403,8 @@ bits; the 210,000,000 QBT cap is 2.1e16 bits, above 2^53). Fee rates are
 - **Retries** happen only for methods without side effects, only when
   `readRetries` is set (apart from the keep-alive retry below), and only for
   connection errors, HTTP 5xx, cookie read failures, HTTP 401 under cookie auth
-  (the cookie may have rotated), and (single calls) RPC error -28 while the
-  node warms up. Side-effecting calls are never retried.
+  (the cookie may have rotated), and (single calls and the chain check) RPC
+  error -28 while the node warms up. Side-effecting calls are never retried.
 - **Deadline.** `timeoutMs` covers the whole operation: any wait for a request
   slot, cookie read, every attempt, every backoff and every item of a batch. On
   expiry the request is destroyed and its socket released.
@@ -445,9 +487,10 @@ adds an untyped entry.
 ## Secrets
 
 Credentials live in private class fields. `JSON.stringify(client)` and
-`util.inspect(client)` show only the URL, chain, capabilities, auth kind and
-chain status. Messages and properties this package writes never include
-credentials, cookie contents, request parameters or request bodies.
+`util.inspect(client)` show only the URL, chain, expected genesis hash (and,
+on signet, challenge), capabilities, auth kind and chain status. Messages and
+properties this package writes never include credentials, cookie contents,
+request parameters or request bodies.
 `RpcError.message` is the node's own text, which can quote an argument such as
 an address or hash; qbit Core's `walletpassphrase` errors do not quote the
 passphrase. The package does not log.

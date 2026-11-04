@@ -6,14 +6,14 @@ import { inspect } from 'node:util'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { QbitRpcClient, QbitRpcError, RpcTransportError, RpcUnknownOutcomeError } from '../src'
-import { basicAuth, blockchainInfoJson, FakeNode, HASH_A } from './helpers/fake-node'
+import { basicAuth, chainResults, FakeNode, HASH_A } from './helpers/fake-node'
 
 let node: FakeNode
 let dir: string
 
 beforeEach(async () => {
   node = await FakeNode.start()
-  node.results({ getbestblockhash: JSON.stringify(HASH_A), getblockchaininfo: blockchainInfoJson('regtest') })
+  node.results({ getbestblockhash: JSON.stringify(HASH_A), ...chainResults('regtest') })
   dir = await mkdtemp(join(tmpdir(), 'qbit-rpc-auth-'))
 })
 afterEach(async () => {
@@ -227,7 +227,7 @@ describe('secret redaction', () => {
     assertClean(rejected)
 
     // The passphrase travels only in the request body; a lost reply must not echo it.
-    node.results({ getblockchaininfo: blockchainInfoJson('regtest') })
+    node.results(chainResults('regtest'))
     await withCookie.confirmChain()
     node.handler = (_request, response) => response.destroy()
     const lost = await withCookie.walletPassphrase(PASSPHRASE, 60).catch((e: unknown) => e)

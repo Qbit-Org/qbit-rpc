@@ -172,9 +172,37 @@ export const basicAuth = (user: string, password: string): string =>
 export const HASH_A = 'a'.repeat(64)
 export const HASH_B = 'b'.repeat(64)
 
-/** A minimal valid getblockchaininfo result for `chain`. */
-export function blockchainInfoJson(chain: string): string {
+/**
+ * Each chain's genesis block hash, as `getblockhash 0` reports it: the hashes
+ * qbit Core v1.0.0 asserts in src/kernel/chainparams.cpp. Written out here
+ * rather than taken from the client, so the tests check its table.
+ */
+export const GENESIS: Readonly<Record<string, string>> = {
+  main: '0000000000004d60aa5d46013991d0a0e2995d89ee98e53068ae196d763e79f2',
+  test: '0000c20791706c6940a43d75db44d1ae9dadeb637cedfbaa5cf293435eeaab3c',
+  testnet4: '000000000000796fe86bbc0bf1b66a07e4b4c0676f74b54cf7e5ce8b3f1a0090',
+  signet: '0000000a5698c727f05cbdaeaff3e48b48ab187aeb03414e783ea81fed14d65c',
+  regtest: '0ee96aa77c4b600850e349344fa21b107e805f5370ddc7a6189db12cf69acce6',
+}
+
+/** The calls of one chain check, in the order the client batches them. */
+export const CHECK = ['getblockchaininfo', 'getblockhash'] as const
+
+/** `FakeNode.results()` entries that answer a chain check as a node on `chain` with that chain's genesis block. */
+export function chainResults(chain: string, genesis = GENESIS[chain]!): Record<string, string> {
+  return { getblockchaininfo: blockchainInfoJson(chain), getblockhash: JSON.stringify(genesis) }
+}
+
+/**
+ * A minimal valid getblockchaininfo result for `chain`. A signet reports
+ * `signetChallenge`, by default the default signet's `51`; null leaves it out.
+ */
+export function blockchainInfoJson(
+  chain: string,
+  signetChallenge: string | null = chain === 'signet' ? '51' : null
+): string {
   return JSON.stringify({
+    ...(signetChallenge === null ? {} : { signet_challenge: signetChallenge }),
     chain,
     blocks: 10,
     headers: 10,
