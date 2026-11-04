@@ -199,16 +199,39 @@ corepack pnpm install --frozen-lockfile
 corepack pnpm verify
 ```
 
-`verify` runs `format:check`, `build`, `test`, `typecheck`, `typecheck:test`,
-`pack:check` and `consumer:check`, as `.github/workflows/ci.yml` does.
+`verify` runs `format:check`, `build`, `test`, `test:release` (which needs
+`gpg`), `typecheck`, `typecheck:test`, `pack:check` and `consumer:check`, as
+`.github/workflows/ci.yml` does.
 
 The live smoke test starts a throwaway regtest node (loopback only, temporary
-data directory) from a qbit Core binary you have verified, and runs both
-packages against it:
+data directory) from a verified qbit Core release, and runs both packages
+against it, including every ZMQ topic, a qbitd restart and an oversized
+message. CI's `regtest smoke` job runs it on every pull request and push to
+`main`. The script unlocks and locks the encrypted test wallet once before the
+tests: qbitd defers that wallet's keypool top-up to its first unlock, which
+takes about 30 s, the test's `walletPassphrase` deadline. To run it locally:
 
 ```sh
-QBIT_BIN_DIR=/path/to/qbit-1.0.0/bin scripts/regtest-smoke.sh
+bin="$(node scripts/qbit-release.mjs fetch "$(mktemp -d)/qbit-core")"
+QBIT_BIN_DIR="$bin" scripts/regtest-smoke.sh
 ```
+
+`scripts/qbit-release.mjs` downloads `SHA256SUMS` and `SHA256SUMS.asc` from
+the release on `github.com/Qbit-Org/qbit`, and verifies them with `gpg` in a
+temporary GnuPG home holding only the keys in `scripts/qbit-release-keys/`:
+copies of qbit's own `contrib/keys/operator-keys/` at the release tag, which
+its `README.md` names. Every signature must be good and by a listed signing
+key, and the distinct signers must meet the release line's quorum in
+`keys.json` (3 of 5 for `mainnet`, which v1.0.0 is). Only then does it take
+the tarball's SHA-256 from `SHA256SUMS`, and it extracts the tarball only if
+it has that hash. CI caches the tarball under that hash, and checks a
+restored one again before use.
+
+The release under test is named in one place, `scripts/qbit-core-release.mjs`;
+the tag, asset names and cache key follow from it, and the smoke script
+refuses a `QBIT_BIN_DIR` of another version. A release signed under a newer
+key policy also needs `scripts/qbit-release-keys/` updated, as its `README.md`
+describes.
 
 Changes are listed in [CHANGELOG.md](CHANGELOG.md); report vulnerabilities as
 [SECURITY.md](SECURITY.md) describes.
