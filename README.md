@@ -46,18 +46,21 @@ Node.js versions and platforms they run on, see below.
 `engines` accepts Node.js `^22.13.0 || ^24.0.0 || >=26.0.0`. CI runs all of
 `pnpm verify` on Linux x64 (`ubuntu-latest`) for every pull request and push to
 `main`, once per line: 22.13.0 exactly (the floor), and the newest 22.x, 24.x
-and 26.x. It installs with `--config.engine-strict=true`, so a locked
-dependency whose `engines` leaves out one of these fails CI.
+and 26.x. It installs with `--config.engine-strict=true`, so a non-optional
+locked dependency whose `engines` leaves out one of these fails CI (pnpm skips
+an optional one instead). The `verify` check passes only when every Node.js
+line passed.
 
 Node.js 27 and later majors are accepted but untested. They are expected to
 work: `@qbit-oss/rpc` uses only standard JavaScript (`JSON.parse` source text
 access and `JSON.rawJSON`, checked when a client is created), and the `zeromq`
 addon is built against Node-API, whose ABI stays the same across Node.js
-majors, so the same prebuild loads without a rebuild. Odd-numbered majors (23,
-25) are not accepted.
+majors, so the same prebuild loads without a rebuild. Node.js 23 and 25 are not
+accepted.
 
-`@qbit-oss/rpc` has no native code. CI tests it on Linux x64 only; it is
-expected to work wherever a supported Node.js runs.
+`@qbit-oss/rpc` has no native code. CI runs its tests on Linux x64 only (the
+manual arm64 jobs below load its packed builds too); it is expected to work
+wherever a supported Node.js runs.
 
 `@qbit-oss/zmq` needs a prebuilt addon from `zeromq` 6.5.0, which ships one
 for each platform below:
@@ -73,8 +76,8 @@ for each platform below:
 
 The two arm64 jobs run only when started by hand (`workflow_dispatch`), not on
 pull requests or pushes: macOS minutes are billed at a multiple for this
-private repository, and the arm64 runners must first be available to it. The
-`verify` check passes only when every Node.js line passed. On any other platform `zeromq`'s install script builds libzmq from
+private repository, and the arm64 runners must first be available to it. On a
+platform not in the table above, `zeromq`'s install script builds libzmq from
 source, which needs CMake, Ninja and vcpkg and is not tested here.
 
 ## Quick start

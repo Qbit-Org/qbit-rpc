@@ -76,12 +76,21 @@ const unknownKeys: [string, () => RpcRequest<unknown>, RegExp][] = [
   [
     'walletCreateFundedPsbt args.inputs[]',
     () => requests.walletCreateFundedPsbt({ inputs: [{ txid: HASH_A, vout: 0, seq: 1 }], outputs: [OUTPUT] } as never),
-    /^args\.inputs\[0\]\.seq is not a known key; the known keys are txid, vout, sequence$/,
+    /^args\.inputs\[0\] has an unknown key \(not shown\); the known keys are txid, vout, sequence$/,
   ],
   [
     'walletCreateFundedPsbt args.outputs[]',
     () => requests.walletCreateFundedPsbt({ outputs: [OUTPUT, { address: 'rq1b', amount: 1n }] } as never),
     /^args\.outputs\[1\]\.amount is not a known key: use args\.outputs\[1\]\.amountBits, a bigint in bits/,
+  ],
+  [
+    // The node's own { "<address>": amount } format: the address is caller data, never quoted.
+    'walletCreateFundedPsbt args.outputs[] keyed by address',
+    () =>
+      requests.walletCreateFundedPsbt({
+        outputs: [{ qbrt1zqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq9nlvx0: 150_000_000n }],
+      } as never),
+    /^args\.outputs\[0\] has an unknown key \(not shown\); the known keys are address, amountBits, data$/,
   ],
   [
     'walletCreateFundedPsbt args.options (the node spelling)',
@@ -170,7 +179,7 @@ const unknownKeys: [string, () => RpcRequest<unknown>, RegExp][] = [
   [
     'lockUnspent outputs[]',
     () => requests.lockUnspent(false, [{ txid: HASH_A, vout: 0, n: 1 }] as never),
-    /^outputs\[0\]\.n is not a known key; the known keys are txid, vout$/,
+    /^outputs\[0\] has an unknown key \(not shown\); the known keys are txid, vout$/,
   ],
 ]
 
@@ -287,6 +296,20 @@ describe('request builders', () => {
     })
     expect(params).toEqual([HASH_A, 0, true])
     expect(() => requests.getTxOut(HASH_A, 0, o)).toThrow(/options\.timeoutMs is not a known key/)
+  })
+
+  it('read the options a check relates once, so a getter cannot pass it and then send both', () => {
+    let reads = 0
+    const options = {
+      feeRateBitsPerKvB: 2500n,
+      // undefined on the first read, a value on any later one
+      get confTarget() {
+        return reads++ === 0 ? undefined : 6
+      },
+    }
+    const built = requests.walletCreateFundedPsbt({ outputs: [OUTPUT], options } as never)
+    expect(built.params[3]).not.toHaveProperty('conf_target')
+    expect(reads).toBe(1)
   })
 
   it('read inherited keys, and refuse inherited unknown ones', () => {
@@ -436,7 +459,7 @@ describe('client methods', () => {
     )
     const shared = { timeoutMs: 1000 }
     await expect(rpc.lockUnspent(false, [shared as never], shared)).rejects.toThrow(
-      /outputs\[0\]\.timeoutMs is not a known key/
+      /outputs\[0\] has an unknown key \(not shown\); the known keys are txid, vout/
     )
     // A typo of a call option on a typed method is hinted too.
     await expect(rpc.getTxOut(HASH_A, 0, { timeout: 5 } as never)).rejects.toThrow(

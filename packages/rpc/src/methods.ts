@@ -211,6 +211,15 @@ const UNIT_NOTES: Readonly<Record<string, string>> = {
   ms: ', in milliseconds',
 }
 
+/**
+ * Keys this package names in a message: a near-miss of a known key, or a
+ * short identifier in an options object, as option names are. The keys of an
+ * array entry (`outputs[0]`) are never named otherwise: there the node's own
+ * format puts data in keys (`{ "<address>": amount }`), and messages never
+ * include request parameters.
+ */
+const NAMEABLE_KEY = /^[A-Za-z_][A-Za-z0-9_]{0,23}$/
+
 function unknownKey(name: string, key: string, keys: readonly string[]): string {
   // The node's spelling, or this package's without its unit or plural (fee_rate, minimumAmount, timeout).
   const loose = looseKey(key)
@@ -219,6 +228,9 @@ function unknownKey(name: string, key: string, keys: readonly string[]): string 
     if (meant !== undefined) {
       return `${name}.${key} is not a known key: use ${name}.${meant}${UNIT_NOTES[suffix] ?? ''}`
     }
+  }
+  if (name.endsWith(']') || !NAMEABLE_KEY.test(key)) {
+    return `${name} has an unknown key (not shown); the known keys are ${keys.join(', ')}`
   }
   return `${name}.${key} is not a known key; the known keys are ${keys.join(', ')}`
 }
@@ -1395,14 +1407,14 @@ export interface WalletHistoryEntry {
   /** txids of wallet transactions spending the same inputs. */
   readonly walletConflicts: readonly string[]
   /**
-   * On a replaced transaction's entries, when `bumpfee` replaced it. Its
-   * replacement is listed too, so do not count both. A replacement sent with
-   * `sendRawTransaction` (as after `psbtBumpFee`) sets neither this nor
-   * `replacesTxid`: the replaced transaction lists it in `walletConflicts`
-   * (and in `mempoolConflicts` while it is in the mempool), and has negative
-   * `confirmations` once it is mined. Count the two as one payment: if the
-   * replacement leaves the mempool unmined, both are unconfirmed and
-   * `mempoolConflicts` is empty again.
+   * On a replaced transaction's entries, when `bumpfee` replaced it; it is
+   * never cleared, so the original keeps it even if the original is the one
+   * mined. A replacement sent with `sendRawTransaction` (as after
+   * `psbtBumpFee`) sets neither this nor `replacesTxid`: the transactions list
+   * each other in `walletConflicts` (and in `mempoolConflicts` while in the
+   * mempool). Count an original and its replacements as one payment: the mined
+   * one once one is mined (the others then have negative `confirmations`),
+   * and otherwise once, as pending.
    */
   readonly replacedByTxid?: string
   readonly replacesTxid?: string
@@ -1471,10 +1483,6 @@ function parseHistoryEntry(value: unknown, path: string): WalletHistoryEntry {
 
 const historyEntries = (v: unknown, p: string): WalletHistoryEntry[] => array(v, p, parseHistoryEntry)
 
-/**
- * `listsinceblock`'s parameters. Its sixth, `label` (only incoming entries
- * paying to that label), is not typed here; it is reachable through `call()`.
- */
 const LIST_SINCE_BLOCK_OPTIONS = keysOf<ListSinceBlockOptions>({
   blockHash: true,
   targetConfirmations: true,
@@ -1483,6 +1491,10 @@ const LIST_SINCE_BLOCK_OPTIONS = keysOf<ListSinceBlockOptions>({
   includeChange: true,
 })
 
+/**
+ * `listsinceblock`'s parameters. Its sixth, `label` (only incoming entries
+ * paying to that label), is not typed here; it is reachable through `call()`.
+ */
 export interface ListSinceBlockOptions {
   /** List from the block after this one, or from the fork point when it left the active chain. Default: the whole history. */
   readonly blockHash?: string
@@ -1799,7 +1811,11 @@ const DATA_PQC_HASH_PROOF = keysOf<DataPqcHashProof>({
 function fundedPsbtOptions(value: unknown): Record<string, unknown> | undefined {
   if (value === undefined) return undefined
   const o = argOptions(value, 'args.options', FUNDED_PSBT_OPTIONS)
-  if (o['feeRateBitsPerKvB'] !== undefined && (o['confTarget'] !== undefined || o['estimateMode'] !== undefined)) {
+  // The options the check below relates are read once, so a getter cannot pass it and then send both.
+  const feeRate = o['feeRateBitsPerKvB']
+  const confTarget = o['confTarget']
+  const estimateMode = o['estimateMode']
+  if (feeRate !== undefined && (confTarget !== undefined || estimateMode !== undefined)) {
     throw new TypeError('args.options.feeRateBitsPerKvB excludes args.options.confTarget and args.options.estimateMode')
   }
   // Key names as qbit Core v1.0.0's walletcreatefundedpsbt reads them. Its
@@ -1815,15 +1831,15 @@ function fundedPsbtOptions(value: unknown): Record<string, unknown> | undefined 
     change_position: opt(o['changePosition'], v => argInteger(v, 'args.options.changePosition', 0, 0x7fff_ffff)),
     change_type: opt(o['changeType'], v => argString(v, 'args.options.changeType', { nonEmpty: true })),
     lock_unspents: opt(o['lockUnspents'], v => argBoolean(v, 'args.options.lockUnspents')),
-    fee_rate: opt(o['feeRateBitsPerKvB'], v => feeRateParam(v, 'args.options.feeRateBitsPerKvB')),
+    fee_rate: opt(feeRate, v => feeRateParam(v, 'args.options.feeRateBitsPerKvB')),
     subtractFeeFromOutputs: opt(o['subtractFeeFromOutputs'], v => {
       if (!Array.isArray(v)) throw new TypeError('args.options.subtractFeeFromOutputs must be an array')
       return v.map((index, i) => argInteger(index, `args.options.subtractFeeFromOutputs[${i}]`, 0, 0x7fff_ffff))
     }),
     max_tx_weight: opt(o['maxTxWeight'], v => argInteger(v, 'args.options.maxTxWeight', 1, 0x7fff_ffff)),
     replaceable: opt(o['replaceable'], v => argBoolean(v, 'args.options.replaceable')),
-    conf_target: opt(o['confTarget'], v => argInteger(v, 'args.options.confTarget', 1, 1008)),
-    estimate_mode: opt(o['estimateMode'], v => argOneOf(v, 'args.options.estimateMode', FEE_MODES)),
+    conf_target: opt(confTarget, v => argInteger(v, 'args.options.confTarget', 1, 1008)),
+    estimate_mode: opt(estimateMode, v => argOneOf(v, 'args.options.estimateMode', FEE_MODES)),
   })
   return out
 }
@@ -1837,14 +1853,16 @@ function outputsParam(value: unknown, name: string): Record<string, unknown>[] {
   if (!Array.isArray(value) || value.length === 0) throw new TypeError(`${name} must be a non-empty array`)
   return value.map((output: unknown, i) => {
     const p = argOptions(output, `${name}[${i}]`, ['address', 'amountBits', 'data'])
-    if (p['data'] !== undefined) {
-      if (p['address'] !== undefined || p['amountBits'] !== undefined) {
+    // Each field is read once, so the either/or check and the output sent see the same values.
+    const { address: addressField, amountBits, data } = p
+    if (data !== undefined) {
+      if (addressField !== undefined || amountBits !== undefined) {
         throw new TypeError(`${name}[${i}] must be either { address, amountBits } or { data }`)
       }
-      return { data: argHex(p['data'], `${name}[${i}].data`) }
+      return { data: argHex(data, `${name}[${i}].data`) }
     }
-    const address = argString(p['address'], `${name}[${i}].address`, { nonEmpty: true })
-    return { [address]: qbtParam(p['amountBits'], `${name}[${i}].amountBits`) }
+    const address = argString(addressField, `${name}[${i}].address`, { nonEmpty: true })
+    return { [address]: qbtParam(amountBits, `${name}[${i}].amountBits`) }
   })
 }
 
@@ -2182,26 +2200,32 @@ export const requests = {
   psbtBumpFee(txid: string, options?: PsbtBumpFeeOptions): RpcRequest<BumpedPsbt> {
     const requested = argHash(txid, 'txid')
     const o = methodOptions(options, PSBT_BUMP_FEE_OPTIONS)
-    if (o['feeRateBitsPerKvB'] !== undefined && (o['confTarget'] !== undefined || o['estimateMode'] !== undefined)) {
+    // Each option is read once, so a getter cannot pass the checks below and then send something else.
+    const feeRate = o['feeRateBitsPerKvB']
+    const confTarget = o['confTarget']
+    const estimateMode = o['estimateMode']
+    const outputs = o['outputs']
+    const originalChangeIndex = o['originalChangeIndex']
+    if (feeRate !== undefined && (confTarget !== undefined || estimateMode !== undefined)) {
       throw new TypeError('options.feeRateBitsPerKvB excludes options.confTarget and options.estimateMode')
     }
-    if (o['outputs'] !== undefined && o['originalChangeIndex'] !== undefined) {
+    if (outputs !== undefined && originalChangeIndex !== undefined) {
       throw new TypeError('options.outputs excludes options.originalChangeIndex')
     }
     // Key names as qbit Core v1.0.0's psbtbumpfee reads them. It refuses any
     // other key (-3), so none is accepted and then ignored; each was checked
     // against a live node: see test/regtest/smoke.test.ts.
     const bump = compact<Record<string, unknown>>({
-      fee_rate: opt(o['feeRateBitsPerKvB'], v => {
+      fee_rate: opt(feeRate, v => {
         // The node never takes a zero rate: the new fee must exceed the original's.
         if (v === 0n) throw new RangeError('options.feeRateBitsPerKvB must be above 0')
         return feeRateParam(v, 'options.feeRateBitsPerKvB')
       }),
-      conf_target: opt(o['confTarget'], v => argInteger(v, 'options.confTarget', 1, 1008)),
-      estimate_mode: opt(o['estimateMode'], v => argOneOf(v, 'options.estimateMode', FEE_MODES)),
+      conf_target: opt(confTarget, v => argInteger(v, 'options.confTarget', 1, 1008)),
+      estimate_mode: opt(estimateMode, v => argOneOf(v, 'options.estimateMode', FEE_MODES)),
       replaceable: opt(o['replaceable'], v => argBoolean(v, 'options.replaceable')),
-      outputs: opt(o['outputs'], v => outputsParam(v, 'options.outputs')),
-      original_change_index: opt(o['originalChangeIndex'], v =>
+      outputs: opt(outputs, v => outputsParam(v, 'options.outputs')),
+      original_change_index: opt(originalChangeIndex, v =>
         argInteger(v, 'options.originalChangeIndex', 0, 0xffff_ffff)
       ),
     })

@@ -71,6 +71,19 @@ version. Nothing has been published yet: both are `0.0.0` and private.
 
 ### Review fixes
 
+- An unknown-key `TypeError` names the key only when it is a near-miss of a
+  known one, or a short identifier in an options object, as option names are.
+  The keys of an array entry such as `outputs[0]`, where the node's own
+  `{ "<address>": amount }` format puts data, and any other key are "an unknown
+  key (not shown)", so messages never include request parameters.
+  `psbtBumpFee`, `walletCreateFundedPsbt`'s options and each output read the
+  values a check relates once, so a getter cannot pass the check and then send
+  something else. The wallet-history and
+  reconciliation docs count an original and its replacements as one payment,
+  the mined one once one is mined, even when it is the original and carries
+  `replacedByTxid`.
+- `@qbit-oss/zmq`: a dotted quad with a decimal part over 255 is refused even
+  when another part has a leading zero (`tcp://300.0.0.01:28332`).
 - `walletCreateFundedPsbt` sends `subtractFeeFromOutputs` under the name qbit
   Core reads. It sent `subtract_fee_from_outputs`, which the node accepts and
   ignores, so the wallet paid fees meant to come out of the recipient's

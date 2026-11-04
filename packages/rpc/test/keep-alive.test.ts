@@ -349,7 +349,8 @@ describe('a pooled connection the node closed', () => {
 
   it.each([
     ['part of a status line', (response: ServerResponse) => response.socket?.end('HTTP/1.1 200')],
-    // The HTTP parser fails on this first chunk before any listener added after it runs.
+    // The HTTP parser refuses this chunk with an HPE_* code, which is not stale whatever the
+    // reply listener saw; 'part of a status line' is the case that depends on it.
     ['bytes that are not HTTP', (response: ServerResponse) => response.socket?.write('not http\r\n\r\n')],
     [
       'the headers and part of the body',

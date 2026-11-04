@@ -782,7 +782,7 @@ describe('wallet methods', () => {
     await rpc.lockUnspent(true, [outpoint])
     expect(params()).toEqual([true, [{ txid: HASH_A, vout: 1 }]])
     await expect(rpc.lockUnspent(true, [{ txid: HASH_A, vout: 1, index: 1 } as never])).rejects.toThrow(
-      /outputs\[0\]\.index is not a known key/
+      /outputs\[0\] has an unknown key \(not shown\); the known keys are txid, vout/
     )
     node.results({ lockunspent: 'false' })
     expect(await rpc.lockUnspent(true, [outpoint])).toBe(false)

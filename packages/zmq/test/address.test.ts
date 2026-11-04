@@ -118,6 +118,13 @@ const REJECTED: readonly Rejected[] = [
     libzmq: 'never receives',
     bind: V4,
   },
+  // A leading-zero part elsewhere does not excuse a part over 255.
+  {
+    url: 'tcp://300.0.0.01:{P}',
+    problem: /not an IPv4 address: each part must be 0 to 255/,
+    libzmq: 'never receives',
+    bind: V4,
+  },
   { url: 'tcp://[::1:{P}', problem: /has no \] after \[/, libzmq: 'never receives', bind: V6, ipv6: true },
   { url: 'tcp://[]:{P}', problem: /has no host/, libzmq: 'never receives', bind: V4 },
   {
