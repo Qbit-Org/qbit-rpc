@@ -24,6 +24,8 @@ const cookieFile = env['QBIT_REGTEST_COOKIE_FILE'] ?? ''
 const [cliPath = '', ...cliArgs] = (env['QBIT_REGTEST_CLI'] ?? '').split(' ')
 /** qbit Core v1.0.0's regtest genesis block (src/kernel/chainparams.cpp). */
 const REGTEST_GENESIS = '0ee96aa77c4b600850e349344fa21b107e805f5370ddc7a6189db12cf69acce6'
+/** A case with a first unlock: past walletPassphrase's 120 s deadline, so a slow one fails as the client's error. */
+const FIRST_UNLOCK_TEST_MS = 180_000
 
 function cli(...args: string[]): string {
   return execFileSync(cliPath, [...cliArgs, ...args], { encoding: 'utf8' }).trim()
@@ -295,7 +297,9 @@ describe.runIf(enabled)('qbit Core v1.0.0 regtest', () => {
     expect(await wallet.getRawTransaction(txid)).toBe(processed.hex)
   })
 
-  it('locks and unlocks an encrypted wallet', async () => {
+  // The script creates `locked` and never unlocks it, so this is its first
+  // unlock too, with the default deadline (see the next case).
+  it('locks and unlocks an encrypted wallet', { timeout: FIRST_UNLOCK_TEST_MS }, async () => {
     const locked = client({ wallet: 'locked', capabilities: ['wallet-read', 'wallet-write'] })
     await locked.confirmChain()
     expect((await locked.getWalletInfo()).unlockedUntil).toBe(0)
@@ -307,6 +311,28 @@ describe.runIf(enabled)('qbit Core v1.0.0 regtest', () => {
     await locked.walletLock()
     expect((await locked.getWalletInfo()).unlockedUntil).toBe(0)
   })
+
+  // qbit Core v1.0.0 creates a wallet with a passphrase with 16 keys per
+  // descriptor and derives the rest of its keypool inside its first unlock:
+  // 25 to 31 s on a shared host, 49 s on a GitHub-hosted runner, past the
+  // client's 30 s. walletPassphrase's own default deadline, 120 s, covers it.
+  it(
+    'unlocks a newly created encrypted wallet the first time, within the default deadline',
+    { timeout: FIRST_UNLOCK_TEST_MS },
+    async () => {
+      cli('-named', 'createwallet', 'wallet_name=first-unlock', 'descriptors=true', 'passphrase=first-passphrase')
+      const wallet = client({ wallet: 'first-unlock', capabilities: ['wallet-read', 'wallet-write'] })
+      await wallet.confirmChain()
+      expect(await wallet.getWalletInfo()).toMatchObject({ unlockedUntil: 0, keypoolSize: 16 })
+      await wallet.walletPassphrase('first-passphrase', 60)
+      // The deferred top-up ran inside that call.
+      const unlocked = await wallet.getWalletInfo()
+      expect(unlocked.unlockedUntil).toBeGreaterThan(0)
+      expect(unlocked.keypoolSize).toBe(1000)
+      await wallet.walletLock()
+      expect((await wallet.getWalletInfo()).unlockedUntil).toBe(0)
+    }
+  )
 
   it('verifies a data-hash PQC proof', async () => {
     const address = cli('-rpcwallet=smoke', 'getnewaddress', '', 'p2mr')

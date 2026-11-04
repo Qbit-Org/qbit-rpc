@@ -100,7 +100,10 @@ export interface QbitRpcClientOptions {
   readonly capabilities?: readonly Capability[]
   /**
    * Deadline for one operation (a call or a batch, with every retry, any wait
-   * for a request slot and the cookie read). Default 30,000 ms.
+   * for a request slot and the cookie read). Default 30,000 ms. For
+   * `walletpassphrase` and `walletlock` it is at least 120,000 ms (see
+   * {@link QbitRpcClient.walletPassphrase}): a shorter client `timeoutMs` does
+   * not shorten it. A call's own `timeoutMs` overrides both.
    */
   readonly timeoutMs?: number
   /** Largest response body read before the call fails. Default 16 MiB. */
@@ -160,7 +163,7 @@ export interface CallOptions {
    * before it was sent an `RpcAbortedError`.
    */
   readonly signal?: AbortSignal
-  /** Overrides the client's `timeoutMs` for this operation. */
+  /** Overrides the client's `timeoutMs`, and a method's own default (`walletPassphrase`'s, `walletLock`'s), for this operation. */
   readonly timeoutMs?: number
 }
 
@@ -285,7 +288,13 @@ function checkHex(value: unknown, name: string, bytes?: number): string | undefi
   return value.toLowerCase()
 }
 
-function checkInteger(value: unknown, name: string, min: number, max: number, fallback: number): number {
+function checkInteger<F extends number | undefined>(
+  value: unknown,
+  name: string,
+  min: number,
+  max: number,
+  fallback: F
+): number | F {
   if (value === undefined) return fallback
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < min || value > max) {
     throw new RangeError(`${name} must be an integer from ${min} to ${max}`)
@@ -314,7 +323,8 @@ export class QbitRpcClient {
   /** Set exactly when `#expectedChain` is signet. */
   readonly #expectedSignetChallenge: string | undefined
   readonly #capabilities: ReadonlySet<Capability>
-  readonly #timeoutMs: number
+  /** Undefined when the option is unset: each method's own default applies. */
+  readonly #timeoutMs: number | undefined
   readonly #maxResponseBytes: number
   readonly #readRetries: number
   readonly #retryDelayMs: number
@@ -365,7 +375,7 @@ export class QbitRpcClient {
       }
     }
     this.#capabilities = new Set(capabilities as Capability[])
-    this.#timeoutMs = checkInteger(own.timeoutMs, 'timeoutMs', 1, 3_600_000, DEFAULT_TIMEOUT_MS)
+    this.#timeoutMs = checkInteger(own.timeoutMs, 'timeoutMs', 1, 3_600_000, undefined)
     this.#maxResponseBytes = checkInteger(
       own.maxResponseBytes,
       'maxResponseBytes',
@@ -619,9 +629,33 @@ export class QbitRpcClient {
   psbtBumpFee(txid: string, options?: PsbtBumpFeeOptions, callOptions?: CallOptions): Promise<BumpedPsbt> {
     return this.#lazy(() => requests.psbtBumpFee(txid, options), callOptions)
   }
+  /**
+   * Unlock the wallet for `timeoutSeconds`, counted from when the unlock ends.
+   * The deadline is the call's `timeoutMs` if it gives one, else the longer
+   * of 120 s and the client's `timeoutMs`:
+   * qbit Core v1.0.0 runs a new encrypted wallet's deferred keypool top-up
+   * inside its first unlock, which took 25 to 49 s on regtest. A deadline
+   * missed once the request was sent is an `RpcUnknownOutcomeError`: the
+   * wallet may be unlocked, and `getWalletInfo().unlockedUntil` (0 when
+   * locked) tells. One missed before that (waiting for a request slot, reading
+   * the cookie, connecting, or in the chain re-check) is an `RpcTimeoutError`,
+   * or `RpcChainGuardError` `check_failed` with one as its `cause`, and
+   * nothing was sent. Every call on that
+   * wallet waits for a first unlock, and the others keep the client's
+   * deadline, so one sent meanwhile can need a longer `timeoutMs`. See the
+   * package README.
+   */
   walletPassphrase(passphrase: string, timeoutSeconds: number, callOptions?: CallOptions): Promise<void> {
     return this.#lazy(() => requests.walletPassphrase(passphrase, timeoutSeconds), callOptions).then(() => undefined)
   }
+  /**
+   * Lock the wallet. qbit Core answers only once a first unlock still running
+   * has ended, so the default deadline is {@link QbitRpcClient.walletPassphrase}'s:
+   * the call's `timeoutMs` if it gives one, else the longer of 120 s and the
+   * client's `timeoutMs`. A deadline missed once the request was sent is an
+   * `RpcUnknownOutcomeError`; one missed before that is an `RpcTimeoutError`,
+   * or `RpcChainGuardError` `check_failed` with one as its `cause`.
+   */
   walletLock(callOptions?: CallOptions): Promise<void> {
     return this.#single(requests.walletLock(), callOptions).then(() => undefined)
   }
@@ -918,7 +952,8 @@ export class QbitRpcClient {
     const policy = this.#authorize(method, false)
     const id = this.#nextId++
     const body = stringifyRequest({ jsonrpc: '2.0', id, method, params: request.params })
-    return this.#operation(method, this.#callSettings(callOptions), policy.sideEffects, async attempt => {
+    const settings = this.#callSettings(callOptions, ownValue(policy, 'timeoutMs'))
+    return this.#operation(method, settings, policy.sideEffects, async attempt => {
       try {
         // One cookie read per attempt: the chain check and the call are sent
         // with that header, and a new cookie (qbitd restarted) means a check.
@@ -1084,11 +1119,18 @@ export class QbitRpcClient {
   /**
    * The call options, read once as the caller's own properties (left out, a
    * key is never read from Object.prototype) and checked: an operation takes
-   * only these, so they are read and checked once.
+   * only these, so they are read and checked once. The deadline is the call's
+   * `timeoutMs`; else, for a method with its own default (`methodTimeoutMs`),
+   * the longer of that and the client's; else the client's, else 30 s.
    */
-  #callSettings(callOptions: unknown): CallSettings {
+  #callSettings(callOptions: unknown, methodTimeoutMs?: number): CallSettings {
     const own = argOptions(callOptions, 'callOptions', CALL_OPTIONS)
-    const timeoutMs = checkInteger(own['timeoutMs'], 'callOptions.timeoutMs', 1, 3_600_000, this.#timeoutMs)
+    // A method's own default is a floor: a short client timeout must not cut a call qbit Core is known to need longer for.
+    const fallback =
+      methodTimeoutMs === undefined
+        ? (this.#timeoutMs ?? DEFAULT_TIMEOUT_MS)
+        : Math.max(methodTimeoutMs, this.#timeoutMs ?? 0)
+    const timeoutMs = checkInteger(own['timeoutMs'], 'callOptions.timeoutMs', 1, 3_600_000, fallback)
     const signal = own['signal']
     if (signal !== undefined && !(signal instanceof AbortSignal))
       throw new TypeError('callOptions.signal must be an AbortSignal')

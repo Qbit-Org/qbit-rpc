@@ -647,9 +647,7 @@ export class QbitRpcClient {
     verifyDataPqcHash(proof: DataPqcHashProof, callOptions?: CallOptions): Promise<DataPqcHashVerification>;
     // (undocumented)
     walletCreateFundedPsbt(args: WalletCreateFundedPsbtArgs, callOptions?: CallOptions): Promise<FundedPsbt>;
-    // (undocumented)
     walletLock(callOptions?: CallOptions): Promise<void>;
-    // (undocumented)
     walletPassphrase(passphrase: string, timeoutSeconds: number, callOptions?: CallOptions): Promise<void>;
     walletProcessPsbt(psbt: string, options?: {
         readonly sign?: boolean;

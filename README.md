@@ -151,7 +151,7 @@ for await (const event of zmq) {
 | Build, sign, finalize | `walletCreateFundedPsbt` → `walletProcessPsbt` → `finalizePsbt` |
 | Preflight and broadcast | `rpc.testMempoolAccept([hex])`, `rpc.sendRawTransaction(hex)` (the node's 0.10 QBT/kvB fee-rate cap, or `{ maxFeeRateBitsPerKvB }`) |
 | Keep coins out of coin selection | `rpc.lockUnspent(outputs, { persistent: true })`, `rpc.unlockUnspent(outputs)` |
-| Unlock an encrypted wallet | `rpc.walletPassphrase(passphrase, seconds)`, `rpc.walletLock()` |
+| Unlock an encrypted wallet | `rpc.walletPassphrase(passphrase, seconds)`, `rpc.walletLock()`; a new wallet's first unlock is slow, see [its deadline](packages/rpc/README.md#unlocking-an-encrypted-wallet) |
 | Verify a data-hash PQC proof | `rpc.verifyDataPqcHash(proof)` |
 | Any other allowlisted method | `rpc.call('getmempoolinfo')` (numbers come back as `JsonNumber`) |
 | Abort a call or give it its own deadline | the last argument: `rpc.getTxOut(txid, vout, { includeMempool: true }, { signal, timeoutMs: 5_000 })` |
@@ -241,9 +241,9 @@ The live smoke test starts a throwaway regtest node (loopback only, temporary
 data directory) from a verified qbit Core release, and runs both packages
 against it, including every ZMQ topic, a qbitd restart and an oversized
 message. CI's `regtest smoke` job runs it on every pull request and push to
-`main`. The script unlocks and locks the encrypted test wallet once before the
-tests: qbitd defers that wallet's keypool top-up to its first unlock, which
-takes about 30 s, the test's `walletPassphrase` deadline. To run it locally:
+`main`. Its encrypted test wallets are first unlocked by the tests, with
+`walletPassphrase`'s default deadline: qbitd runs a new encrypted wallet's
+deferred keypool top-up inside that first unlock, 25 to 49 s. To run it locally:
 
 ```sh
 bin="$(node scripts/qbit-release.mjs fetch "$(mktemp -d)/qbit-core")"

@@ -57,8 +57,8 @@ cleanup() {
   if [ "$stopped" = 0 ] && ps -o args= -p "$pid" 2>/dev/null | grep -qF -- "-datadir=$datadir"; then
     kill -9 "$pid" 2>/dev/null || true
   fi
-  # How long qbitd's deferred keypool top-ups took (see the encrypted wallet's
-  # warm-up below).
+  # How long qbitd's deferred keypool top-ups took: an encrypted wallet's runs
+  # inside its first walletpassphrase, an unencrypted one's in the background.
   grep -h 'keypool top up completed' "$datadir/regtest/debug.log" 2>/dev/null || true
   if [ "$status" -ne 0 ]; then
     echo "--- the last lines of qbitd's debug.log:"
@@ -83,13 +83,10 @@ done
 
 cli -rpcwait getblockchaininfo >/dev/null
 cli -named createwallet wallet_name=smoke descriptors=true >/dev/null
+# Left locked: the rpc smoke test's first walletPassphrase with the right
+# passphrase (not the wrong one before it) runs its deferred keypool top-up,
+# under walletPassphrase's own default deadline.
 cli -named createwallet wallet_name=locked descriptors=true passphrase=smoke-passphrase >/dev/null
-# qbitd defers a wallet created with a passphrase's create-time keypool top-up
-# (1,000 keys per descriptor) to its first unlock, which took 30.2 to 30.8 s
-# on a shared host, past the rpc smoke test's 30 s walletPassphrase deadline.
-# Unlock and lock it here, so the test checks the calls, not the top-up.
-cli -rpcwallet=locked walletpassphrase smoke-passphrase 60 >/dev/null
-cli -rpcwallet=locked walletlock
 mine_to="$(cli -rpcwallet=smoke getnewaddress "" p2mr)"
 # qbit Core matures coinbase outputs after 1,000 blocks.
 cli generatetoaddress 1010 "$mine_to" >/dev/null
