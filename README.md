@@ -102,7 +102,7 @@ Pay out from a testnet4 wallet, saving the signed transaction before it is
 broadcast:
 
 ```ts
-import { QbitRpcClient, RpcUnknownOutcomeError } from '@qbit-oss/rpc'
+import { QbitRpcClient, requests, RpcUnknownOutcomeError } from '@qbit-oss/rpc'
 
 const rpc = new QbitRpcClient({
   url: 'http://127.0.0.1:48352/',
@@ -118,6 +118,34 @@ const funded = await rpc.walletCreateFundedPsbt({
   outputs: [{ address: 'tq1...', amountBits: 150_000_000n }], // 1.5 QBT
   options: { feeRateBitsPerKvB: 1_000n, changeType: 'p2mr' },
 })
+// An exhausted PQC key signs nothing and raises no error: before signing, read
+// the budget of each key this PSBT spends from, unconfirmed change included.
+const { inputs } = (await rpc.call('decodepsbt', [funded.psbt])) as {
+  inputs: { witness_utxo?: { scriptPubKey: { address?: string } } }[]
+}
+const addresses = inputs.map(input => input.witness_utxo?.scriptPubKey.address)
+if (!addresses.every(address => address !== undefined)) throw new Error('an input without an address')
+const spent = [...new Set(addresses)]
+const budgets = await rpc.batch(spent.map(address => requests.getAddressInfo(address)))
+const signing = new Map<string, number>() // signatures each PQC key makes here, one per input
+for (const [i, info] of budgets.entries()) {
+  if (!info.ok) throw info.error
+  const state = info.value.pqcOverallLimitState // undefined: no PQC key of this wallet
+  if (state === undefined) continue
+  const known = state === 'normal' || state === 'warning' || state === 'critical'
+  if (!known) throw new Error(`${spent[i]}: PQC key ${state}, rotate first`) // exhausted, or unknown
+  const keys = info.value.pqcKeyStates ?? []
+  if (keys.length === 0) throw new Error(`${spent[i]}: a PQC state without its keys`)
+  const inputsHere = addresses.filter(address => address === spent[i]).length
+  for (const { pubkey, pqcSignaturesRemaining: left } of keys) {
+    const signs = (signing.get(pubkey) ?? 0) + inputsHere
+    signing.set(pubkey, signs)
+    // Signing must not run a key out halfway: the inputs after it would stay unsigned.
+    if (left < signs) throw new Error(`PQC key ${pubkey}: ${left} signatures left, ${signs} inputs to sign`)
+  }
+  if (state !== 'critical') continue
+  console.warn(`${spent[i]}: PQC key critical: stop using it, and spend its coins to a new address now`)
+}
 const signed = await rpc.walletProcessPsbt(funded.psbt)
 if (!signed.complete || signed.hex === undefined) throw new Error('not fully signed')
 const budget = signed.pqcOverallLimitState

@@ -1,6 +1,8 @@
 import { execFileSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { connect as netConnect, type AddressInfo } from 'node:net'
+import { DatabaseSync } from 'node:sqlite'
 import { createServer as createTlsServer } from 'node:tls'
 
 import { describe, expect, it } from 'vitest'
@@ -1218,4 +1220,239 @@ describe.runIf(enabled)('qbit Core v1.0.0 regtest', () => {
       expect(txidOf(txs[i]!)).toBe(txid)
     })
   })
+
+  // qbit Core v1.0.0 has no option to lower a PQC key's 2^30 signature limit,
+  // so this case raises keys' counts instead. A count is kept in the key's
+  // walletdescriptorpqckey record (src/wallet/walletdb.cpp), after the secret
+  // and a double SHA-256 of the pubkey, the secret and the count (LE32). With
+  // the wallet unloaded, it writes each key a count just below a threshold,
+  // loads the wallet once, and signs a spend of each key's coins.
+  it('reports each PQC signature-budget state, and leaves an exhausted key unsigned without an error', async () => {
+    const LIMIT = 2 ** 30
+    const WARNING_FROM = 2 ** 28
+    const CRITICAL_FROM = LIMIT - 2 ** 24
+    type State = 'normal' | 'warning' | 'critical' | 'exhausted'
+    const stateOf = (count: number): State =>
+      count >= LIMIT ? 'exhausted' : count >= CRITICAL_FROM ? 'critical' : count >= WARNING_FROM ? 'warning' : 'normal'
+
+    // The record layout written below is qbit Core v1.0.0's. On any other version this fails, on
+    // purpose, until the rewrite is checked against that version's src/wallet/walletdb.cpp.
+    const { version, subversion } = await client().getNetworkInfo()
+    expect(
+      { version, subversion },
+      'the PQC record rewrite is written for qbit Core v1.0.0 only: check it against the new version'
+    ).toEqual({ version: 10000, subversion: '/qbit:1.0.0/' })
+
+    const name = 'pqc-budget'
+    cli('-named', 'createwallet', `wallet_name=${name}`)
+    const wallet = client({ wallet: name, capabilities: ['wallet-read', 'wallet-write'] })
+    await wallet.confirmChain()
+    // One key per address: each is written the count before a step.
+    const written = {
+      warning: WARNING_FROM - 1,
+      warningReminder: WARNING_FROM + 2 ** 24 - 1,
+      critical: CRITICAL_FROM - 1,
+      criticalReminder: CRITICAL_FROM + 2 ** 20 - 1,
+      last: LIMIT - 1,
+    }
+    type Key = keyof typeof written | 'normal'
+    const keys = {} as Record<Key, { address: string; pubkey: string; coins: Outpoint[] }>
+    for (const key of [...Object.keys(written), 'normal'] as Key[]) {
+      const address = await wallet.getNewAddress({ addressType: 'p2mr' })
+      const pubkey = (await wallet.getAddressInfo(address)).pqcKeyStates![0]!.pubkey
+      keys[key] = { address, pubkey, coins: [] }
+    }
+    const amounts = Object.fromEntries(Object.values(keys).map(({ address }) => [address, 1]))
+    cli('-rpcwallet=smoke', 'sendmany', '', JSON.stringify(amounts))
+    cli('-rpcwallet=smoke', 'sendtoaddress', keys.last.address, '1')
+    const destination = cli('-rpcwallet=smoke', 'getnewaddress', '', 'p2mr')
+    cli('generatetoaddress', '1', destination)
+    for (const { address, txid, vout } of await wallet.listUnspent()) {
+      Object.values(keys)
+        .find(key => key.address === address)
+        ?.coins.push({ txid, vout })
+    }
+    expect(keys.last.coins).toHaveLength(2)
+
+    // A Bitcoin CompactSize at the start of `bytes`: its value, and how many bytes it takes.
+    const compactSize = (bytes: Buffer): [value: number, size: number] => {
+      const first = bytes[0]!
+      if (first < 0xfd) return [first, 1]
+      if (first === 0xfd) return [bytes.readUInt16LE(1), 3]
+      if (first === 0xfe) return [bytes.readUInt32LE(1), 5]
+      return [Number(bytes.readBigUInt64LE(1)), 9]
+    }
+
+    cli('unloadwallet', name)
+    // From here the wallet is unloaded, rewritten, loaded and used: whatever
+    // fails, the rewrite is all or nothing, and the wallet ends unloaded.
+    let loaded = false
+    let finished = false
+    try {
+      const db = new DatabaseSync(`${env['QBIT_REGTEST_DATADIR']}/regtest/wallets/${name}/wallet.dat`)
+      try {
+        db.exec('BEGIN')
+        const type = Buffer.from('\x16walletdescriptorpqckey', 'latin1')
+        const records = db
+          .prepare('SELECT key, value FROM main')
+          .all()
+          .map(row => ({ key: Buffer.from(row['key'] as Uint8Array), value: Buffer.from(row['value'] as Uint8Array) }))
+          .filter(({ key }) => key.subarray(0, type.length).equals(type))
+        const sha256 = (data: Buffer) => createHash('sha256').update(data).digest()
+        for (const [key, count] of Object.entries(written) as [Key, number][]) {
+          const { pubkey } = keys[key]
+          const matching = records.filter(record => record.key.toString('hex').endsWith(pubkey))
+          expect(matching).toHaveLength(1)
+          const { key: dbKey, value } = matching[0]!
+          const [secretLength, prefix] = compactSize(value)
+          const secret = value.subarray(prefix, prefix + secretLength)
+          expect(value.length).toBe(prefix + secret.length + 32 + 4)
+          const counter = Buffer.alloc(4)
+          counter.writeUInt32LE(count)
+          const hash = sha256(sha256(Buffer.concat([Buffer.from(pubkey, 'hex'), secret, counter])))
+          db.prepare('UPDATE main SET value = ? WHERE key = ?').run(
+            Buffer.concat([value.subarray(0, prefix + secret.length), hash, counter]),
+            dbKey
+          )
+        }
+        db.exec('COMMIT')
+      } catch (error) {
+        try {
+          db.exec('ROLLBACK')
+        } catch {
+          // No transaction open: BEGIN itself failed. The first error is the one to see.
+        }
+        throw error
+      } finally {
+        db.close()
+      }
+      cli('loadwallet', name)
+      loaded = true
+      // The node checks a loaded wallet's plaintext PQC keys before it signs with
+      // them, on its scheduler thread, which other wallets' keypool top-ups share.
+      // Wait for that check to have run on this load: complete, with every
+      // plaintext record validated and none failed. Not being blocked alone can
+      // hold before the check is even scheduled.
+      for (let i = 0; ; i++) {
+        const validation = (await wallet.getWalletInfo()).pqcKeyValidation
+        const { status, plaintextRecords, validatedRecords, pendingRecords, failedRecords, signingBlocked } = validation
+        if (
+          status === 'complete' &&
+          plaintextRecords > 0 &&
+          validatedRecords === plaintextRecords &&
+          pendingRecords === 0 &&
+          failedRecords === 0 &&
+          !signingBlocked
+        ) {
+          break
+        }
+        expect(status, 'PQC key validation after loadwallet').not.toBe('failed')
+        expect(i, `PQC key validation after loadwallet: ${JSON.stringify(validation)}`).toBeLessThan(2400)
+        await new Promise(resolve => setTimeout(resolve, 100))
+      }
+
+      const oneKey = (key: Key, count: number) => {
+        const state = stateOf(count)
+        const fields = { pqcSignatureCount: count, pqcSignatureLimit: LIMIT, pqcSignaturesRemaining: LIMIT - count }
+        return {
+          pqcKeyStates: [{ pubkey: keys[key].pubkey, ...fields, pqcLimitState: state }],
+          pqcOverallLimitState: state,
+          ...fields,
+          pqcLimitState: state,
+        }
+      }
+      // getaddressinfo reads each count back, in the state it falls in, without warnings.
+      for (const [key, count] of Object.entries(written) as [Key, number][]) {
+        const info = await wallet.getAddressInfo(keys[key].address)
+        expect(info).toMatchObject(oneKey(key, count))
+        expect(info).not.toHaveProperty('warnings')
+      }
+
+      const line = (key: Key, text: string, count: number) =>
+        `PQC key ${keys[key].pubkey} ${text} (${count} of ${LIMIT} signatures used, ${LIMIT - count} remaining)`
+      const sign = async (key: Key, inputs = keys[key].coins.slice(0, 1)) => {
+        const funded = await wallet.walletCreateFundedPsbt({
+          inputs,
+          outputs: [{ address: destination, amountBits: 10_000_000n }],
+          options: { addInputs: false, feeRateBitsPerKvB: 2000n },
+        })
+        return wallet.walletProcessPsbt(funded.psbt)
+      }
+      // [key, the count after one more signature, its warning lines]
+      const steps: [Key, number, string[] | undefined][] = [
+        ['warning', WARNING_FROM, [line('warning', 'entered warning usage range', WARNING_FROM)]],
+        ['warning', WARNING_FROM + 1, undefined],
+        [
+          'warningReminder',
+          WARNING_FROM + 2 ** 24,
+          [line('warningReminder', 'remains in warning usage range', WARNING_FROM + 2 ** 24)],
+        ],
+        ['critical', CRITICAL_FROM, [line('critical', 'entered critical usage range', CRITICAL_FROM)]],
+        [
+          'criticalReminder',
+          CRITICAL_FROM + 2 ** 20,
+          [line('criticalReminder', 'remains in critical usage range', CRITICAL_FROM + 2 ** 20)],
+        ],
+      ]
+      for (const [key, after, warnings] of steps) {
+        const processed = await sign(key)
+        expect(processed).toMatchObject({ complete: true, ...oneKey(key, after) })
+        expect(processed.warnings).toEqual(warnings)
+        expect(processed.hex).toMatch(/^[0-9a-f]+$/)
+      }
+
+      // One signature left and two inputs of the key: the first input is signed,
+      // the second is not, and the node answers without an error.
+      const last = await sign('last', keys.last.coins)
+      expect(last).toMatchObject({
+        complete: false,
+        ...oneKey('last', LIMIT),
+        warnings: [`${line('last', 'reached the signature limit', LIMIT)}. Rotate to a new key/address.`],
+      })
+      expect(last).not.toHaveProperty('hex')
+      expect(await wallet.getAddressInfo(keys.last.address)).toMatchObject(oneKey('last', LIMIT))
+      // Exhausted: the key no longer signs, so it takes no part in the response.
+      expect(await sign('last')).toEqual({ psbt: expect.any(String), complete: false })
+      // Beside a key that can sign, only that one is reported, and as normal.
+      const mixed = await sign('last', [keys.last.coins[0]!, keys.normal.coins[0]!])
+      expect(mixed).toMatchObject({ complete: false, ...oneKey('normal', 1) })
+      expect(mixed).not.toHaveProperty('warnings')
+
+      // What the root README's quick start reads before signing: decodepsbt
+      // gives each input's address, and getaddressinfo in one batch its key's state.
+      const funded = await wallet.walletCreateFundedPsbt({
+        inputs: [keys.last.coins[1]!, keys.critical.coins[0]!, keys.normal.coins[0]!],
+        outputs: [{ address: destination, amountBits: 10_000_000n }],
+        options: { addInputs: false, feeRateBitsPerKvB: 2000n },
+      })
+      const { inputs } = (await wallet.call('decodepsbt', [funded.psbt])) as {
+        inputs: { witness_utxo?: { scriptPubKey: { address?: string } } }[]
+      }
+      const spent = inputs.map(input => input.witness_utxo?.scriptPubKey.address)
+      expect(new Set(spent)).toEqual(new Set([keys.last.address, keys.critical.address, keys.normal.address]))
+      const budgets = await wallet.batch(spent.map(address => requests.getAddressInfo(address!)))
+      expect(
+        Object.fromEntries(budgets.map((info, i) => [spent[i], info.ok ? info.value.pqcOverallLimitState : info.error]))
+      ).toEqual({
+        [keys.last.address]: 'exhausted',
+        [keys.critical.address]: 'critical',
+        [keys.normal.address]: 'normal',
+      })
+      // And each key's signatures left, which it compares with the inputs it signs.
+      const left = (info: (typeof budgets)[number]) =>
+        info.ok ? Math.min(...(info.value.pqcKeyStates ?? []).map(key => key.pqcSignaturesRemaining)) : -1
+      expect(left(budgets[spent.indexOf(keys.last.address)]!)).toBe(0)
+      expect(left(budgets[spent.indexOf(keys.critical.address)]!)).toBeGreaterThan(0)
+      finished = true
+    } finally {
+      // An unload that fails after the test already failed does not hide that failure.
+      if (loaded) {
+        try {
+          cli('unloadwallet', name)
+        } catch (error) {
+          if (finished) throw error
+        }
+      }
+    }
+  }, 600_000)
 })

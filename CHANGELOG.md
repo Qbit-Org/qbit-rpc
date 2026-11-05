@@ -664,3 +664,19 @@ properties only. The API report is unchanged.
   `sendRawTransaction` reject a mutated reply only with
   `RpcUnknownOutcomeError`, and the smoke test checks the txid of generated
   transactions against `decoderawtransaction`.
+
+### PQC signature-budget states
+
+- No code change: the parser already takes every PQC field and state qbit Core
+  v1.0.0 sends. The `warning`, `critical` and `exhausted` states are now
+  observed on a regtest node, which has no option to lower the 2^30 limit: the
+  smoke test writes keys' counts into the wallet file below each threshold,
+  signs, and asserts each state's fields and warning lines. Fixture tests cover
+  each state and boundary through `walletProcessPsbt` and `getAddressInfo`.
+- The README's [PQC signature budgets](packages/rpc/README.md#pqc-signature-budgets)
+  says what each state means and what to do, checked against the node. An
+  exhausted key is not an error: `walletprocesspsbt` leaves its inputs
+  unsigned (`complete: false`) and reports nothing about it, while the wallet
+  still offers its coins for funding, so check `getAddressInfo` of the inputs
+  before signing: each key's state, and its signatures left against the inputs
+  it signs.
