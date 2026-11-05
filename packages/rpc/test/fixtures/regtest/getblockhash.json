@@ -1,0 +1,8 @@
+{
+  "description": "getblockhash 0, the genesis block",
+  "builder": "getBlockHash",
+  "args": [0],
+  "method": "getblockhash",
+  "params": [0],
+  "result": "0ee96aa77c4b600850e349344fa21b107e805f5370ddc7a6189db12cf69acce6"
+}

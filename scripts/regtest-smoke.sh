@@ -53,8 +53,11 @@ cleanup() {
     fi
     sleep 0.2
   done
-  # Only a qbitd of this data directory, never a process that reused its pid.
-  if [ "$stopped" = 0 ] && ps -o args= -p "$pid" 2>/dev/null | grep -qF -- "-datadir=$datadir"; then
+  # Only a qbitd of this data directory, never a process that reused its pid:
+  # -datadir= this directory as a whole argument, read with -ww, as BSD and
+  # macOS ps cut a command line to about 80 columns without it.
+  if [ "$stopped" = 0 ] && ps -ww -o args= -p "$pid" 2>/dev/null |
+    awk -v arg="-datadir=$datadir" 'index(" " $0 " ", " " arg " ") { found = 1 } END { exit !found }'; then
     kill -9 "$pid" 2>/dev/null || true
   fi
   # How long qbitd's deferred keypool top-ups took: an encrypted wallet's runs

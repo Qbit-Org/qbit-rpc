@@ -1,0 +1,8 @@
+{
+  "description": "getblockcount",
+  "builder": "getBlockCount",
+  "args": [],
+  "method": "getblockcount",
+  "params": [],
+  "result": 1010
+}

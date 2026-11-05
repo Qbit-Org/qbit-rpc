@@ -1,0 +1,13 @@
+{
+  "description": "listlockunspent with one locked output",
+  "builder": "listLockUnspent",
+  "args": [],
+  "method": "listlockunspent",
+  "params": [],
+  "result": [
+    {
+      "txid": "334a9338356e9881b6cbad87ae895bcdf14925d8bc2782d39c82945bc009a309",
+      "vout": 0
+    }
+  ]
+}

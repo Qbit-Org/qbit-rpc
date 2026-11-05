@@ -1,0 +1,24 @@
+{
+  "description": "getblockheader of the genesis block (no previousblockhash)",
+  "builder": "getBlockHeader",
+  "args": ["0ee96aa77c4b600850e349344fa21b107e805f5370ddc7a6189db12cf69acce6"],
+  "method": "getblockheader",
+  "params": ["0ee96aa77c4b600850e349344fa21b107e805f5370ddc7a6189db12cf69acce6",true],
+  "result": {
+    "hash": "0ee96aa77c4b600850e349344fa21b107e805f5370ddc7a6189db12cf69acce6",
+    "confirmations": 1011,
+    "height": 0,
+    "version": 1,
+    "versionHex": "00000001",
+    "merkleroot": "773941c57f540b7e0f841db6de90bf4f29d305d8233224c2581025c684387313",
+    "time": 1738713602,
+    "mediantime": 1738713602,
+    "nonce": 1,
+    "bits": "207fffff",
+    "target": "7fffff0000000000000000000000000000000000000000000000000000000000",
+    "difficulty": 4.656542373906925e-10,
+    "chainwork": "0000000000000000000000000000000000000000000000000000000000000002",
+    "nTx": 1,
+    "nextblockhash": "08cae3b82a7082781eb5acbf55bfe575698a406ec79feed38394e8e9a0fa0f9c"
+  }
+}

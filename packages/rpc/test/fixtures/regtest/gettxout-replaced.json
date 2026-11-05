@@ -1,0 +1,8 @@
+{
+  "description": "gettxout of the replaced payment, in no UTXO set: null",
+  "builder": "getTxOut",
+  "args": ["2db3cd151d8836f9231cad38662b1f18ba390431189d690233e4ea3729691f5e",0],
+  "method": "gettxout",
+  "params": ["2db3cd151d8836f9231cad38662b1f18ba390431189d690233e4ea3729691f5e",0],
+  "result": null
+}

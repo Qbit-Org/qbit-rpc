@@ -1,0 +1,16 @@
+{
+  "description": "validateaddress of a P2MR address",
+  "builder": "validateAddress",
+  "args": ["qbrt1zst3uq7dclyhe3q93en60jn6v745gxecudfsa86fhxqm7hsrz244q6urs83"],
+  "method": "validateaddress",
+  "params": ["qbrt1zst3uq7dclyhe3q93en60jn6v745gxecudfsa86fhxqm7hsrz244q6urs83"],
+  "result": {
+    "isvalid": true,
+    "address": "qbrt1zst3uq7dclyhe3q93en60jn6v745gxecudfsa86fhxqm7hsrz244q6urs83",
+    "scriptPubKey": "522082e3c079b8f92f9880b1ccf4f94f4cf56883671c6a61d3e9373037ebc062556a",
+    "isscript": true,
+    "iswitness": true,
+    "witness_version": 2,
+    "witness_program": "82e3c079b8f92f9880b1ccf4f94f4cf56883671c6a61d3e9373037ebc062556a"
+  }
+}

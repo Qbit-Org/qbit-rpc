@@ -1,0 +1,45 @@
+{
+  "description": "getblockchaininfo on regtest",
+  "builder": "getBlockchainInfo",
+  "args": [],
+  "method": "getblockchaininfo",
+  "params": [],
+  "result": {
+    "chain": "regtest",
+    "blocks": 1010,
+    "headers": 1010,
+    "bestblockhash": "7724d166ca8142f998906fe58d12857494f26b8dbd2c93d9dbbccfb8977c7556",
+    "bits": "207fffff",
+    "target": "7fffff0000000000000000000000000000000000000000000000000000000000",
+    "difficulty": 4.656542373906925e-10,
+    "time": 1793817392,
+    "mediantime": 1793817391,
+    "verificationprogress": 1,
+    "initialblockdownload": false,
+    "chainwork": "00000000000000000000000000000000000000000000000000000000000007e6",
+    "size_on_disk": 314213,
+    "pruned": false,
+    "p2mr_validation_weight": {
+      "legacy_per_sigop": 3730,
+      "v2_per_sigop": 3683,
+      "activation_height": 0,
+      "active_for_tip": true,
+      "active_for_next_block": true,
+      "blocks_remaining": 0
+    },
+    "future_block_time": {
+      "legacy_limit_seconds": 7200,
+      "v2_limit_seconds": 600,
+      "activation_height": 0,
+      "active_for_tip": true,
+      "active_for_next_block": true,
+      "tip_limit_seconds": 600,
+      "next_block_limit_seconds": 600,
+      "blocks_remaining": 0,
+      "next_block_min_time": 1793817392,
+      "next_block_max_time": 1793817822,
+      "next_block_time_headroom_seconds": 430
+    },
+    "warnings": []
+  }
+}

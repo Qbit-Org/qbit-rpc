@@ -1,0 +1,8 @@
+{
+  "description": "walletlock",
+  "builder": "walletLock",
+  "args": [],
+  "method": "walletlock",
+  "params": [],
+  "result": null
+}

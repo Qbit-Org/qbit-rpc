@@ -12,6 +12,7 @@
     "test": "pnpm -r --if-present test",
     "test:regtest": "pnpm -r --workspace-concurrency=1 --if-present test:regtest",
     "test:release": "node --test scripts/qbit-release.test.mjs",
+    "test:scripts": "node --test scripts/regtest-node.test.mjs",
     "typecheck": "pnpm -r --if-present typecheck",
     "typecheck:test": "pnpm -r --if-present typecheck:test",
     "api:check": "pnpm -r --if-present api:check",
@@ -21,7 +22,7 @@
     "consumer:check": "node scripts/check-packed-consumer.mjs",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "verify": "pnpm format:check && pnpm build && pnpm api:check && pnpm test && pnpm test:release && pnpm typecheck && pnpm typecheck:test && pnpm pack:check && pnpm consumer:check"
+    "verify": "pnpm format:check && pnpm build && pnpm api:check && pnpm test && pnpm test:release && pnpm test:scripts && pnpm typecheck && pnpm typecheck:test && pnpm pack:check && pnpm consumer:check"
   },
   "keywords": [
     "qbit",

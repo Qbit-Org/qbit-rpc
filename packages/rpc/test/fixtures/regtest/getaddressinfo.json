@@ -1,0 +1,37 @@
+{
+  "description": "getaddressinfo of an own P2MR address",
+  "builder": "getAddressInfo",
+  "args": ["qbrt1zst3uq7dclyhe3q93en60jn6v745gxecudfsa86fhxqm7hsrz244q6urs83"],
+  "method": "getaddressinfo",
+  "params": ["qbrt1zst3uq7dclyhe3q93en60jn6v745gxecudfsa86fhxqm7hsrz244q6urs83"],
+  "result": {
+    "address": "qbrt1zst3uq7dclyhe3q93en60jn6v745gxecudfsa86fhxqm7hsrz244q6urs83",
+    "scriptPubKey": "522082e3c079b8f92f9880b1ccf4f94f4cf56883671c6a61d3e9373037ebc062556a",
+    "ismine": true,
+    "solvable": true,
+    "desc": "mr(pk(16404f16c7a0b95f79af65c5065ba93048fd18c3e29386919d9f074d61564ced))#sjg02dgx",
+    "iswatchonly": false,
+    "isscript": true,
+    "iswitness": true,
+    "witness_version": 2,
+    "witness_program": "82e3c079b8f92f9880b1ccf4f94f4cf56883671c6a61d3e9373037ebc062556a",
+    "ischange": false,
+    "labels": [
+      ""
+    ],
+    "pqc_key_states": [
+      {
+        "pubkey": "16404f16c7a0b95f79af65c5065ba93048fd18c3e29386919d9f074d61564ced",
+        "pqc_signature_count": 0,
+        "pqc_signature_limit": 1073741824,
+        "pqc_signatures_remaining": 1073741824,
+        "pqc_limit_state": "normal"
+      }
+    ],
+    "pqc_overall_limit_state": "normal",
+    "pqc_signature_count": 0,
+    "pqc_signature_limit": 1073741824,
+    "pqc_signatures_remaining": 1073741824,
+    "pqc_limit_state": "normal"
+  }
+}

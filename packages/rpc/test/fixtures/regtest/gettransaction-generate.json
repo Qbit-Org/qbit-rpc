@@ -1,0 +1,39 @@
+{
+  "description": "gettransaction of the block 1 coinbase: mature",
+  "builder": "getTransaction",
+  "args": ["df5b9b58e7272e8950b1b82cbe392a690b76ae73ae4ee657c7c06dd7108f5f33"],
+  "method": "gettransaction",
+  "params": ["df5b9b58e7272e8950b1b82cbe392a690b76ae73ae4ee657c7c06dd7108f5f33"],
+  "result": {
+    "amount": 210.00000000,
+    "confirmations": 1011,
+    "generated": true,
+    "blockhash": "08cae3b82a7082781eb5acbf55bfe575698a406ec79feed38394e8e9a0fa0f9c",
+    "blockheight": 1,
+    "blockindex": 0,
+    "blocktime": 1793817222,
+    "txid": "df5b9b58e7272e8950b1b82cbe392a690b76ae73ae4ee657c7c06dd7108f5f33",
+    "wtxid": "50e32ef0e0bef54ca6cfe9083eb7d08f306c1484bcdc73f1b70eb518a81937ea",
+    "walletconflicts": [],
+    "mempoolconflicts": [],
+    "time": 1793817222,
+    "timereceived": 1793817222,
+    "bip125-replaceable": "no",
+    "details": [
+      {
+        "address": "qbrt1zst3uq7dclyhe3q93en60jn6v745gxecudfsa86fhxqm7hsrz244q6urs83",
+        "parent_descs": [],
+        "category": "generate",
+        "amount": 210.00000000,
+        "label": "",
+        "vout": 0,
+        "abandoned": false
+      }
+    ],
+    "hex": "020000000001010000000000000000000000000000000000000000000000000000000000000000ffffffff025100feffffff020092b2e30400000022522082e3c079b8f92f9880b1ccf4f94f4cf56883671c6a61d3e9373037ebc062556a0000000000000000266a24aa21a9ede2f61c3f71d1defd3fa999dfa36953755c690689799962b48bebd836974e8cf90120000000000000000000000000000000000000000000000000000000000000000000000000",
+    "lastprocessedblock": {
+      "hash": "3c436dbe82433b230a37442986fd77a0761282dc01082b5f7a45416c2bf87195",
+      "height": 1011
+    }
+  }
+}

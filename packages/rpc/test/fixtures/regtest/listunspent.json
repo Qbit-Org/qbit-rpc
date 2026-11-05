@@ -1,0 +1,51 @@
+{
+  "description": "listunspent with at most 3 outputs",
+  "builder": "listUnspent",
+  "args": [{"maximumCount":3}],
+  "method": "listunspent",
+  "params": [null,null,null,null,{"maximumCount":3}],
+  "result": [
+    {
+      "txid": "334a9338356e9881b6cbad87ae895bcdf14925d8bc2782d39c82945bc009a309",
+      "vout": 0,
+      "address": "qbrt1zst3uq7dclyhe3q93en60jn6v745gxecudfsa86fhxqm7hsrz244q6urs83",
+      "label": "",
+      "scriptPubKey": "522082e3c079b8f92f9880b1ccf4f94f4cf56883671c6a61d3e9373037ebc062556a",
+      "amount": 210.00000000,
+      "confirmations": 1004,
+      "spendable": true,
+      "solvable": true,
+      "desc": "mr(pk(16404f16c7a0b95f79af65c5065ba93048fd18c3e29386919d9f074d61564ced))#sjg02dgx",
+      "parent_descs": [],
+      "safe": true
+    },
+    {
+      "txid": "a49ba6c1171642fede786c42020aab6ed589ca9b1a8aac52924f9341d2295fd1",
+      "vout": 0,
+      "address": "qbrt1zst3uq7dclyhe3q93en60jn6v745gxecudfsa86fhxqm7hsrz244q6urs83",
+      "label": "",
+      "scriptPubKey": "522082e3c079b8f92f9880b1ccf4f94f4cf56883671c6a61d3e9373037ebc062556a",
+      "amount": 210.00000000,
+      "confirmations": 1007,
+      "spendable": true,
+      "solvable": true,
+      "desc": "mr(pk(16404f16c7a0b95f79af65c5065ba93048fd18c3e29386919d9f074d61564ced))#sjg02dgx",
+      "parent_descs": [],
+      "safe": true
+    },
+    {
+      "txid": "ddf668dd96126186685de30ce548d3334fef2af53107fffdf2ab1ec50743621c",
+      "vout": 0,
+      "address": "qbrt1zst3uq7dclyhe3q93en60jn6v745gxecudfsa86fhxqm7hsrz244q6urs83",
+      "label": "",
+      "scriptPubKey": "522082e3c079b8f92f9880b1ccf4f94f4cf56883671c6a61d3e9373037ebc062556a",
+      "amount": 210.00000000,
+      "confirmations": 1001,
+      "spendable": true,
+      "solvable": true,
+      "desc": "mr(pk(16404f16c7a0b95f79af65c5065ba93048fd18c3e29386919d9f074d61564ced))#sjg02dgx",
+      "parent_descs": [],
+      "safe": true
+    }
+  ]
+}

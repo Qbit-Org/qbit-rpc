@@ -61,8 +61,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile --config.engine-strict=true
 
-      # format:check, build, test, test:release, typecheck, typecheck:test,
-      # pack:check and consumer:check, stopping at the first failure.
+      # format:check, build, api:check, test, test:release, test:scripts,
+      # typecheck, typecheck:test, pack:check and consumer:check, stopping at
+      # the first failure.
       - name: Verify
         run: pnpm verify
 

@@ -239,7 +239,7 @@ corepack pnpm verify
 ```
 
 `verify` runs `format:check`, `build`, `api:check`, `test`, `test:release`
-(which needs `gpg`), `typecheck`, `typecheck:test`, `pack:check` and
+(which needs `gpg`), `test:scripts`, `typecheck`, `typecheck:test`, `pack:check` and
 `consumer:check`, as `.github/workflows/ci.yml` does, on each Node.js line.
 
 ### The API report
@@ -300,6 +300,37 @@ them only after the smoke test passes against the new release, and say so in
 [CHANGELOG.md](CHANGELOG.md). A release signed under a newer
 key policy also needs `scripts/qbit-release-keys/` updated, as its `README.md`
 describes.
+
+### Property tests and fixtures
+
+The parsers and validators are also tested with
+[fast-check](https://fast-check.dev/) properties: amounts, `JsonNumber`, the
+txid computation, every result validator, `parseZmqMessage` and the sequence
+tracker. Each validator starts from real replies in
+`packages/rpc/test/fixtures/regtest/`, which a mutation changes field by field:
+it must validate, or fail as `RpcResponseError`, and on a side-effecting call
+as `RpcUnknownOutcomeError`. In `test` each property runs a fixed number of
+times from a fixed seed, so the run is the same everywhere and takes a few
+seconds. For a longer fuzz, set the number of runs; each property then starts
+from a random seed, which a failure prints, and `QBIT_FUZZ_SEED` replays it:
+
+```sh
+QBIT_FUZZ_RUNS=20000 corepack pnpm test
+QBIT_FUZZ_RUNS=20000 QBIT_FUZZ_SEED=-428120168 corepack pnpm test
+```
+
+The fixtures come from a throwaway regtest node, as for the smoke test. To
+capture them again, after a qbit Core release or a new typed method:
+
+```sh
+corepack pnpm build
+QBIT_BIN_DIR="$bin" node scripts/capture-rpc-fixtures.mjs
+```
+
+It rewrites every fixture, and refuses one holding a path, or the host name as
+a whole word of 4 or more characters. On a failure, Ctrl-C or SIGTERM it stops
+the node, killing it after 60 s, and removes its data directory. Prettier
+leaves the fixtures alone, so each keeps qbit Core's number text.
 
 Changes are listed in [CHANGELOG.md](CHANGELOG.md); report vulnerabilities as
 [SECURITY.md](SECURITY.md) describes.

@@ -565,7 +565,9 @@ properties only. The API report is unchanged.
   the reply's address only when both it and the requested one are bech32 or
   bech32m, and compares a base58 address exactly. `parseQbt('-0')` and
   `parseQbt('-0.00000000')` return `0n` without `allowNegative`, and a number
-  argument of `-0` is sent as `0`.
+  argument of `-0` is sent as `0`. A number field of a typed method's result
+  written `-0` or `-0.0`, an integer such as a `vout` or `confirmations` or any
+  other finite number, is read as `0`, never `-0`.
 - `@qbit-oss/zmq`: health is `unknown` as soon as the connection drops, and the
   socket is replaced; `staleAfterMs` defaults to 10 minutes; the first message
   on each topic after a replacement is a gap; `maxMessageSize` defaults to
@@ -646,3 +648,19 @@ properties only. The API report is unchanged.
   which waits for an unlock still running. One that misses it before it is
   sent is an `RpcTimeoutError`, or `RpcChainGuardError` `check_failed`, as for
   every call, and was not sent.
+
+### Property and fuzz tests
+
+- `parseZmqMessage` throws `ZmqFrameError` with code `frame_type` for a frame
+  that is not a `Uint8Array` (a `Buffer` is one), a hole of a sparse array
+  included, and a `TypeError` for a `frames` argument that is not an array.
+- fast-check properties for amounts, `JsonNumber`, the txid computation,
+  every result validator, the ZMQ parser and its sequence tracker, run in
+  `pnpm test` with fixed counts and seeds; `QBIT_FUZZ_RUNS` runs them longer
+  from random seeds. 47 real qbit Core v1.0.0 regtest replies, one or more for
+  every typed method, are committed with the script that captures them, and
+  each is validated and mutated field by field. A fuzz through the fake node
+  checks that `walletCreateFundedPsbt`, `walletProcessPsbt` and
+  `sendRawTransaction` reject a mutated reply only with
+  `RpcUnknownOutcomeError`, and the smoke test checks the txid of generated
+  transactions against `decoderawtransaction`.

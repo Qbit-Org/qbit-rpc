@@ -1,0 +1,8 @@
+{
+  "description": "walletpassphrase for 60 s",
+  "builder": "walletPassphrase",
+  "args": ["fixtures-passphrase",60],
+  "method": "walletpassphrase",
+  "params": ["fixtures-passphrase",60],
+  "result": null
+}

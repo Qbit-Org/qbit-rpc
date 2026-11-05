@@ -1,0 +1,24 @@
+{
+  "description": "getblockheader of the tip (no nextblockhash)",
+  "builder": "getBlockHeader",
+  "args": ["7724d166ca8142f998906fe58d12857494f26b8dbd2c93d9dbbccfb8977c7556"],
+  "method": "getblockheader",
+  "params": ["7724d166ca8142f998906fe58d12857494f26b8dbd2c93d9dbbccfb8977c7556",true],
+  "result": {
+    "hash": "7724d166ca8142f998906fe58d12857494f26b8dbd2c93d9dbbccfb8977c7556",
+    "confirmations": 1,
+    "height": 1010,
+    "version": 536870912,
+    "versionHex": "20000000",
+    "merkleroot": "9cb8c89cb9f8f2a0450a1beb45ce65e27777f599b83194e1aedf733d915c3c75",
+    "time": 1793817392,
+    "mediantime": 1793817391,
+    "nonce": 0,
+    "bits": "207fffff",
+    "target": "7fffff0000000000000000000000000000000000000000000000000000000000",
+    "difficulty": 4.656542373906925e-10,
+    "chainwork": "00000000000000000000000000000000000000000000000000000000000007e6",
+    "nTx": 1,
+    "previousblockhash": "0b61c279b359ec49d9fb79adfa10c0ee7b30f8f87d6973ed10ebe6ec6b116db9"
+  }
+}
