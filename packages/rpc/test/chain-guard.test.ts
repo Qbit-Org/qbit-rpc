@@ -16,6 +16,7 @@ import {
   RpcTimeoutError,
   RpcTransportError,
   RpcUnknownOutcomeError,
+  type CallOptions,
   type QbitRpcClientOptions,
 } from '../src'
 import { HttpTransport } from '../src/transport'
@@ -394,11 +395,11 @@ describe('chain guard races', () => {
   })
 
   it('reads the cookie once in an attempt whose re-check fails', async () => {
-    const rpc = client({ auth: { cookieFile }, chainCheckMaxAgeMs: 0, timeoutMs: 100 })
+    const rpc = client({ auth: { cookieFile }, chainCheckMaxAgeMs: 0 })
     await rpc.confirmChain()
     hangChainCheck = true
     const reads = vi.mocked(open).mock.calls.length
-    await expect(rpc.walletLock()).rejects.toMatchObject({ reason: 'check_failed' })
+    await expect(rpc.walletLock({ timeoutMs: 100 })).rejects.toMatchObject({ reason: 'check_failed' })
     expect(vi.mocked(open).mock.calls.length).toBe(reads + 1)
   })
 
@@ -601,11 +602,11 @@ describe('a failed chain re-check', () => {
       .map(call => `{"jsonrpc":"2.0","error":{"code":${code},"message":"Loading block index"},"id":${call.id}}`)
       .join(',')}]`
 
-  const GUARDED: [method: string, run: (rpc: QbitRpcClient, signal?: AbortSignal) => Promise<unknown>][] = [
-    ['sendrawtransaction', (rpc, signal) => rpc.sendRawTransaction(TX_HEX, {}, signal === undefined ? {} : { signal })],
-    ['walletlock', (rpc, signal) => rpc.walletLock(signal === undefined ? {} : { signal })],
-    ['testmempoolaccept', (rpc, signal) => rpc.testMempoolAccept([TX_HEX], {}, signal === undefined ? {} : { signal })],
-    ['finalizepsbt', (rpc, signal) => rpc.finalizePsbt('cHNidP8=', {}, signal === undefined ? {} : { signal })],
+  const GUARDED: [method: string, run: (rpc: QbitRpcClient, callOptions?: CallOptions) => Promise<unknown>][] = [
+    ['sendrawtransaction', (rpc, callOptions) => rpc.sendRawTransaction(TX_HEX, {}, callOptions)],
+    ['walletlock', (rpc, callOptions) => rpc.walletLock(callOptions)],
+    ['testmempoolaccept', (rpc, callOptions) => rpc.testMempoolAccept([TX_HEX], {}, callOptions)],
+    ['finalizepsbt', (rpc, callOptions) => rpc.finalizePsbt('cHNidP8=', {}, callOptions)],
   ]
 
   describe.each(GUARDED)('before %s', (method, run) => {
@@ -632,7 +633,8 @@ describe('a failed chain re-check', () => {
     it('reports a timeout as the cause', async () => {
       const rpc = await rechecking({ timeoutMs: 100 })
       hangChainCheck = true
-      const cause = await checkFailed(run(rpc))
+      // The call's own timeoutMs: walletlock's default is at least 120 s.
+      const cause = await checkFailed(run(rpc, { timeoutMs: 100 }))
       expect(RpcTimeoutError.is(cause)).toBe(true)
       expect(cause).toMatchObject({ method: 'getblockchaininfo', timeoutMs: 100 })
     })
@@ -641,7 +643,7 @@ describe('a failed chain re-check', () => {
       const rpc = await rechecking()
       hangChainCheck = true
       const controller = new AbortController()
-      const pending = run(rpc, controller.signal)
+      const pending = run(rpc, { signal: controller.signal })
       await expect.poll(() => checks()).toBe(2)
       controller.abort('user')
       const cause = await checkFailed(pending)
@@ -699,7 +701,7 @@ describe('a failed chain re-check', () => {
       const rpc = await rechecking()
       hangChainCheck = true
       const controller = new AbortController()
-      const pending = run(rpc, controller.signal).catch((e: unknown) => e)
+      const pending = run(rpc, { signal: controller.signal }).catch((e: unknown) => e)
       await expect.poll(() => checks()).toBe(2)
       hangChainCheck = false
       chain = 'main'

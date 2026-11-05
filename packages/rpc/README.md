@@ -32,7 +32,7 @@ const info = await rpc.getBlockchainInfo()
 | `expectedGenesisHash` | `expectedChain`'s, see [Chain guard](#chain-guard) | The genesis block hash every chain check expects from `getblockhash 0`: 64 hex characters, either case (compared in lowercase). Set it for a node built with other chain parameters. |
 | `expectedSignetChallenge` | `51` on signet | The `signet_challenge` every chain check expects: non-empty hex of whole bytes (the challenge script), either case (compared in lowercase). Only with `expectedChain: 'signet'`. |
 | `capabilities` | `[]` | Any of `wallet-read`, `wallet-write`, `broadcast`. |
-| `timeoutMs` | 30,000 | One deadline per operation: any wait for a request slot, cookie read, every attempt and every backoff. Override per call. |
+| `timeoutMs` | 30,000; at least 120,000 for `walletPassphrase` and `walletLock` | One deadline per operation: any wait for a request slot, cookie read, every attempt and every backoff. A shorter value does not shorten their 120 s. Override per call. See [unlocking a wallet](#unlocking-an-encrypted-wallet). |
 | `maxResponseBytes` | 16 MiB | Larger replies fail with `RpcResponseTooLargeError` (or an unknown outcome for side-effecting calls). Leave a few KiB at least: the chain check's batched reply (`getblockchaininfo` and `getblockhash 0`) must fit, or every check fails. |
 | `readRetries` | 0 | Opt-in retries for methods without side effects (see below). |
 | `retryDelayMs` | 250 | First backoff; doubles per retry, capped at 10 s, never past the deadline. |
@@ -65,7 +65,8 @@ await rpc.sendRawTransaction(hex, undefined, { signal }) // none of its own opti
 ```
 
 `timeoutMs` (1 to 3,600,000) overrides the client's for this operation, and
-`signal` aborts it (see the [failure model](#failure-model)). A method's own
+the own default of `walletPassphrase` and `walletLock` (see [unlocking a wallet](#unlocking-an-encrypted-wallet)),
+and `signal` aborts it (see the [failure model](#failure-model)). A method's own
 options never hold call options, and the call options hold nothing else: a key
 in the wrong one is a `TypeError` that says where it belongs. So a method can
 gain an option named like neither without breaking a caller.
@@ -232,7 +233,7 @@ is the `cause` of an `RpcUnknownOutcomeError`. Each method also takes
 | `walletProcessPsbt(psbt, { sign?, sighashType?, bip32derivs?, finalize? })` | `ProcessedPsbt` with the PQC usage fields |
 | `finalizePsbt(psbt, { extract? })` | `{ psbt?, hex?, complete }` |
 | `psbtBumpFee(txid, { feeRateBitsPerKvB?, confTarget?, estimateMode?, replaceable?, outputs?, originalChangeIndex? })` | `BumpedPsbt`: `{ psbt, originalFeeBits, feeBits, errors }`, the PSBT unsigned |
-| `walletPassphrase(passphrase, timeoutSeconds)`, `walletLock()` | nothing |
+| `walletPassphrase(passphrase, timeoutSeconds)`, `walletLock()` | nothing; see [unlocking a wallet](#unlocking-an-encrypted-wallet) |
 | `getRawChangeAddress({ addressType? })` | a new change address; see [address types](#address-types) |
 | `getNewAddress({ label?, addressType? })` | a new receiving address, filed under `label` |
 | `lockUnspent(outputs, { persistent? })` | nothing, once every output is locked |
@@ -270,6 +271,78 @@ under `label` (the default label, `''`, when left out; `*` is refused before
 sending, as qbit Core reserves it). It is side-effecting too: never retried,
 and a lost reply is an `RpcUnknownOutcomeError`, since a second call would hand
 out a second address.
+
+### Unlocking an encrypted wallet
+
+`walletPassphrase(passphrase, timeoutSeconds)` unlocks the wallet for
+`timeoutSeconds`, counted from when qbit Core finishes the unlock, and
+`walletLock()` locks it again. Both are side-effecting wallet-write calls.
+
+**The first unlock is slow.** On a chain that allows only P2MR outputs (every
+chain, unless regtest runs with `-p2mronly=0`), qbit Core v1.0.0 creates a
+wallet with a passphrase with 16 keys per descriptor, and derives the rest of
+its keypool (`-keypool`, 1,000 by default) inside the wallet's first
+`walletpassphrase`, which answers only once that is done. On regtest that first
+unlock took 25 to 31 s on a shared host and 49 s on a GitHub-hosted
+`ubuntu-latest` runner; later ones take about 0.2 s. Unloading and loading the
+wallet, or restarting the node, does not skip it. The time grows with
+`-keypool`: on that host 2.3 s at 100 keys, 13 s at 500, 28 s at 1,000 and 53 s
+at 2,000. While it runs, every other call on that wallet waits for it,
+`getWalletInfo()` and `walletLock()` included; chain calls and other wallets do
+not. A wallet created without a passphrase derives the rest of its keypool in
+the background instead, from 30 s after it is created or loaded: no call waits
+for all of it, only about 0.2 s each while it runs.
+
+**The default deadline.** So `walletPassphrase` and `walletLock`, typed or as
+`walletpassphrase` and `walletlock` through `call()`, have a default deadline of
+120 s, more than twice the slowest first unlock measured. Every other method
+keeps 30 s. A client's `timeoutMs` applies to these two only when it is longer
+than 120 s, so a client that sets a short one does not cut the first unlock, or
+a lock waiting for it. The call's own `timeoutMs` always wins:
+
+```ts
+const rpc = new QbitRpcClient({ ...options, timeoutMs: 10_000 }) // every call; these two keep 120 s
+await rpc.walletPassphrase(passphrase, 60) // 120 s
+await rpc.walletLock() // 120 s
+await rpc.walletPassphrase(passphrase, 60, { timeoutMs: 300_000 }) // the call's own wins
+```
+
+Every other call keeps the client's deadline, so one on that wallet sent during
+a first unlock can need a longer `timeoutMs`: a read such as `getWalletInfo()`
+that misses it is an `RpcTimeoutError` you can repeat, a side-effecting call
+such as `getNewAddress()` an `RpcUnknownOutcomeError`.
+
+With a `-keypool` above about 2,000, or a host slower than that runner, pass a
+longer `timeoutMs`, or unlock the wallet once right after creating it, before
+it serves anything.
+
+**A missed deadline.** Once it is sent, a `walletPassphrase` that misses its
+deadline or is aborted rejects with `RpcUnknownOutcomeError`: qbit Core may still
+be unlocking the wallet, or may have unlocked it. Before it is sent (waiting
+for a request slot, reading the cookie, connecting, or in the chain re-check)
+it rejects with `RpcTimeoutError` or `RpcAbortedError`, or `RpcChainGuardError`
+`check_failed` with one of those as its `cause`: nothing was sent, and calling
+it again is safe. After an `RpcUnknownOutcomeError`, `getWalletInfo()` tells
+which: `unlockedUntil` is 0 while the wallet is locked, the Unix time it locks
+again once unlocked, and absent on a wallet with no passphrase. It waits for an
+unlock still running, so give it a deadline that covers one. If it fails too,
+the outcome is still unknown, so the original error is the one to report:
+
+```ts
+try {
+  await rpc.walletPassphrase(passphrase, 60)
+} catch (error) {
+  if (!RpcUnknownOutcomeError.is(error)) throw error // not sent, or the node's answer
+  // getwalletinfo waits for an unlock still running.
+  const info = await rpc.getWalletInfo({ timeoutMs: 120_000 }).catch(() => undefined)
+  if (!info?.unlockedUntil) throw error // locked, or no answer: still not unlocked for sure
+  // unlocked, until info.unlockedUntil
+}
+```
+
+Calling `walletPassphrase` again is safe too: it waits for one still running,
+then sets a new relock time. `walletLock()` also waits for it, under the same
+default deadline.
 
 ### Address types
 
@@ -560,7 +633,7 @@ you made, or in `cause` the request that failed. Every error has its own
 | `RpcResponseTooLargeError` | | The reply passed `maxResponseBytes`, `limitBytes`. | Unknown outcome | Treat the node or proxy as misbehaving; do not guess the value. |
 | `RpcResponseError` | `reason: 'protocol'` | The reply was not valid JSON-RPC; `path` says where. | Unknown outcome | Treat the node or proxy as misbehaving; do not guess the value. |
 | `RpcResponseError` | `reason: 'validation'` | A result failed validation; `path` says where. For a [custom `parse`](#batches) that threw, `path` is `result` and `cause` is what it threw. | Unknown outcome | Treat the node or proxy as misbehaving; do not guess the value. |
-| `RpcUnknownOutcomeError` | | The call may have been executed, but no valid reply arrived; `cause` is the failure and, for `sendrawtransaction` (typed or through `call()`), `txid` the computed txid. Never retried. | Unknown outcome | Reconcile before acting again: look up `txid` for a broadcast, re-read wallet state for a signing call. |
+| `RpcUnknownOutcomeError` | | The call may have been executed, but no valid reply arrived; `cause` is the failure and, for `sendrawtransaction` (typed or through `call()`), `txid` the computed txid. Never retried. | Unknown outcome | Reconcile before acting again: look up `txid` for a broadcast, re-read wallet state for a signing call, read `getWalletInfo().unlockedUntil` after `walletPassphrase` ([unlocking a wallet](#unlocking-an-encrypted-wallet)). |
 
 A bad argument or option is a `TypeError` or `RangeError`, and nothing is sent.
 

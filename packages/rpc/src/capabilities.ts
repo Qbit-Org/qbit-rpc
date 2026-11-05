@@ -46,11 +46,30 @@ export interface MethodPolicy {
    * reached the node is an `RpcUnknownOutcomeError`.
    */
   readonly sideEffects: boolean
+  /**
+   * The least deadline of a call whose call options leave `timeoutMs` unset:
+   * it replaces the client's 30 s default, and a shorter client `timeoutMs`.
+   * Set only where qbit Core was measured to need longer.
+   */
+  readonly timeoutMs?: number
 }
 
 const READ: MethodPolicy = { capability: 'read', sideEffects: false }
 const WALLET_READ: MethodPolicy = { capability: 'wallet-read', sideEffects: false }
 const WALLET_WRITE: MethodPolicy = { capability: 'wallet-write', sideEffects: true }
+
+/**
+ * The default deadline of `walletpassphrase` and `walletlock`. qbit Core v1.0.0
+ * defers the keypool top-up of a wallet created with a passphrase (`-keypool`,
+ * default 1,000 keys per descriptor) to its first unlock, which runs it before
+ * answering (`CWallet::Unlock` and `RunPendingInitialKeyPoolTopUp`,
+ * src/wallet/wallet.cpp). On regtest that unlock took 25 to 31 s on a shared
+ * host and 49 s on a GitHub-hosted `ubuntu-latest` runner, against 0.2 s for
+ * later ones; 120 s leaves more than twice the slowest. A `walletlock` sent
+ * meanwhile waits for it, and missing its deadline would leave the caller not
+ * knowing whether the wallet is locked.
+ */
+const FIRST_UNLOCK_TIMEOUT_MS = 120_000
 
 /**
  * The allowlist. Every method, typed or sent through `call()`, must be listed
@@ -112,8 +131,8 @@ export const METHOD_POLICIES: Readonly<Record<string, MethodPolicy>> = Object.fr
   walletprocesspsbt: WALLET_WRITE,
   // finalizepsbt touches no wallet, but it is gated with the signing step it completes.
   finalizepsbt: { capability: 'wallet-write', sideEffects: false },
-  walletpassphrase: WALLET_WRITE,
-  walletlock: WALLET_WRITE,
+  walletpassphrase: { ...WALLET_WRITE, timeoutMs: FIRST_UNLOCK_TIMEOUT_MS },
+  walletlock: { ...WALLET_WRITE, timeoutMs: FIRST_UNLOCK_TIMEOUT_MS },
   getrawchangeaddress: WALLET_WRITE,
   lockunspent: WALLET_WRITE,
   getnewaddress: WALLET_WRITE,

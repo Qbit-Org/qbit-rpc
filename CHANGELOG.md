@@ -443,3 +443,19 @@ properties only. The API report is unchanged.
   and one that gives up there was never sent. With the new opt-in `directNode`,
   qbitd's 503 `Work queue depth exceeded` is a plain `RpcTransportError` rather
   than an unknown outcome.
+
+### The first unlock of a new wallet
+
+- `walletPassphrase` and `walletLock` (and `walletpassphrase` and `walletlock`
+  through `call()`) have a default deadline of 120 s, not 30 s. qbit Core v1.0.0
+  runs a new encrypted wallet's deferred keypool top-up inside its first unlock,
+  which took 25 to 31 s on regtest on a shared host and 49 s on a GitHub-hosted
+  runner, so that unlock, or a lock waiting for it, could miss 30 s and be an
+  `RpcUnknownOutcomeError`. Every other method keeps 30 s, so a call on that
+  wallet during a first unlock can need a longer `timeoutMs`. A client `timeoutMs` shorter than
+  120 s does not shorten them, and a longer one applies; a call's own `timeoutMs`
+  always wins. An unlock that misses its deadline once sent is an
+  `RpcUnknownOutcomeError`, resolved with `getWalletInfo().unlockedUntil`,
+  which waits for an unlock still running. One that misses it before it is
+  sent is an `RpcTimeoutError`, or `RpcChainGuardError` `check_failed`, as for
+  every call, and was not sent.
