@@ -1,0 +1,11 @@
+{
+  "description": "walletprocesspsbt sign=false: incomplete, no hex",
+  "builder": "walletProcessPsbt",
+  "args": ["cHNidP8BAIkCAAAAAdqrP8u1pPZtO+EOQH+JpgrXJby/E2Bim9jrZzH31UsUAAAAAAD9////AhXNWwcAAAAAIlIgXbsnGgQ+MXwukrzlGgiEyUJAD4c73UycWerw5cqXYDbWtVbcBAAAACJSIEhtMDAl3gPXJIOXjhlFsCpsg5VeoMca7eDDEYnK2RJmAAAAAAABASsAkrLjBAAAACJSIILjwHm4+S+YgLHM9PlPTPVog2ccamHT6TcwN+vAYlVqAh3BIyAWQE8Wx6C5X3mvZcUGW6kwSP0Yw+KThpGdnwdNYVZM7bPAB/wEcWJpdAEgguPAebj5L5iAscz0+U9M9WiDZxxqYdPpNzA368BiVWoAAAA=",{"sign":false}],
+  "method": "walletprocesspsbt",
+  "params": ["cHNidP8BAIkCAAAAAdqrP8u1pPZtO+EOQH+JpgrXJby/E2Bim9jrZzH31UsUAAAAAAD9////AhXNWwcAAAAAIlIgXbsnGgQ+MXwukrzlGgiEyUJAD4c73UycWerw5cqXYDbWtVbcBAAAACJSIEhtMDAl3gPXJIOXjhlFsCpsg5VeoMca7eDDEYnK2RJmAAAAAAABASsAkrLjBAAAACJSIILjwHm4+S+YgLHM9PlPTPVog2ccamHT6TcwN+vAYlVqAh3BIyAWQE8Wx6C5X3mvZcUGW6kwSP0Yw+KThpGdnwdNYVZM7bPAB/wEcWJpdAEgguPAebj5L5iAscz0+U9M9WiDZxxqYdPpNzA368BiVWoAAAA=",false],
+  "result": {
+    "psbt": "cHNidP8BAIkCAAAAAdqrP8u1pPZtO+EOQH+JpgrXJby/E2Bim9jrZzH31UsUAAAAAAD9////AhXNWwcAAAAAIlIgXbsnGgQ+MXwukrzlGgiEyUJAD4c73UycWerw5cqXYDbWtVbcBAAAACJSIEhtMDAl3gPXJIOXjhlFsCpsg5VeoMca7eDDEYnK2RJmAAAAAAABASsAkrLjBAAAACJSIILjwHm4+S+YgLHM9PlPTPVog2ccamHT6TcwN+vAYlVqAh3BIyAWQE8Wx6C5X3mvZcUGW6kwSP0Yw+KThpGdnwdNYVZM7bPAB/wEcWJpdAEgguPAebj5L5iAscz0+U9M9WiDZxxqYdPpNzA368BiVWoAAAA=",
+    "complete": false
+  }
+}

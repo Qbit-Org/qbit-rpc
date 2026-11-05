@@ -1,0 +1,20 @@
+{
+  "description": "gettxout of the payment output 0 in the mempool",
+  "builder": "getTxOut",
+  "args": ["2db3cd151d8836f9231cad38662b1f18ba390431189d690233e4ea3729691f5e",0],
+  "method": "gettxout",
+  "params": ["2db3cd151d8836f9231cad38662b1f18ba390431189d690233e4ea3729691f5e",0],
+  "result": {
+    "bestblock": "7724d166ca8142f998906fe58d12857494f26b8dbd2c93d9dbbccfb8977c7556",
+    "confirmations": 0,
+    "value": 1.23456789,
+    "scriptPubKey": {
+      "asm": "2 5dbb271a043e317c2e92bce51a0884c942400f873bdd4c9c59eaf0e5ca976036",
+      "desc": "rawmr(5dbb271a043e317c2e92bce51a0884c942400f873bdd4c9c59eaf0e5ca976036)#jsel0uxr",
+      "hex": "52205dbb271a043e317c2e92bce51a0884c942400f873bdd4c9c59eaf0e5ca976036",
+      "address": "qbrt1ztkajwxsy8cchct5jhnj35zyye9pyqru880w5e8zeatcwtj5hvqmqxu2rhh",
+      "type": "witness_v2_p2mr"
+    },
+    "coinbase": false
+  }
+}

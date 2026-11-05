@@ -1,0 +1,20 @@
+{
+  "description": "gettxout of a confirmed output",
+  "builder": "getTxOut",
+  "args": ["ac14e4c591d9109dd442853e4263748c358d11c28abca676453d89cdfdcd49a6",0],
+  "method": "gettxout",
+  "params": ["ac14e4c591d9109dd442853e4263748c358d11c28abca676453d89cdfdcd49a6",0],
+  "result": {
+    "bestblock": "3c436dbe82433b230a37442986fd77a0761282dc01082b5f7a45416c2bf87195",
+    "confirmations": 1,
+    "value": 208.76523906,
+    "scriptPubKey": {
+      "asm": "2 486d303025de03d72483978e1945b02a6c83955ea0c71aede0c31189cad91266",
+      "desc": "rawmr(486d303025de03d72483978e1945b02a6c83955ea0c71aede0c31189cad91266)#sffghegc",
+      "hex": "5220486d303025de03d72483978e1945b02a6c83955ea0c71aede0c31189cad91266",
+      "address": "qbrt1zfpknqvp9mcpawfyrj78pj3ds9fkg89275rr34m0qcvgcnjkezfnqqnzy49",
+      "type": "witness_v2_p2mr"
+    },
+    "coinbase": false
+  }
+}

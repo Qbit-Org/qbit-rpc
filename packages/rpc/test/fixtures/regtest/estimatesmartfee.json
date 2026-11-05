@@ -1,0 +1,13 @@
+{
+  "description": "estimatesmartfee 6 with no fee data (errors, no feerate)",
+  "builder": "estimateSmartFee",
+  "args": [6],
+  "method": "estimatesmartfee",
+  "params": [6],
+  "result": {
+    "errors": [
+      "Insufficient data or no feerate found"
+    ],
+    "blocks": 0
+  }
+}

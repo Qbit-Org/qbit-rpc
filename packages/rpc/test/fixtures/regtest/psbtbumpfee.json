@@ -1,0 +1,13 @@
+{
+  "description": "psbtbumpfee of the payment at 5 bits/vB",
+  "builder": "psbtBumpFee",
+  "args": ["2db3cd151d8836f9231cad38662b1f18ba390431189d690233e4ea3729691f5e",{"feeRateBitsPerKvB":{"$bigint":"5000"}}],
+  "method": "psbtbumpfee",
+  "params": ["2db3cd151d8836f9231cad38662b1f18ba390431189d690233e4ea3729691f5e",{"fee_rate":5.000}],
+  "result": {
+    "psbt": "cHNidP8BAIkCAAAAAdqrP8u1pPZtO+EOQH+JpgrXJby/E2Bim9jrZzH31UsUAAAAAAD9////AoJ5VtwEAAAAIlIgSG0wMCXeA9ckg5eOGUWwKmyDlV6gxxrt4MMRicrZEmYVzVsHAAAAACJSIF27JxoEPjF8LpK85RoIhMlCQA+HO91MnFnq8OXKl2A28gMAAAABASsAkrLjBAAAACJSIILjwHm4+S+YgLHM9PlPTPVog2ccamHT6TcwN+vAYlVqAh3BIyAWQE8Wx6C5X3mvZcUGW6kwSP0Yw+KThpGdnwdNYVZM7bPAB/wEcWJpdAEgguPAebj5L5iAscz0+U9M9WiDZxxqYdPpNzA368BiVWoAAAA=",
+    "origfee": 0.00003861,
+    "fee": 0.00019305,
+    "errors": []
+  }
+}

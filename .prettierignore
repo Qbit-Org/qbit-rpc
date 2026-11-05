@@ -12,3 +12,6 @@ package.json
 # YAML, including the workflow, is formatted by hand.
 *.yml
 *.yaml
+
+# Captured qbit Core replies keep the node's number text (1.00000000), which Prettier would rewrite.
+packages/rpc/test/fixtures

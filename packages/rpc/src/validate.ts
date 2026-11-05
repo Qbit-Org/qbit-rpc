@@ -129,7 +129,7 @@ export function integer(min: number, max: number): (value: unknown, path: string
     if (!INTEGER.test(source)) throw new ResultIssue(path, expected)
     const parsed = Number(source)
     if (!Number.isSafeInteger(parsed) || parsed < min || parsed > max) throw new ResultIssue(path, expected)
-    return parsed
+    return parsed === 0 ? 0 : parsed // A -0 literal is 0, as for arguments and parseQbt.
   }
 }
 
@@ -144,7 +144,7 @@ export function finite(min = -Infinity, max = Infinity): (value: unknown, path: 
     const expected = Number.isFinite(min) || Number.isFinite(max) ? `a number from ${min} to ${max}` : 'a finite number'
     const parsed = Number(numberSource(value, path, expected))
     if (!Number.isFinite(parsed) || parsed < min || parsed > max) throw new ResultIssue(path, expected)
-    return parsed
+    return parsed === 0 ? 0 : parsed // A -0 or -0.0 literal is 0, as in integer().
   }
 }
 

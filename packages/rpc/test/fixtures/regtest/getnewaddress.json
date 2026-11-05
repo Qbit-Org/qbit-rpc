@@ -1,0 +1,8 @@
+{
+  "description": "getnewaddress p2mr",
+  "builder": "getNewAddress",
+  "args": [{"addressType":"p2mr"}],
+  "method": "getnewaddress",
+  "params": [null,"p2mr"],
+  "result": "qbrt1zm2j43tde0dsqeq3x55w97var23rlsu9j84vw06jemgt0gh556cjq27lcaz"
+}

@@ -1,0 +1,12 @@
+{
+  "description": "validateaddress of a string that is no address",
+  "builder": "validateAddress",
+  "args": ["not-an-address"],
+  "method": "validateaddress",
+  "params": ["not-an-address"],
+  "result": {
+    "isvalid": false,
+    "error_locations": [],
+    "error": "Invalid or unsupported Segwit (Bech32) or Base58 encoding."
+  }
+}

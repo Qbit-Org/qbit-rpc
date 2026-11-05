@@ -67,7 +67,7 @@ export class ZmqFrameError extends Error {
 }
 
 // @public (undocumented)
-export type ZmqFrameErrorCode = 'frame_count' | 'topic' | 'body_length' | 'label' | 'sequence_length';
+export type ZmqFrameErrorCode = 'frame_count' | 'frame_type' | 'topic' | 'body_length' | 'label' | 'sequence_length';
 
 // @public (undocumented)
 export interface ZmqHealth {

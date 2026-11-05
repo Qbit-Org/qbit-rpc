@@ -1134,3 +1134,12 @@ describe('number arguments', () => {
     expect(node.requests.at(-1)!.body).toContain('"params":[0]')
   })
 })
+
+describe('number results', () => {
+  it('read an integer written -0 as 0', async () => {
+    node.results({ getblockcount: '-0', listlockunspent: `[{"txid":"${HASH_A}","vout":-0}]` })
+    expect(Object.is(await rpc.getBlockCount(), 0)).toBe(true)
+    const [locked] = await rpc.listLockUnspent()
+    expect(Object.is(locked!.vout, 0)).toBe(true)
+  })
+})

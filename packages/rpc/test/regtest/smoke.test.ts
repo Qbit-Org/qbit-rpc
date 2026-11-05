@@ -1194,4 +1194,28 @@ describe.runIf(enabled)('qbit Core v1.0.0 regtest', () => {
     await expect(wallet.call('testmempoolaccept', [[hex], 1])).rejects.toSatisfy(nodeError(-8))
     expect(await wallet.call('getrawmempool')).toEqual([])
   })
+
+  // rawTransactionTxid names a broadcast in an RpcUnknownOutcomeError: it must
+  // be the txid the node gives the same bytes. Generated witness and
+  // non-witness transactions, from a fixed seed. Imported here, so the case
+  // stands alone.
+  it('computes the txid decoderawtransaction reports, for witness and non-witness transactions', async () => {
+    const { default: fc } = await import('fast-check')
+    const { rawTransactionTxid } = await import('../../src/raw-tx')
+    const { serialize, transaction, txidOf } = await import('../helpers/raw-tx')
+    const txs = fc.sample(transaction, { seed: 13, numRuns: 400 })
+    expect(txs.some(tx => tx.witness !== undefined) && txs.some(tx => tx.witness === undefined)).toBe(true)
+    const hexes = txs.map(tx => serialize(tx).toString('hex'))
+    const rpc = client()
+    await rpc.confirmChain()
+    const decoded = await rpc.batch(
+      hexes.map((hex, i) => requests.raw('decoderawtransaction', [hex, txs[i]!.witness !== undefined]))
+    )
+    decoded.forEach((item, i) => {
+      expect(item.ok, hexes[i]).toBe(true)
+      const { txid } = (item as { value: { txid: string } }).value
+      expect(rawTransactionTxid(hexes[i]!), hexes[i]).toBe(txid)
+      expect(txidOf(txs[i]!)).toBe(txid)
+    })
+  })
 })

@@ -1,0 +1,39 @@
+{
+  "description": "gettransaction of the tip coinbase: immature",
+  "builder": "getTransaction",
+  "args": ["9afdcd2fbd85b4cdeffdb60ec15d2632f7de1439a66fb3f5eeade35263402425"],
+  "method": "gettransaction",
+  "params": ["9afdcd2fbd85b4cdeffdb60ec15d2632f7de1439a66fb3f5eeade35263402425"],
+  "result": {
+    "amount": 0.00000000,
+    "confirmations": 1,
+    "generated": true,
+    "blockhash": "3c436dbe82433b230a37442986fd77a0761282dc01082b5f7a45416c2bf87195",
+    "blockheight": 1011,
+    "blockindex": 0,
+    "blocktime": 1793817392,
+    "txid": "9afdcd2fbd85b4cdeffdb60ec15d2632f7de1439a66fb3f5eeade35263402425",
+    "wtxid": "a5ae4bc98452822e08b449d3fda4c14f41188add9559efb647ef99ed0b3f04a5",
+    "walletconflicts": [],
+    "mempoolconflicts": [],
+    "time": 1793817249,
+    "timereceived": 1793817249,
+    "bip125-replaceable": "no",
+    "details": [
+      {
+        "address": "qbrt1zst3uq7dclyhe3q93en60jn6v745gxecudfsa86fhxqm7hsrz244q6urs83",
+        "parent_descs": [],
+        "category": "immature",
+        "amount": 161.11902122,
+        "label": "",
+        "vout": 0,
+        "abandoned": false
+      }
+    ],
+    "hex": "020000000001010000000000000000000000000000000000000000000000000000000000000000ffffffff0402f30300feffffff02aa1d58c00300000022522082e3c079b8f92f9880b1ccf4f94f4cf56883671c6a61d3e9373037ebc062556a0000000000000000266a24aa21a9ed197960eb29c573e7620c39c80cdb2099ce8cb27eb89f541d75227c0d5d9f2c4101200000000000000000000000000000000000000000000000000000000000000000f2030000",
+    "lastprocessedblock": {
+      "hash": "3c436dbe82433b230a37442986fd77a0761282dc01082b5f7a45416c2bf87195",
+      "height": 1011
+    }
+  }
+}

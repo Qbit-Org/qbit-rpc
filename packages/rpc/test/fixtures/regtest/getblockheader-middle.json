@@ -1,0 +1,25 @@
+{
+  "description": "getblockheader of block 500",
+  "builder": "getBlockHeader",
+  "args": ["7e59d3d3d580abdc4907a7a66922b96940892e2048e4ab413566614f44810d6c"],
+  "method": "getblockheader",
+  "params": ["7e59d3d3d580abdc4907a7a66922b96940892e2048e4ab413566614f44810d6c",true],
+  "result": {
+    "hash": "7e59d3d3d580abdc4907a7a66922b96940892e2048e4ab413566614f44810d6c",
+    "confirmations": 511,
+    "height": 500,
+    "version": 536870912,
+    "versionHex": "20000000",
+    "merkleroot": "71749e0e2b1e07de74a18d3108c7d12d227e8a75b3e6afb20046e7d08a899774",
+    "time": 1793817307,
+    "mediantime": 1793817306,
+    "nonce": 2,
+    "bits": "207fffff",
+    "target": "7fffff0000000000000000000000000000000000000000000000000000000000",
+    "difficulty": 4.656542373906925e-10,
+    "chainwork": "00000000000000000000000000000000000000000000000000000000000003ea",
+    "nTx": 1,
+    "previousblockhash": "769943121a02f763517362eb2e8ab2e85235e6463ef56ae9e05b5bd8838982fa",
+    "nextblockhash": "5f13df26ee4674379a68934063942ac528ca4818e59b6a13ad44ba1e8749e7a7"
+  }
+}

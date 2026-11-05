@@ -1,3 +1,5 @@
+import { types } from 'node:util'
+
 /** The topics qbit Core v1.0.0 publishes (`-zmqpub<topic>=<address>`). */
 export type ZmqTopic = 'hashblock' | 'hashtx' | 'rawblock' | 'rawtx' | 'sequence'
 
@@ -34,11 +36,12 @@ export type ZmqMessage = {
     }
 )
 
-export type ZmqFrameErrorCode = 'frame_count' | 'topic' | 'body_length' | 'label' | 'sequence_length'
+export type ZmqFrameErrorCode = 'frame_count' | 'frame_type' | 'topic' | 'body_length' | 'label' | 'sequence_length'
 
 /**
  * A message did not match qbit Core's three-part format. The `code`, one of
- * {@link ZmqFrameErrorCode}, says how: not three frames (`frame_count`), a topic
+ * {@link ZmqFrameErrorCode}, says how: not three frames (`frame_count`), a
+ * frame that is not a `Uint8Array` (`frame_type`), a topic
  * qbit Core does not publish (`topic`), a body of the wrong length for its topic
  * (`body_length`), an unknown label on a `sequence` message (`label`), or a
  * counter that is not 4 bytes (`sequence_length`).
@@ -87,11 +90,17 @@ function displayHex(bytes: Uint8Array): string {
 
 /**
  * Parse one multipart message: topic, body, and a 4-byte little-endian
- * sequence number. Throws {@link ZmqFrameError} for anything else, including
- * an unknown topic and a body of the wrong length for its topic.
+ * sequence number, each a `Uint8Array` (a `Buffer` is one). Throws
+ * {@link ZmqFrameError} for anything else, including a frame of another type,
+ * an unknown topic and a body of the wrong length for its topic, and a
+ * `TypeError` when `frames` is not an array.
  */
 export function parseZmqMessage(frames: readonly Uint8Array[]): ZmqMessage {
+  if (!Array.isArray(frames)) throw new TypeError('frames must be an array of Uint8Array')
   if (frames.length !== 3) throw new ZmqFrameError('frame_count')
+  // Checked across realms: a Uint8Array from another context fails instanceof.
+  // By index, as every() skips the holes of a sparse array.
+  for (let i = 0; i < 3; i++) if (!types.isUint8Array(frames[i])) throw new ZmqFrameError('frame_type')
   const [topicFrame, body, counter] = frames as [Uint8Array, Uint8Array, Uint8Array]
   const name = Buffer.from(topicFrame).toString('latin1')
   if (!(ZMQ_TOPICS as readonly string[]).includes(name)) throw new ZmqFrameError('topic')

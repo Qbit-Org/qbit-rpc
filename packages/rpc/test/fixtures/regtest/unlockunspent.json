@@ -1,0 +1,8 @@
+{
+  "description": "lockunspent true (unlock) of that output",
+  "builder": "unlockUnspent",
+  "args": [[{"txid":"334a9338356e9881b6cbad87ae895bcdf14925d8bc2782d39c82945bc009a309","vout":0}]],
+  "method": "lockunspent",
+  "params": [true,[{"txid":"334a9338356e9881b6cbad87ae895bcdf14925d8bc2782d39c82945bc009a309","vout":0}]],
+  "result": true
+}

@@ -1,0 +1,42 @@
+{
+  "description": "getwalletinfo of a locked encrypted wallet",
+  "builder": "getWalletInfo",
+  "args": [],
+  "method": "getwalletinfo",
+  "params": [],
+  "result": {
+    "walletname": "locked",
+    "walletversion": 169900,
+    "format": "sqlite",
+    "txcount": 0,
+    "keypoolsize": 16,
+    "keypoolsize_hd_internal": 16,
+    "unlocked_until": 0,
+    "paytxfee": 0.00000000,
+    "private_keys_enabled": true,
+    "avoid_reuse": false,
+    "scanning": false,
+    "descriptors": true,
+    "pqc_key_validation": {
+      "status": "not_required",
+      "progress": 1,
+      "plaintext_records": 0,
+      "pending_records": 0,
+      "validated_records": 0,
+      "failed_records": 0,
+      "signing_blocked": false,
+      "encryption_recommended": false
+    },
+    "external_signer": false,
+    "blank": false,
+    "birthtime": 1793817223,
+    "flags": [
+      "last_hardened_xpub_cached",
+      "descriptor_wallet"
+    ],
+    "lastprocessedblock": {
+      "hash": "7724d166ca8142f998906fe58d12857494f26b8dbd2c93d9dbbccfb8977c7556",
+      "height": 1010
+    }
+  }
+}

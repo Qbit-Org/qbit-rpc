@@ -1,0 +1,28 @@
+{
+  "description": "getmempoolentry of the payment",
+  "builder": "getMempoolEntry",
+  "args": ["2db3cd151d8836f9231cad38662b1f18ba390431189d690233e4ea3729691f5e"],
+  "method": "getmempoolentry",
+  "params": ["2db3cd151d8836f9231cad38662b1f18ba390431189d690233e4ea3729691f5e"],
+  "result": {
+    "vsize": 3860,
+    "weight": 3860,
+    "time": 1793817248,
+    "height": 1010,
+    "descendantcount": 1,
+    "descendantsize": 3860,
+    "ancestorcount": 1,
+    "ancestorsize": 3860,
+    "wtxid": "ac94dbfc3df52a8421de8e780164c6565face854f59d81c5719777f076dcd63a",
+    "fees": {
+      "base": 0.00003861,
+      "modified": 0.00003861,
+      "ancestor": 0.00003861,
+      "descendant": 0.00003861
+    },
+    "depends": [],
+    "spentby": [],
+    "bip125-replaceable": true,
+    "unbroadcast": true
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "description": "getconfirmationtarget for 1 QBT at high security",
+  "builder": "getConfirmationTarget",
+  "args": [{"$bigint":"100000000"},{"securityLevel":"high"}],
+  "method": "getconfirmationtarget",
+  "params": [100000000,"high"],
+  "result": {
+    "required_confirmations": 100000,
+    "required_minutes": 100000,
+    "equivalent_btc_confirmations": 1.371428571428571e-15,
+    "permissionless_hashrate": 12,
+    "auxpow_hashrate": 0,
+    "total_observed_hashrate": 12,
+    "orphan_rate": 0,
+    "security_level": "high",
+    "value_qbt": 1,
+    "model": {
+      "btc_target_confirmations": 6,
+      "block_time_seconds": 60,
+      "hashrate_source": "fallback_merge_mining_pct",
+      "hashrate_window_blocks": 120,
+      "permissionless_blocks_in_window": 120,
+      "auxpow_blocks_in_window": 0,
+      "merge_mining_pct": 0,
+      "btc_hashrate": 7e+20,
+      "orphan_rate_penalty": 1,
+      "security_per_confirmation": 1.371428571428571e-20,
+      "cadence_merged_fraction": 0.2
+    }
+  }
+}

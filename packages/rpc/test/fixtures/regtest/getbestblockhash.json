@@ -1,0 +1,8 @@
+{
+  "description": "getbestblockhash",
+  "builder": "getBestBlockHash",
+  "args": [],
+  "method": "getbestblockhash",
+  "params": [],
+  "result": "7724d166ca8142f998906fe58d12857494f26b8dbd2c93d9dbbccfb8977c7556"
+}

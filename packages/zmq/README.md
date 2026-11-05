@@ -83,7 +83,8 @@ bracketed address. A custom
 ## Topics and messages
 
 Every message has three frames: topic, body, and a 4-byte little-endian
-counter that qbitd keeps per topic. `parseZmqMessage(frames)` returns:
+counter that qbitd keeps per topic. `parseZmqMessage(frames)` takes them as
+an array of `Uint8Array`s (`Buffer`s are), and returns:
 
 | Topic | Body | Parsed |
 | --- | --- | --- |
@@ -94,10 +95,10 @@ counter that qbitd keeps per topic. `parseZmqMessage(frames)` returns:
 | `sequence` | hash + `C`/`D` (33 bytes), or hash + `A`/`R` + 8-byte mempool sequence (41 bytes) | `{ topic, sequence, event, hash, mempoolSequence? }` with `event` `block_connected`, `block_disconnected`, `mempool_added` or `mempool_removed` |
 
 Hashes are hex in the order RPC shows them; qbitd already sends them that way.
-Anything else (wrong frame count, unknown topic, wrong body length for the
-topic, unknown label, counter not 4 bytes) throws `ZmqFrameError` with a
-`code` (see [Errors](#errors)). The subscriber turns those into `malformed`
-events and keeps going.
+Anything else (wrong frame count, a frame that is not a `Uint8Array`, unknown
+topic, wrong body length for the topic, unknown label, counter not 4 bytes)
+throws `ZmqFrameError` with a `code` (see [Errors](#errors)). The subscriber
+turns those into `malformed` events and keeps going.
 
 ## Gaps
 
@@ -195,6 +196,7 @@ alike, and a `malformed` event's `error` is a `ZmqFrameError`.
 | Error | Value | Meaning | What to do |
 | --- | --- | --- | --- |
 | `ZmqFrameError` | `code: 'frame_count'` | The message does not have three frames. | From the subscriber, a `malformed` event: it keeps going. Treat many as a publisher that is not qbitd. |
+| `ZmqFrameError` | `code: 'frame_type'` | A frame is not a `Uint8Array`, such as `null`, a string or a hole of a sparse array, when `parseZmqMessage` is called directly. | Pass each frame as a `Uint8Array` or `Buffer`. |
 | `ZmqFrameError` | `code: 'topic'` | The first frame is not a topic qbit Core publishes. | As for `frame_count`. |
 | `ZmqFrameError` | `code: 'body_length'` | The body has the wrong length for its topic. | As for `frame_count`. |
 | `ZmqFrameError` | `code: 'label'` | A `sequence` body has an unknown label. | As for `frame_count`. |
