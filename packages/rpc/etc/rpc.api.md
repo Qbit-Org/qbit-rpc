@@ -4,6 +4,7 @@
 
 ```ts
 
+import { Duplex } from 'node:stream';
 import { inspect } from 'node:util';
 
 // @public
@@ -663,6 +664,7 @@ export interface QbitRpcClientOptions {
     readonly auth: RpcAuth;
     readonly capabilities?: readonly Capability[];
     readonly chainCheckMaxAgeMs?: number;
+    readonly connect?: RpcConnect;
     readonly directNode?: boolean;
     readonly expectedChain: QbitChain;
     readonly expectedGenesisHash?: string;
@@ -672,6 +674,7 @@ export interface QbitRpcClientOptions {
     readonly readRetries?: number;
     readonly retryDelayMs?: number;
     readonly timeoutMs?: number;
+    readonly tls?: RpcTlsOptions;
     readonly url: string;
     readonly wallet?: string;
 }
@@ -807,6 +810,16 @@ export class RpcChainGuardError extends QbitRpcError {
 export type RpcChainGuardReason = 'unconfirmed' | 'mismatch' | 'stale' | 'check_failed';
 
 // @public
+export type RpcConnect = (target: RpcConnectTarget) => Duplex | Promise<Duplex>;
+
+// @public
+export interface RpcConnectTarget {
+    readonly host: string;
+    readonly port: number;
+    readonly signal: AbortSignal;
+}
+
+// @public
 export class RpcError extends QbitRpcError {
     constructor(method: string, rpcCode: number, message: string);
     // (undocumented)
@@ -856,16 +869,27 @@ export class RpcTimeoutError extends QbitRpcError {
 }
 
 // @public
+export interface RpcTlsOptions {
+    readonly ca?: string | Buffer | readonly (string | Buffer)[];
+    readonly cert?: string | Buffer;
+    readonly key?: string | Buffer;
+    readonly passphrase?: string;
+    readonly pinSha256?: string | readonly string[];
+    readonly servername?: string;
+}
+
+// @public
 export class RpcTransportError extends QbitRpcError {
-    constructor(method: string, reason: 'network' | 'http_status' | 'credentials', details?: {
+    constructor(method: string, reason: 'network' | 'tls' | 'not_loopback' | 'prototype_polluted' | 'http_status' | 'credentials', details?: {
         status?: number;
         code?: string;
+        pollutedKeys?: number;
     });
     readonly code?: string;
     // (undocumented)
     static is(value: unknown): value is RpcTransportError;
     // (undocumented)
-    readonly reason: 'network' | 'http_status' | 'credentials';
+    readonly reason: 'network' | 'tls' | 'not_loopback' | 'prototype_polluted' | 'http_status' | 'credentials';
     readonly status?: number;
 }
 

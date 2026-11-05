@@ -5,6 +5,123 @@ version. Nothing has been published yet: both are `0.0.0` and private.
 
 ## Unreleased: initial MVP
 
+### Breaking: remote nodes, TLS failures, how `localhost` is trusted, and a polluted `Object.prototype`
+
+Settled before `0.1.0`: cleartext credentials, and a cookie at all, go to
+loopback addresses only, whatever a name resolves to, a node behind a TLS
+terminator can be reached with a private CA, a client certificate and pinned
+keys, directly or through a proxy, and a polluted `Object.prototype` is
+refused rather than read.
+
+- `localhost` is no longer trusted by name. With an `http` URL, or with cookie
+  authentication, every connection resolves it with the system resolver and is
+  refused before anything is sent, with `RpcTransportError`
+  `reason: 'not_loopback'` (not retried), unless every address is loopback:
+  127.0.0.0/8, `::1`, or IPv4 loopback mapped to IPv6. Node connects to the
+  addresses checked. A hosts file or container DNS that sent `localhost`
+  elsewhere, even in part, used to get the Basic credentials or the cookie in
+  cleartext. Any other name with `http` is still a `TypeError`.
+- `http://[::ffff:127.0.0.1]/`, IPv4 loopback mapped to IPv6, is now loopback,
+  as that answer for `localhost` is; it was a `TypeError`.
+- A failed or refused TLS handshake is `RpcTransportError` `reason: 'tls'`,
+  not `network`, with the same `code` (`UNABLE_TO_VERIFY_LEAF_SIGNATURE`,
+  `ERR_TLS_CERT_ALTNAME_INVALID`, `CERT_HAS_EXPIRED` and so on), and is no
+  longer retried under `readRetries`, as a retry would only repeat it. A reset
+  during the handshake stays `network`. So is a TLS alert refusing the
+  handshake once the request was written, as under TLS 1.3 for a client
+  certificate missing or not trusted (`ERR_SSL_TLSV13_ALERT_CERTIFICATE_REQUIRED`,
+  `ERR_SSL_SSL/TLS_ALERT_BAD_CERTIFICATE`): a read fails with `tls`, and a
+  side-effecting call stays an `RpcUnknownOutcomeError`, its `cause` now `tls`
+  where it was `network`, since only the terminator says it passed nothing
+  on. Before the request is written, as under TLS 1.2, such an alert is a
+  definite `tls`. An error Node throws as it builds a connection is `tls` for a
+  TLS or OpenSSL error (`ERR_TLS_*`, `ERR_SSL_*`, `ERR_OSSL_*`) and `network`
+  for the socket's, such as an option it refuses, both with nothing sent.
+- `NODE_TLS_REJECT_UNAUTHORIZED=0` no longer turns certificate verification
+  off: the client sets it on for every connection. For an `https` URL it used
+  to turn off the CA and name checks, Node's default for that variable.
+- A call is refused, with nothing sent, while `Object.prototype` has an
+  enumerable property of its own: `RpcTransportError` with the new `reason:
+  'prototype_polluted'`, checked at the start of every call, once a client
+  method has built its request and before the call options, the capability or
+  the chain are checked, and again before every connection and every request,
+  pooled ones included, never retried, with no option to turn it off. The
+  message gives how many such properties there are, not their names. Nothing
+  in the language or in Node puts one there; JSON parsed into a deep merge
+  that followed `__proto__` does, and Node reads connection options, socket
+  state and certificate fields from objects that inherit it. Find and remove
+  the pollution. Non-enumerable properties, as polyfills define, are not
+  refused; the caller's objects and the node's replies are still read as own
+  properties only, as below. Behind that check, the client also sets every option Node 22.13 and 24
+  read from the objects it passes to `net.connect`, `tls.connect`,
+  `http.request`, `https.request` and `dns.lookup` (now with
+  `captureRejections`, the lookup's `order` and `verbatim`, and an own valid
+  `timeout` on each request), and reads the certificate's `subject`,
+  `subjectaltname` and `raw` as its own properties only: Node 22 leaves
+  `subjectaltname` unset on a certificate without one, and its name check read
+  the prototype's. What Node reads from objects it builds itself (the socket
+  under a TLS socket, stream state, a socket's `blockList`) is out of reach:
+  a polluted prototype can still make calls fail there, but none of the keys
+  checked lets a check be skipped or credentials leave loopback. Pollution that
+  lands after the check can still crash the process inside Node, and an
+  application must remove it: `blockList` and `handshakeTimeout` on Node 22.13
+  and 24, `infoAccess` on Node 22.13.
+- No TLS session is resumed: every connection runs a full handshake, as Node
+  skips the certificate checks on a resumed session. Node's https agent cached
+  sessions for pooled connections before. A handshake that resumes one all the
+  same, as the client never offers one, is a definite `tls` with `code:
+  'ESESSIONRESUMED'`, with nothing sent. Without `tls.ca`
+  or `tls.cert`, each client builds Node's default TLS context once, at its first
+  connection, rather than for every connection, so later changes to Node's TLS
+  defaults (`tls.setDefaultCACertificates()`, `tls.DEFAULT_MIN_VERSION`,
+  `tls.DEFAULT_CIPHERS`) reach only clients that have not connected yet.
+
+Added, and not breaking:
+
+- The `tls` option, for an `https` URL: `ca` (PEM CAs that replace the
+  system's), `cert` and `key` (a client certificate, and `passphrase` for an
+  encrypted key, used once and not kept), `servername` (the name to check and
+  send in SNI) and `pinSha256` (base64 SHA-256 of the node's
+  SubjectPublicKeyInfo, several for rotation). Each is checked at
+  construction, a `TypeError` naming the option and never its contents; there
+  is no way to turn verification off. A key matching no pin is `tls` with
+  `code: 'EPINMISMATCH'`. The pins are checked on every connection, pooled or
+  fresh, after the CA and name checks.
+- The `connect` option: a function that opens the stream for each connection,
+  such as a tunnel through an HTTP CONNECT or SOCKS proxy, with no proxy code
+  or dependency in the package. The client runs TLS over the stream with every
+  check, pools connections for reads, calls `connect` again for each
+  side-effecting call, keeps `maxConcurrentRequests`, the stale-connection
+  retry and each call's deadline. A side-effecting call's connection gets the
+  call's deadline and abort as its signal, which also ends the TLS handshake
+  over its stream. A pooled connection, for reads, outlives the read it is
+  opened for, and Node's pool can open one by itself, for a request queued
+  behind a full pool. Once no read waits for it, its signal fires when the
+  client's `timeoutMs` has passed since it started, or at once when a read that
+  waits needs its turn, and on `close()` at any time. One that opens after its
+  read gave up waits, idle, for the pool's next connection, keeping no process
+  alive, and a reset on it gets the extra attempt of a stale keep-alive
+  connection, so a proxy slower than a read's deadline still serves the reads
+  after it, and a `connect` with no timeout of its own that honours its signal
+  gives back its turn. At most `maxConcurrentRequests` plus one connections are
+  opened through `connect` at once for reads, and as many again for
+  side-effecting calls, which never wait behind reads' connections; a call
+  waiting for one fails at its deadline, unsent, and one for a read that gave up
+  is dropped without calling `connect`. A pooled connection's failure reaches
+  only the read it serves by then, never one in flight on another connection,
+  and the next read queued opens its own after one Node's pool opened by itself.
+  It needs an `https` URL and Basic credentials. A stream returned twice, or
+  destroyed without an error, is a `TypeError`; one that has already failed,
+  one that closes before its handshake has ended (`ECONNRESET`), and a failure
+  of `connect`, are `RpcTransportError` `network` with nothing sent.
+- `toJSON()` shows what `tls` sets (a custom CA, a client certificate,
+  `servername`, the pins), and `connect: 'custom'`. The types `RpcTlsOptions`,
+  `RpcConnect` and `RpcConnectTarget` are exported.
+- The `@qbit-oss/rpc` README's "Remote nodes" covers a TLS terminator, a
+  private CA, client certificates, pinning and its rotation, a proxy through
+  `connect`, `localhost` and a polluted `Object.prototype`; its failure model
+  lists `tls`, `not_loopback` and `prototype_polluted`.
+
 ### Breaking: the error API
 
 Settled before `0.1.0`: a property name has one type across both packages' error
@@ -160,25 +277,27 @@ properties only. The API report is unchanged.
 
 - Every options or arguments object (`args`, `inputs` and `outputs` entries,
   `options`, `proof`), the call options (every client method, `call()`,
-  `batch()`, `confirmChain()`), the `QbitRpcClient` options and their `auth`,
-  and each `batch()` entry's `method`, `params` and `parse` are read from a
+  `batch()`, `confirmChain()`), the `QbitRpcClient` options and their `auth`
+  and `tls`, and each `batch()` entry's `method`, `params` and `parse` are read from a
   copy of their own enumerable properties, each read once. A key the method
   takes that the object holds any other way is a `TypeError` naming it, which
   says to pass a plain object: an inherited key (from a prototype, a class or a
   polluted `Object.prototype`), a class getter or method, a non-enumerable
-  property, or a key a Proxy leaves out of its own keys. So a polluted
-  `capabilities`, `wallet`, `directNode`, `chainCheckMaxAgeMs` or `password`
-  refuses the constructor instead of configuring the client, and a batch entry
-  that is a class instance with a `parse` method is refused; copy its fields
-  into a plain object. A getter on the object itself runs once, into the copy:
+  property, or a key a Proxy leaves out of its own keys or answers only from
+  its `get` trap. So a polluted `capabilities`, `wallet`, `directNode`,
+  `chainCheckMaxAgeMs`, `password`, `tls`, `connect` or `tls.ca` refuses the
+  constructor instead of configuring the client; ignored instead, a `tls`, `ca`
+  or `pinSha256` given so would leave the client trusting more than was asked
+  for. A batch entry that is a class instance with a `parse` method is refused;
+  copy its fields into a plain object. A getter on the object itself runs once, into the copy:
   the builders no longer keep the caller's object so that a getter keeps its
   receiver. An options object left out reads as empty. Unknown keys are refused
   with the same messages as before, and one only on `Object.prototype` is still
   skipped, as it is never read.
-- The `QbitRpcClient` options and `auth` are strict like every other options
-  object: an unknown key is a `TypeError` naming it, with the key it most likely
-  meant (`timeout` → `timeoutMs`, `cookie_file` → `cookieFile`) or the known
-  keys. So `walletName` refuses the constructor, where it built a client without
+- The `QbitRpcClient` options, `auth` and `tls` are strict like every other
+  options object: an unknown key is a `TypeError` naming it, with the key it
+  most likely meant (`timeout` → `timeoutMs`, `cookie_file` → `cookieFile`,
+  `server_name` → `tls.servername`) or the known keys. So `walletName` refuses the constructor, where it built a client without
   a wallet path, whose wallet calls went to whichever wallet the node had loaded.
 - `capabilities: null` is a `TypeError` (`capabilities must be an array`), and
   so is `parseQbt(text, null)` (`options must be an object`).
@@ -201,7 +320,8 @@ properties only. The API report is unchanged.
   for a side-effecting call, at 3xx and 4xx too, with or without `directNode`.
 - Arrays (`outputs`, `inputs`, `subtractFeeFromOutputs`, `addresses`,
   `rawTxs`, the outputs of `lockUnspent` and `unlockUnspent`, `call()`'s
-  params, the `capabilities` option and `batch()`'s entries) are read by their
+  params, the `capabilities` option, `tls.ca`, `tls.pinSha256` and `batch()`'s
+  entries) are read by their
   own elements: a hole is a `TypeError` naming its index, and no element is
   read from `Array.prototype`.
 - Parameters are serialized from own data: an object's own enumerable keys and
@@ -258,7 +378,7 @@ properties only. The API report is unchanged.
 - `QbitRpcClient` for qbit Core v1.0.0 JSON-RPC over HTTP(S), with `/wallet/<name>`
   endpoints, HTTP Basic or cookie authentication (the cookie re-read per
   request, loopback only) and refusal of cleartext credentials to non-loopback
-  hosts.
+  hosts, checked on the address each connection goes to.
 - A method allowlist with opt-in `wallet-read`, `wallet-write` and `broadcast`
   capabilities, enforced before any request, for typed methods, `call()` and
   `batch()` alike. `sendmany` and the other sign-and-broadcast methods are not

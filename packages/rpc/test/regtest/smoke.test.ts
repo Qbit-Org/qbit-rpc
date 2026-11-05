@@ -1,4 +1,7 @@
 import { execFileSync } from 'node:child_process'
+import { readFileSync } from 'node:fs'
+import { connect as netConnect, type AddressInfo } from 'node:net'
+import { createServer as createTlsServer } from 'node:tls'
 
 import { describe, expect, it } from 'vitest'
 
@@ -13,6 +16,7 @@ import {
   type QbitRpcClientOptions,
 } from '../../src'
 import { QBIT_GENESIS_HASHES } from '../../src/capabilities'
+import { testPki } from '../helpers/certificates'
 import type { CoreRpc } from '../helpers/core-rpc'
 
 // Runs only under scripts/regtest-smoke.sh, which starts a throwaway regtest
@@ -90,6 +94,78 @@ describe.runIf(enabled)('qbit Core v1.0.0 regtest', () => {
       actualGenesisHash: REGTEST_GENESIS,
     })
     expect(other.chainStatus).toBe('mismatch')
+  })
+
+  // qbitd serves plain HTTP; a remote node sits behind a TLS terminator. This
+  // one, on loopback, requires a client certificate and relays each TLS
+  // connection to the node's RPC port, so the cookie goes over it as Basic
+  // credentials.
+  it('reaches the node through a TLS terminator with a private CA, a client certificate and a pin', async () => {
+    const pki = testPki()
+    const relayed: number[] = []
+    const terminator = createTlsServer(
+      { key: pki.server.key, cert: pki.server.cert, ca: pki.ca.cert, requestCert: true, rejectUnauthorized: true },
+      socket => {
+        relayed.push(socket.remotePort ?? 0)
+        const upstream = netConnect(Number(new URL(url).port), '127.0.0.1')
+        socket.pipe(upstream).pipe(socket)
+        socket.on('error', () => upstream.destroy())
+        upstream.on('error', () => socket.destroy())
+      }
+    )
+    await new Promise<void>(resolve => terminator.listen(0, '127.0.0.1', resolve))
+    try {
+      const port = (terminator.address() as AddressInfo).port
+      const [username = '', password = ''] = readFileSync(cookieFile, 'utf8').trim().split(':')
+      const tls = { ca: pki.ca.cert, cert: pki.client.cert, key: pki.client.key, pinSha256: pki.server.pin }
+      const remote = (options: Partial<QbitRpcClientOptions> = {}): QbitRpcClient =>
+        new QbitRpcClient({
+          url: `https://127.0.0.1:${port}/`,
+          wallet: 'locked',
+          auth: { username, password },
+          expectedChain: 'regtest',
+          capabilities: ['wallet-write'],
+          tls,
+          ...options,
+        })
+      const rpc = remote()
+      await rpc.confirmChain()
+      expect(await rpc.getBlockCount()).toBeGreaterThanOrEqual(101)
+      // A side-effecting call gets a connection of its own, pinned like the pooled one.
+      await rpc.walletLock()
+      expect(relayed).toHaveLength(2)
+      expect(rpc.toJSON()).toMatchObject({ chainStatus: 'confirmed', tls: { ca: 'custom', clientCertificate: true } })
+
+      // Through a connect function, as through a proxy: the name is the certificate's, the tunnel loopback.
+      const tunnelled = remote({
+        url: `https://node.test:${port}/`,
+        connect: ({ port: target }) => netConnect(target, '127.0.0.1'),
+      })
+      await tunnelled.confirmChain()
+      await tunnelled.walletLock()
+      expect(relayed).toHaveLength(4)
+
+      const otherPin = testPki('other').server.pin
+      await expect(remote({ tls: { ...tls, pinSha256: otherPin } }).confirmChain()).rejects.toMatchObject({
+        name: 'RpcTransportError',
+        reason: 'tls',
+        code: 'EPINMISMATCH',
+      })
+      await expect(remote({ tls: { ca: pki.ca.cert } }).confirmChain()).rejects.toMatchObject({
+        name: 'RpcTransportError',
+        reason: 'tls',
+        code: 'ERR_SSL_TLSV13_ALERT_CERTIFICATE_REQUIRED',
+      })
+    } finally {
+      await new Promise<void>(resolve => terminator.close(() => resolve()))
+    }
+  })
+
+  it('resolves localhost to loopback and reaches the node by that name, with the cookie', async () => {
+    const rpc = client({ url: url.replace('127.0.0.1', 'localhost') })
+    expect(new URL(url).hostname).toBe('127.0.0.1')
+    await rpc.confirmChain()
+    expect(rpc.chainStatus).toBe('confirmed')
   })
 
   // Every option name the client sends must change what the node does: qbit

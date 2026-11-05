@@ -187,10 +187,24 @@ and again as soon as the connection drops.
   instead, so it is allowlisted and typed.
 - `getwalletinfo` in qbit Core v1.0.0 has no per-key PQC signature counts; they
   appear on `walletprocesspsbt` and `getaddressinfo` replies.
-- No custom TLS options (CA bundles, client certificates) for HTTPS endpoints,
-  no connection limit across clients (each client keeps at most
+- No connection limit across clients: each client keeps at most
   `maxConcurrentRequests` requests open, default 8, on a keep-alive pool of
-  that size plus one spare), and no proxy support.
+  that size plus one spare.
+- A remote node goes behind a TLS terminator, with a private CA, a client
+  certificate and key pins as the [`@qbit-oss/rpc` README](packages/rpc/README.md#remote-nodes)
+  describes. There is no built-in proxy: a `connect` function opens the tunnel,
+  and the client keeps TLS and its checks over it. Certificate verification
+  cannot be turned off, not by `NODE_TLS_REJECT_UNAUTHORIZED=0` either, and
+  revocation (CRL, OCSP) is not checked; a pin narrows trust to the keys it
+  names.
+- A polluted `Object.prototype` is refused, not worked around: while it has an
+  enumerable property of its own, every `@qbit-oss/rpc` call fails, unsent,
+  with `RpcTransportError` `reason: 'prototype_polluted'`. Node reads options
+  and certificate fields from objects that inherit it. Pollution that lands
+  after that check can still crash the process inside Node: `blockList` and
+  `handshakeTimeout` on Node 22.13 and 24, `infoAccess` on Node 22.13. An
+  application must remove it; see the
+  [`@qbit-oss/rpc` README](packages/rpc/README.md#a-polluted-objectprototype).
 - The chain guard checks the chain name, the genesis block hash and, on signet,
   the challenge. It still cannot tell apart two regtest nodes (they share one
   genesis block), the default signet from a look-alike mined with the same open

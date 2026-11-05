@@ -11,7 +11,17 @@ import {
   type MethodPolicy,
   type QbitChain,
 } from './capabilities'
-import { CookieReadFailure, Credentials, parseEndpoint, type Endpoint, type RpcAuth } from './endpoint'
+import {
+  CookieReadFailure,
+  Credentials,
+  parseConnect,
+  parseEndpoint,
+  parseTls,
+  type Endpoint,
+  type RpcAuth,
+  type RpcConnect,
+  type RpcTlsOptions,
+} from './endpoint'
 import {
   QbitRpcError,
   RpcAbortedError,
@@ -66,19 +76,34 @@ import {
   type WalletTransaction,
 } from './methods'
 import { argArray, argOptions, CALL_OPTION_KEYS, keysOf, ownElements, ownValue, plainOptions } from './own'
-import { ExchangeFailure, HttpTransport } from './transport'
+import { ExchangeFailure, HttpTransport, prototypePollution } from './transport'
 import { ResultIssue } from './validate'
 
 export interface QbitRpcClientOptions {
   /**
    * The node's JSON-RPC endpoint, such as `http://127.0.0.1:48352/` for
-   * testnet4. Plain `http` is only accepted for a loopback host. The path may
-   * already name a wallet (`/wallet/<name>`); otherwise pass `wallet`.
+   * testnet4. Plain `http` is only accepted for a loopback host: an address in
+   * 127.0.0.0/8 or `::1`, or `localhost`, which every connection resolves and
+   * refuses (`RpcTransportError`, `reason: 'not_loopback'`) unless all its
+   * addresses are loopback. The path may already name a wallet
+   * (`/wallet/<name>`); otherwise pass `wallet`.
    */
   readonly url: string
   /** Send every call to `/wallet/<name>`. Required for wallet calls when the node has several wallets loaded. */
   readonly wallet?: string
   readonly auth: RpcAuth
+  /**
+   * TLS settings for an `https` url: a private CA, a client certificate, the
+   * name to check, and key pins. Default: the system's CAs, no client
+   * certificate, the URL's host, no pin. See the package README's "Remote nodes".
+   */
+  readonly tls?: RpcTlsOptions
+  /**
+   * Opens the stream for each connection to an `https` url, such as a tunnel
+   * through a proxy; the client runs TLS over it, with every check. Not with
+   * cookie authentication. Default: connect to the URL's host directly.
+   */
+  readonly connect?: RpcConnect
   /** The chain this client must talk to. `confirmChain()` checks it; wallet-write and broadcast calls wait for that check. */
   readonly expectedChain: QbitChain
   /**
@@ -103,15 +128,17 @@ export interface QbitRpcClientOptions {
    * for a request slot and the cookie read). Default 30,000 ms. For
    * `walletpassphrase` and `walletlock` it is at least 120,000 ms (see
    * {@link QbitRpcClient.walletPassphrase}): a shorter client `timeoutMs` does
-   * not shorten it. A call's own `timeoutMs` overrides both.
+   * not shorten it. A call's own `timeoutMs` overrides both. With `connect`, it
+   * also bounds a pooled connection still opening after its read gave up.
    */
   readonly timeoutMs?: number
   /** Largest response body read before the call fails. Default 16 MiB. */
   readonly maxResponseBytes?: number
   /**
-   * Extra attempts for methods without side effects after a connection error,
-   * an HTTP 5xx, a credentials failure, an HTTP 401 under cookie auth, or
-   * (single calls and the chain check) RPC error -28, node warming up. Default 0: no retries.
+   * Extra attempts for methods without side effects after a connection error
+   * (`reason: 'network'`; a TLS or loopback refusal would only repeat), an HTTP
+   * 5xx, a credentials failure, an HTTP 401 under cookie auth, or (single calls
+   * and the chain check) RPC error -28, node warming up. Default 0: no retries.
    * Methods with side effects are never retried. Apart from these, even at 0,
    * a request without side effects that is reset on a reused keep-alive
    * connection just after it was written, before any reply byte (qbitd closed
@@ -241,11 +268,15 @@ const MAX_NODE_MESSAGE = 1000
 const MAX_CHAIN_CHECKS = 3
 
 const TIMEOUT = Symbol('timeout')
+/** Exchange failures of the connection itself: each makes the chain confirmation stale. */
+const CONNECTION_KINDS: ReadonlySet<string> = new Set(['network', 'tls', 'not_loopback'])
 const CALL_OPTIONS: readonly (keyof CallOptions)[] = CALL_OPTION_KEYS
 const CLIENT_OPTIONS = keysOf<QbitRpcClientOptions>({
   url: true,
   wallet: true,
   auth: true,
+  tls: true,
+  connect: true,
   expectedChain: true,
   expectedGenesisHash: true,
   expectedSignetChallenge: true,
@@ -332,6 +363,9 @@ export class QbitRpcClient {
   readonly #directNode: boolean
   readonly #limiter: Limiter
   readonly #transport: HttpTransport
+  /** What `tls` sets, for `toJSON()`; undefined when it is not given. */
+  readonly #tlsSummary: Readonly<Record<string, unknown>> | undefined
+  readonly #customConnect: boolean
   #chain: ChainState = { status: 'unconfirmed' }
   /**
    * Counts signs that the node may have changed (a connection error, an HTTP
@@ -350,12 +384,19 @@ export class QbitRpcClient {
     assertLosslessJsonSupport()
     if (typeof options !== 'object' || options === null) throw new TypeError('options must be an object')
     // Read once, own properties only: an option given any other way, such as
-    // capabilities or wallet on a polluted Object.prototype, is refused. So is a
-    // key that is no option: with walletName, wallet calls would go to whichever
-    // wallet the node has loaded.
+    // capabilities, tls or connect on a polluted Object.prototype, is refused.
+    // So is a key that is no option: with walletName, wallet calls would go to
+    // whichever wallet the node has loaded.
     const own = argOptions(options, 'options', CLIENT_OPTIONS) as unknown as QbitRpcClientOptions
     this.#endpoint = parseEndpoint(own.url, own.wallet)
     this.#credentials = new Credentials(own.auth, this.#endpoint)
+    const tls = parseTls(own.tls, this.#endpoint)
+    const connect = parseConnect(own.connect, this.#endpoint)
+    if (connect !== undefined && this.#credentials.kind === 'cookie') {
+      throw new TypeError('cookie authentication cannot use connect: the cookie goes to loopback only')
+    }
+    this.#tlsSummary = tls?.summary
+    this.#customConnect = connect !== undefined
     if (!(QBIT_CHAINS as readonly unknown[]).includes(own.expectedChain)) {
       throw new TypeError(`expectedChain must be one of ${QBIT_CHAINS.join(', ')}`)
     }
@@ -409,7 +450,14 @@ export class QbitRpcClient {
     // covers one the agent still counts after destroying it (a timeout, an
     // abort, a stale reset) until it has closed, so the slot holder after it
     // does not wait in the agent. Open requests stay within the limit.
-    this.#transport = new HttpTransport(maxConcurrentRequests + 1)
+    // Credentials in cleartext, and a cookie at all, go to loopback only: a
+    // host name must resolve to loopback, checked as each connection is made.
+    this.#transport = new HttpTransport(maxConcurrentRequests + 1, undefined, {
+      loopbackOnly: this.#endpoint.url.protocol === 'http:' || this.#credentials.kind === 'cookie',
+      tls,
+      connect,
+      openTimeoutMs: this.#timeoutMs ?? DEFAULT_TIMEOUT_MS,
+    })
   }
 
   /** The chain guard's state; see {@link ChainStatus}. */
@@ -446,6 +494,7 @@ export class QbitRpcClient {
     const method = 'getblockchaininfo'
     // A mismatch recorded after this point is newer than this call: it stands, and this call throws it.
     const started = this.#doubts
+    refusePollution(method)
     return this.#operation(method, this.#callSettings(callOptions), false, async attempt => {
       try {
         const authorization = await this.#authorization(method, attempt.signal)
@@ -707,6 +756,8 @@ export class QbitRpcClient {
         : { expectedSignetChallenge: this.#expectedSignetChallenge }),
       capabilities: [...this.#capabilities],
       auth: this.#credentials.kind,
+      ...(this.#tlsSummary === undefined ? {} : { tls: structuredClone(this.#tlsSummary) }),
+      ...(this.#customConnect ? { connect: 'custom' } : {}),
       chainStatus: this.chainStatus,
     }
   }
@@ -831,14 +882,16 @@ export class QbitRpcClient {
 
   /**
    * What a guarded call rejects with when its chain guard threw `error`. A
-   * refusal stands as it is. A failed re-check, or a wait before one that was cut
+   * refusal stands as it is, as does one for a polluted Object.prototype that
+   * came after the call began. A failed re-check, or a wait before one that was cut
    * short, becomes `check_failed` about the call itself, with the failure as
    * `cause`, unless a mismatch was recorded meanwhile, which stands. The failure
    * keeps its classification: a guarded call without side effects retries it
    * under `readRetries`, and a stale socket still gets its extra attempt.
    */
   #guardFailure(method: string, error: unknown): Failure {
-    if (error instanceof Failure && RpcChainGuardError.is(error.error)) return error
+    if (error instanceof Failure && (RpcChainGuardError.is(error.error) || isPollutionRefusal(error.error)))
+      return error
     const refusal = this.#chainRefusal(method)
     if (refusal !== undefined) return new Failure(refusal, false, false)
     // Anything else thrown here, a bug included, still failed before the call was sent.
@@ -949,6 +1002,7 @@ export class QbitRpcClient {
 
   async #single<T>(request: RpcRequest<T>, callOptions?: CallOptions): Promise<T> {
     const { method } = request
+    refusePollution(method)
     const policy = this.#authorize(method, false)
     const id = this.#nextId++
     const body = stringifyRequest({ jsonrpc: '2.0', id, method, params: request.params })
@@ -991,6 +1045,7 @@ export class QbitRpcClient {
 
   async #batch(entries: readonly RpcRequest<unknown>[], callOptions: unknown): Promise<BatchItem<unknown>[]> {
     if (!Array.isArray(entries)) throw new TypeError('batch takes an array of requests')
+    refusePollution(`batch(${entries.length})`)
     const settings = this.#callSettings(callOptions)
     // Refused from the length before anything is copied, and again on the copy, which is what is sent.
     const tooMany = (length: number): void => {
@@ -1188,7 +1243,8 @@ export class QbitRpcClient {
         freshConnection: sideEffects,
       })
     } catch (error) {
-      if (error instanceof ExchangeFailure && error.kind === 'network') this.#invalidateChain()
+      // A changed certificate or address may be another node as much as a dropped connection is.
+      if (error instanceof ExchangeFailure && CONNECTION_KINDS.has(error.kind)) this.#invalidateChain()
       throw error
     }
     if (reply.status === 401) this.#invalidateChain()
@@ -1384,6 +1440,20 @@ interface AttemptContext {
   readonly maxResponseBytes: number
 }
 
+/**
+ * Refuses a call while Object.prototype is polluted, before anything else it
+ * does, so that it fails as this and not as a refused chain check. The
+ * transport checks again before each request and connection.
+ */
+function refusePollution(method: string): void {
+  const polluted = prototypePollution()
+  if (polluted > 0) throw new RpcTransportError(method, 'prototype_polluted', { pollutedKeys: polluted })
+}
+
+function isPollutionRefusal(error: unknown): boolean {
+  return RpcTransportError.is(error) && error.reason === 'prototype_polluted'
+}
+
 /** The error for an attempt whose signal fired: the deadline or the caller's abort. */
 function stopError(method: string, attempt: AttemptContext): QbitRpcError {
   const reason = attempt.signal.reason
@@ -1407,6 +1477,22 @@ function asFailure(method: string, error: unknown, attempt: AttemptContext): Fai
           error.sent,
           true,
           error.staleSocket
+        )
+      // Refusals that trying again would only repeat. An alert after the
+      // request was written is sent: an unknown outcome for a side-effecting call.
+      case 'tls':
+        return new Failure(
+          new RpcTransportError(method, 'tls', error.code === undefined ? {} : { code: error.code }),
+          error.sent,
+          false
+        )
+      case 'not_loopback':
+        return new Failure(new RpcTransportError(method, 'not_loopback'), error.sent, false)
+      case 'prototype_polluted':
+        return new Failure(
+          new RpcTransportError(method, 'prototype_polluted', { pollutedKeys: error.pollutedKeys ?? 0 }),
+          error.sent,
+          false
         )
     }
   }

@@ -25,14 +25,16 @@ const info = await rpc.getBlockchainInfo()
 
 | Option | Default | Notes |
 | --- | --- | --- |
-| `url` | required | `http://` only for a loopback host (`localhost`, `127.0.0.0/8`, `::1`); anything else must be `https://`. No credentials, query or fragment in the URL. The path may name a wallet (`/wallet/<name>`). |
+| `url` | required | `http://` only for a loopback host: an address in `127.0.0.0/8` or `::1` (also as `::ffff:127.0.0.1`), or `localhost`, which every connection resolves and refuses unless all its addresses are loopback (see [localhost](#localhost)); anything else must be `https://`. No credentials, query or fragment in the URL. The path may name a wallet (`/wallet/<name>`). |
 | `wallet` | none | Sends every call to `/wallet/<name>` (URL-encoded). Needed for wallet calls when several wallets are loaded. |
 | `auth` | required | `{ username, password }` (HTTP Basic), or `{ cookieFile }` for a loopback endpoint only. The cookie is read again for every request, so `qbitd` can restart and rotate it. |
+| `tls` | the system's CAs, no client certificate, the URL's host, no pin | For an `https` URL, such as a TLS terminator in front of `qbitd`: `ca`, `cert` and `key` (with `passphrase` for an encrypted key), `servername` and `pinSha256`. Each is checked at construction. Certificate verification cannot be turned off. See [Remote nodes](#remote-nodes). |
+| `connect` | none: connect to the URL's host | A function that opens the stream for each connection, such as a tunnel through a proxy; the client runs TLS over it, with every check. `https` URL and Basic credentials only. See [Proxies](#proxies-connect). |
 | `expectedChain` | required | `main`, `test`, `testnet4`, `signet` or `regtest`. |
 | `expectedGenesisHash` | `expectedChain`'s, see [Chain guard](#chain-guard) | The genesis block hash every chain check expects from `getblockhash 0`: 64 hex characters, either case (compared in lowercase). Set it for a node built with other chain parameters. |
 | `expectedSignetChallenge` | `51` on signet | The `signet_challenge` every chain check expects: non-empty hex of whole bytes (the challenge script), either case (compared in lowercase). Only with `expectedChain: 'signet'`. |
 | `capabilities` | `[]` | Any of `wallet-read`, `wallet-write`, `broadcast`. |
-| `timeoutMs` | 30,000; at least 120,000 for `walletPassphrase` and `walletLock` | One deadline per operation: any wait for a request slot, cookie read, every attempt and every backoff. A shorter value does not shorten their 120 s. Override per call. See [unlocking a wallet](#unlocking-an-encrypted-wallet). |
+| `timeoutMs` | 30,000; at least 120,000 for `walletPassphrase` and `walletLock` | One deadline per operation: any wait for a request slot, cookie read, every attempt and every backoff. A shorter value does not shorten their 120 s. Override per call. See [unlocking a wallet](#unlocking-an-encrypted-wallet). With `connect`, it also bounds a pooled connection still opening after its read gave up (see [Proxies](#proxies-connect)). |
 | `maxResponseBytes` | 16 MiB | Larger replies fail with `RpcResponseTooLargeError` (or an unknown outcome for side-effecting calls). Leave a few KiB at least: the chain check's batched reply (`getblockchaininfo` and `getblockhash 0`) must fit, or every check fails. |
 | `readRetries` | 0 | Opt-in retries for methods without side effects (see below). |
 | `retryDelayMs` | 250 | First backoff; doubles per retry, capped at 10 s, never past the deadline. |
@@ -40,13 +42,20 @@ const info = await rpc.getBlockchainInfo()
 | `maxConcurrentRequests` | 8 | Most requests this client has open at once, on pooled and fresh connections alike (1 to 1,024); it also sizes the keep-alive pool. Further attempts wait in FIFO order under their deadline. See [the work queue](#the-work-queue). |
 | `directNode` | `false` | Set when `url` reaches `qbitd` itself. `qbitd`'s HTTP 503 `Work queue depth exceeded` is then a definite failure, not an unknown outcome. Opt-in, because a proxy in between can answer 503 after forwarding the request. See [the work queue](#the-work-queue). |
 
-The options and `auth` are read once each, from their own enumerable
-properties. An option held any other way (inherited, a class getter, not
-enumerable, or on a polluted `Object.prototype`) is a `TypeError` that names it
-and says to pass a plain object, and so is a hole in `capabilities`: none of
-them can enable a capability, pick a wallet or fill in a password the
-application left out. They are strict too: any other key is a `TypeError` that
-names it, with the key it most likely meant (`timeout` → `timeoutMs`) or the
+The options, and `tls` and `auth` within them, are read once each, when the
+client is constructed, from their own enumerable properties, and the arrays in
+them (`capabilities`, `tls.ca`, `tls.pinSha256`) by their own elements. An
+option, or a key of `tls` or `auth`, held any other way (inherited, a class
+getter, not enumerable, on a polluted `Object.prototype`, left out of the keys
+a `Proxy` lists, or answered only by its `get` trap) is a `TypeError` that names
+it and says to pass a plain object, and so is a hole in one of those arrays.
+Read, such a value could enable a capability, pick a wallet, fill in a password
+the application left out, or change whom the client trusts and how it
+connects; ignored, a `tls`, `ca` or `pinSha256` would leave the client trusting
+more than was asked for. So a polluted `Object.prototype` holding one of these
+names fails at construction, unless the object sets that name itself. They are
+strict too: any other key is a `TypeError` that names it, with the key it most
+likely meant (`timeout` → `timeoutMs`, `server_name` → `tls.servername`) or the
 known keys, so `walletName` cannot silently leave out the wallet. A key that is
 no near miss and either is not a short identifier or sits in an array entry is
 refused as "an unknown key (not shown)", so messages never quote configuration
@@ -70,6 +79,273 @@ and `signal` aborts it (see the [failure model](#failure-model)). A method's own
 options never hold call options, and the call options hold nothing else: a key
 in the wrong one is a `TypeError` that says where it belongs. So a method can
 gain an option named like neither without breaking a caller.
+
+## Remote nodes
+
+`qbitd` serves plain HTTP, and the client sends credentials in cleartext only
+to loopback. A node on another host goes behind a TLS terminator (nginx,
+HAProxy, stunnel, a load balancer), and the client takes an `https` URL:
+
+```ts
+import { readFileSync } from 'node:fs'
+
+const rpc = new QbitRpcClient({
+  url: 'https://qbitd.internal.example:8443/',
+  auth: { username: 'payments', password: process.env.QBIT_RPC_PASSWORD! },
+  expectedChain: 'main',
+  tls: {
+    ca: readFileSync('rpc-ca.pem'), // the terminator's private CA
+    cert: readFileSync('client.pem'), // when it requires a client certificate
+    key: readFileSync('client-key.pem'),
+    pinSha256: ['<the current key>', '<the next key>'],
+  },
+})
+```
+
+Each `tls` option is checked when the client is constructed, a `TypeError`
+naming the option, never its contents:
+
+- `ca`: PEM CA certificates, a string or Buffer holding one or more (text
+  between them, as in CA bundles, is allowed), or an array of them. They
+  replace the system's CAs: the node's certificate must chain to one of them.
+  Leave it out for a certificate from a public CA. For a self-signed
+  certificate, give the certificate itself.
+- `cert` and `key`: the client certificate (then any intermediate
+  certificates) and its PEM private key, for a terminator that requires one
+  (nginx's `ssl_verify_client on`). One without the other, or a key that is not
+  the certificate's, is refused. `passphrase` decrypts an encrypted `key`; it is
+  used once, at construction, and not kept.
+- `servername`: the host name the node's certificate must carry, also sent in
+  SNI, instead of the URL's host: for a URL that names an address, or another
+  name. A DNS name, not an address.
+- `pinSha256`: the base64 SHA-256 of the SubjectPublicKeyInfo (the public
+  key) of the node's certificate, or several. It is checked after the CA and
+  name checks, which still apply, and only the node's own certificate counts,
+  not its CA's. To rotate a key with no outage, add the next key's pin,
+  rotate the terminator's key, then drop the old pin. Revocation (CRL or
+  OCSP) is not checked: a pin, or a short-lived certificate from your own CA,
+  is what limits a stolen key. To compute one:
+
+  ```sh
+  openssl x509 -in node.pem -pubkey -noout | openssl pkey -pubin -outform der | openssl dgst -sha256 -binary | base64
+  ```
+
+The certificate is always verified: there is no `rejectUnauthorized`, and the
+client ignores `NODE_TLS_REJECT_UNAUTHORIZED=0`, which turns verification, and
+with it the name and pin checks, off for Node's own default. Every
+connection, a pooled one for reads and the new one each side-effecting call
+opens, runs a full handshake with every check: the client resumes no TLS
+session, since Node skips the certificate checks on a resumed one, and writes
+nothing to a connection before its checks pass. It also fails a handshake that
+does resume one (`code: 'ESESSIONRESUMED'`). A failure is an
+`RpcTransportError` with `reason: 'tls'` and `code` (see the
+[failure model](#failure-model)): nothing was sent, and it is not retried. An
+error Node throws as it builds the connection is `tls` for a TLS or OpenSSL
+error, and `network` for the socket's, such as an option it refuses, and
+nothing was sent either. What the client does about a polluted
+`Object.prototype` is [below](#a-polluted-objectprototype).
+
+The client takes Node's default trust and protocol settings
+(`tls.setDefaultCACertificates()`, `tls.DEFAULT_MIN_VERSION`,
+`tls.DEFAULT_MAX_VERSION`, `tls.DEFAULT_CIPHERS`) at its first TLS connection,
+or at construction when `tls` sets `ca` or `cert`. Create a new client after
+changing them.
+
+A terminator that refuses the client certificate in the handshake sends a TLS
+alert, `tls` too. Under TLS 1.2 it arrives before the client has written
+anything, and nothing was sent. Under TLS 1.3 the client finishes its side of
+the handshake first and writes the request, and the alert
+(`certificate_required`, `bad_certificate`, `unknown_ca` and the like) arrives
+after it: only the terminator says it read nothing, and one that misbehaves
+could have passed the request on, so for a side-effecting call it is an
+`RpcUnknownOutcomeError` with the `tls` error as its `cause`; a read fails with
+`tls` and is not retried. One that checks the certificate after the handshake
+instead and drops the connection (Node's own TLS server does, for a certificate
+it does not trust) leaves only a reset after the request went out, which the
+client cannot tell from a node failing while it runs the request: for a
+side-effecting call, an `RpcUnknownOutcomeError` too. nginx answers HTTP 400,
+rejected before running anything. `confirmChain()`, a read, meets any of these
+first.
+
+A terminator that answers HTTP itself, such as nginx or HAProxy, can answer
+503 after forwarding a request: leave [`directNode`](#the-work-queue) off.
+Set it only for one that relays bytes and never answers HTTP, such as stunnel.
+One that puts a JSON-RPC error on its own 502, 503 or 504 stays an unknown
+outcome for a side-effecting call ([which statuses are the node's](#which-statuses-are-the-nodes));
+one that does so under 500 reads as the node's answer, so have it answer 502 or
+504 when it times out.
+
+### Proxies: `connect`
+
+The client has no proxy settings of its own. `connect` opens the byte stream
+for each connection, such as a tunnel through an HTTP CONNECT or SOCKS proxy.
+The client runs TLS over it, with every check above, and HTTP over that:
+
+```ts
+import { request } from 'node:http'
+import type { RpcConnect } from '@qbit-oss/rpc'
+
+/** A tunnel through an HTTP CONNECT proxy, given up after 10 s or when the client says so. */
+function viaProxy(proxyHost: string, proxyPort: number): RpcConnect {
+  return ({ host, port, signal }) =>
+    new Promise((resolve, reject) => {
+      const tunnel = request({
+        host: proxyHost,
+        port: proxyPort,
+        method: 'CONNECT',
+        path: `${host}:${port}`,
+        signal: AbortSignal.any([signal, AbortSignal.timeout(10_000)]),
+      })
+      tunnel.once('connect', (response, socket) => {
+        if (response.statusCode === 200) return resolve(socket)
+        socket.destroy()
+        reject(new Error(`proxy answered HTTP ${response.statusCode}`))
+      })
+      tunnel.once('error', reject)
+      tunnel.end()
+    })
+}
+
+const rpc = new QbitRpcClient({
+  url: 'https://qbitd.internal.example:8443/',
+  auth,
+  expectedChain: 'main',
+  tls,
+  connect: viaProxy('proxy.internal.example', 3128),
+})
+```
+
+`connect({ host, port, signal })` gets the URL's host (a name, or an address
+without brackets) and port (443 when the URL names none). It must:
+
+- return a new `stream.Duplex`, such as a `net.Socket`, connected or
+  connecting to that host and port, or a promise of one, on every call. A
+  stream it returned before, one destroyed without an error or anything else
+  is a `TypeError` for the call, with nothing sent. One that has already failed
+  is `reason: 'network'`, nothing sent, with its error's `code`. Keep an `error`
+  listener on a stream until you return it: the client sees it only then, and
+  an error emitted before that, such as from a stream you destroy with an error
+  in the same callback that resolves the promise, has nowhere else to go;
+- throw or reject when it cannot. The call fails with `RpcTransportError`
+  `reason: 'network'`, nothing sent, and the error's `code` when it is a
+  string; the error itself is not kept, as it may quote a proxy's credentials.
+  Reads retry it under `readRetries`. A connection for reads fails only the read
+  it serves by then: never one that has gone out on another connection, and none
+  when no read waits for it. Node's pool opens one by itself for the oldest read
+  queued behind a full pool; when it fails, the next read queued opens its own;
+- stop when `signal` fires: the client has given up on the connection, and
+  destroys a stream that arrives later. It never fires once the connection is
+  in use, and it also ends the TLS handshake over the stream. For a
+  side-effecting call's connection it fires at the call's deadline or abort.
+  A connection for reads serves the pool, so it outlives the read it was
+  opened for, and Node's pool can also open one by itself, for a request queued
+  behind a full pool. Once no read waits for such a connection, its `signal`
+  fires when the client's `timeoutMs` (30 s by default) has passed since it
+  started, or at once when a read that does wait needs its turn; on `close()`
+  it fires at any time. A read that waits still has its own deadline, however
+  long. One that opens after its read gave up waits, idle, for the next read,
+  so a proxy slower than a read's deadline still serves the reads after it. Such
+  a connection keeps no process alive, nor does one still in its handshake.
+  Give up on your own too when the proxy does not answer, as the example does
+  after 10 s.
+
+The client opens at most `maxConcurrentRequests` plus one connections through
+`connect` at once for reads, and as many again for side-effecting calls, so a
+side-effecting call never waits behind connections for reads. Each counts from
+the `connect` call until the call has returned or settled and the TLS handshake
+over its stream has ended; a call that needs another of its kind waits for its
+turn and fails at its deadline, unsent, and one for a read nobody waits for any
+more is dropped without calling `connect`. A stream that closes before the
+handshake has ended fails the connection at once, `network` with `code:
+'ECONNRESET'`, unsent. A `connect` that ignores its `signal` and never settles
+keeps its turn for good: with that many of them, every later call of its kind
+waits and fails at its deadline. A stream that is no `net.Socket` keeps a
+process alive as long as whatever is inside it does, as the client cannot reach
+that.
+
+The client keeps the rest: TLS to the node's terminator, end to end, with the
+CA, name and pin checks on every connection; pooled connections for reads,
+and a new `connect` call for each side-effecting call, whose connection closes
+after the reply; `maxConcurrentRequests` over the requests out; the extra
+attempt after a stale pooled connection; and one deadline over each call,
+`connect` included. What is the caller's: the proxy's
+address, trust and authentication, and the hop to it. A CONNECT request's
+`Proxy-Authorization` travels in cleartext unless the connection to the proxy
+is itself TLS; the proxy sees the node's host and port, and through the tunnel
+only TLS. `connect` needs an `https` URL and Basic credentials: over `http`, or
+with a cookie, the client could not see where the credentials go.
+
+### A polluted `Object.prototype`
+
+Every object inherits what `Object.prototype` holds wherever it has no
+property of its own, and Node reads connection options, socket state and the
+node's certificate from objects. So at the start of every call, once a client
+method has built its request and before anything else the call does, and again
+before it opens a connection and
+before it sends each request, a pooled one included, the client checks
+`Object.prototype`: if it has any enumerable property of its own, the call is
+refused with `RpcTransportError` `reason: 'prototype_polluted'`. Nothing was
+sent, it is not retried, and no option turns it off. The message gives how
+many such properties there are, never their names, which come from whatever
+put them there. Neither the language nor Node puts one there; something in
+this process did, typically JSON parsed into a deep merge, or a path
+assignment, that followed a `__proto__` key. Find it and remove it, and fix the
+code that let it in: until then every call fails. A polyfill defines its
+methods non-enumerable, as the language's own are, and is not refused.
+
+That check is the protection. Behind it, for a property that is not
+enumerable or appears during a handshake, the client also:
+
+- reads the caller's objects (its options, `tls` and `auth`, request options
+  and arguments, the call options, `batch()` entries) and the node's replies
+  from their own properties only, as [Client options](#client-options) and
+  [Typed methods](#typed-methods) say;
+- sets every option Node reads from the objects it passes to `net.connect`,
+  `tls.connect`, `http.request`, `https.request` and `dns.lookup`, and from
+  Node's copies of them, own and undefined where unused, as found on Node
+  22.13 and 24. None is read from the prototype: not a session to resume, a
+  stream, path or lookup to connect through, nor an `agent` in place of the
+  client's connections;
+- reads the fields of the node's certificate that the name check uses
+  (`subject` and `subjectaltname`), and for the pins its `raw` bytes, as the
+  certificate's own properties only. Node 22 leaves `subjectaltname` unset on
+  a certificate without one, and its own name check would read the
+  prototype's.
+
+What it cannot reach are the objects Node builds itself: the options of the
+socket under a TLS socket and of the stream around a `connect` stream (such as
+`pauseOnConnect`, `handshakeTimeout`, `handle` and `objectMode`), the socket
+itself (its `blockList`), the certificate Node translates, stream state and
+event listener tables. None of the keys checked lets a certificate, name or pin
+check be skipped, or credentials in cleartext leave loopback.
+
+**Known limit: pollution after the check can still crash the process.** The
+check cannot see what lands after it, while a connection opens. The client
+does not chase these keys into Node, as the outcome fails closed: the crash
+comes before that connection carries a request. Any other call in flight dies
+with the process, and its outcome is unknown. An application must remove the
+pollution. Found on the versions tested, each thrown uncaught from inside Node,
+and the same applies to a property that is not enumerable, which the check does
+not see:
+
+| Key on `Object.prototype` | Node | Thrown | When |
+| --- | --- | --- | --- |
+| `blockList`, not a block list | 22.13 and 24 | `self.blockList?.check is not a function` | A connection Node opens to the URL's host, pooled or fresh, not one through `connect`. |
+| `handshakeTimeout`, not a number but above 0, such as `true` | 22.13 and 24 | `ERR_INVALID_ARG_TYPE` | A direct TLS connection, not one through `connect`. |
+| `infoAccess`, not a string | 22.13 | `info.replace is not a function` | Any TLS handshake, `connect` included. |
+
+### localhost
+
+With an `http` URL, or with cookie authentication, credentials go to loopback
+only. An address in the URL (127.0.0.0/8, `::1`, or IPv4 loopback mapped to
+IPv6, `::ffff:127.0.0.1`) is checked when the client is constructed, and any
+name but `localhost` is a `TypeError`. `localhost` is resolved as each
+connection is made, by the system resolver (the hosts file, DNS), and the
+connection is refused before anything is sent, `RpcTransportError`
+`reason: 'not_loopback'`, unless every address is loopback: one address
+elsewhere among them refuses it. Node connects to the addresses checked, with
+no second lookup, so a name that resolves elsewhere later is caught by the
+connection that would have gone there.
 
 ## Capabilities and the allowlist
 
@@ -529,7 +805,8 @@ to use (`subtract_fee_from_outputs` → `subtractFeeFromOutputs`, `fee_rate` →
 (`fee_rate` is bits/vB, `feeRateBitsPerKvB` bits per 1,000 vbytes). Each object
 is read from its own enumerable properties only, each once, so a getter on the
 object itself runs once. A key it takes that the object holds any other way
-(inherited, a class getter, not enumerable, or on a polluted `Object.prototype`)
+(inherited, a class getter, not enumerable, on a polluted `Object.prototype`,
+left out of the keys a `Proxy` lists, or answered only by its `get` trap)
 rejects with a `TypeError` that names it and says to pass a plain object: copy
 a class instance's values into one. An unknown key only on `Object.prototype` is
 skipped, as its value is never read, and an object left out reads as empty
@@ -625,7 +902,10 @@ you made, or in `cause` the request that failed. Every error has its own
 | `RpcChainGuardError` | `reason: 'stale'` | Every chain check the call ran was overtaken by a connection error, an HTTP 401 or another check. | Not sent | Try again later. |
 | `RpcChainGuardError` | `reason: 'check_failed'` | The chain re-check before the call failed; `cause` is the failure. | Not sent | Safe to call again; `cause` tells whether soon is any use. |
 | `RpcError` | | The node answered with an error, under HTTP 200, 400, 404 or 500: `rpcCode` and `message` are the node's. | The node's answer: not an unknown outcome | Handle by `rpcCode`, for example -26 rejected, -25 missing inputs, -27 already confirmed, -14 wrong passphrase, -28 node warming up. |
-| `RpcTransportError` | `reason: 'network'` | The connection failed; `code` is the system's, such as `ECONNREFUSED`. | Not sent when no connection was made (refused, DNS, TLS); once one exists, an unknown outcome | Retry reads later. |
+| `RpcTransportError` | `reason: 'network'` | The connection failed; `code` is the system's, such as `ECONNREFUSED`, or the error's of a [`connect` function](#proxies-connect). | Not sent when no connection was made (refused, DNS, a reset during the TLS handshake, `connect` failing); once one exists, an unknown outcome | Retry reads later. |
+| `RpcTransportError` | `reason: 'tls'` | The TLS handshake failed or was refused: the node's certificate is not trusted (`code` such as `UNABLE_TO_VERIFY_LEAF_SIGNATURE` or `CERT_HAS_EXPIRED`), names another host (`ERR_TLS_CERT_ALTNAME_INVALID`) or carries a key no `tls.pinSha256` names (`EPINMISMATCH`, this package's); a handshake resumed a TLS session, which the client never offers (`ESESSIONRESUMED`, this package's); or the terminator refused the handshake with an alert, such as for a client certificate missing or not trusted (`ERR_SSL_TLSV13_ALERT_CERTIFICATE_REQUIRED`, `ERR_SSL_SSL/TLS_ALERT_BAD_CERTIFICATE`, `ERR_SSL_TLSV1_ALERT_UNKNOWN_CA`, `EPROTO` before TLS 1.3). See [Remote nodes](#remote-nodes). | Not sent when the handshake failed before the request was written, as it does under TLS 1.2 and for the client's own checks; an alert after that, under TLS 1.3, is the `cause` of an `RpcUnknownOutcomeError` for a side-effecting call | Fix the `tls` settings or the terminator's. Not retried. A key no pin names can be an attack. |
+| `RpcTransportError` | `reason: 'not_loopback'` | `localhost`, in an `http` URL or with cookie authentication, resolved to an address that is not loopback, or to some. See [localhost](#localhost). | Not sent | Fix the hosts file or DNS, or put `127.0.0.1` in the URL. Not retried. |
+| `RpcTransportError` | `reason: 'prototype_polluted'` | `Object.prototype` has enumerable properties of its own, which something in this process put there, such as JSON parsed into a deep merge that followed `__proto__`; the message says how many. Every call fails until they are gone. See [a polluted `Object.prototype`](#a-polluted-objectprototype). | Not sent | Find and remove the pollution, and fix the code that let it in. Not retried. |
 | `RpcTransportError` | `reason: 'http_status'` | An HTTP status without the node's JSON-RPC reply, `status`: 401 credentials; 403 `rpcallowip`, or an `-rpcwhitelist` that does not allow a method sent (the chain check needs `getblockhash` too); 502, 503 or 504 from a gateway, even with a JSON-RPC error body ([which statuses are the node's](#which-statuses-are-the-nodes)). | Not run for 3xx and 4xx, and for `Work queue depth exceeded` with `directNode`; any other 5xx, and a JSON-RPC error body under a status the node does not use for one, is an unknown outcome | Retry reads later; fix configuration for 401 and 403. |
 | `RpcTransportError` | `reason: 'credentials'` | The cookie file could not be read; `code` says why, such as `ENOENT`, or `EMALFORMED`, `ETOOBIG` or `EREAD` from this package. | Not sent | Check the cookie file. |
 | `RpcTimeoutError` | | The operation's deadline (`timeoutMs`) expired. | Not sent when it expired waiting for a slot, reading the cookie or before a connection was made; during the re-check it is the `cause` of `check_failed`; after that, an unknown outcome | Retry reads if appropriate. |
@@ -641,6 +921,8 @@ A bad argument or option is a `TypeError` or `RangeError`, and nothing is sent.
 with `method` the call's, so any error other than an `RpcUnknownOutcomeError` or a
 node's `RpcError` means it did not run:
 
+- a polluted `Object.prototype`, before anything else and at any point below:
+  `RpcTransportError` `prototype_polluted`;
 - the capability check: `RpcCapabilityError`;
 - the guard's first decision, and its last after any wait: `RpcChainGuardError`
   `unconfirmed` or `mismatch`;
@@ -652,8 +934,10 @@ node's `RpcError` means it did not run:
   `RpcChainGuardError` `check_failed`;
 - chain checks that kept being overtaken, or a wait that would pass the deadline:
   `RpcChainGuardError` `stale`;
-- the connection, before one exists: `RpcTransportError` `network`, or
-  `RpcTimeoutError` or `RpcAbortedError`;
+- the connection, before one exists: `RpcTransportError` `network`, `tls` or
+  `not_loopback`, a `TypeError` for a `connect` function that returned no new stream, or `RpcTimeoutError` or
+  `RpcAbortedError`. A TLS alert after the request was written, under TLS 1.3,
+  is not among these;
 - HTTP 3xx and 4xx, unless with a JSON-RPC error body under a status other than
   400 and 404, and `Work queue depth exceeded` with `directNode`:
   `RpcTransportError` `http_status`, rejected without running it.
@@ -662,9 +946,13 @@ Retries, deadlines and connections work like this:
 
 - **Retries** happen only for methods without side effects, only when
   `readRetries` is set (apart from the keep-alive retry below), and only for
-  connection errors, HTTP 5xx, cookie read failures, HTTP 401 under cookie auth
-  (the cookie may have rotated), and (single calls and the chain check) RPC
-  error -28 while the node warms up. Side-effecting calls are never retried.
+  connection errors (`network`, not `tls`, `not_loopback` or
+  `prototype_polluted`), HTTP 5xx, cookie read failures, HTTP 401 under cookie
+  auth (the cookie may have rotated), and (single calls and the chain check)
+  RPC error -28 while the node warms up. Side-effecting calls are never
+  retried. `network` includes an option Node refuses as it opens a connection,
+  one a non-enumerable property of `Object.prototype` can supply: such a read
+  gets the same refusal on each of its retries, unsent.
 - **Deadline.** `timeoutMs` covers the whole operation: any wait for a request
   slot, cookie read, every attempt, every backoff and every item of a batch. On
   expiry the request is destroyed and its socket released.
@@ -677,8 +965,8 @@ Retries, deadlines and connections work like this:
   race below happens more often: each one costs an extra attempt and a chain
   re-check. A request written to a connection just as qbitd closes it is reset
   before any reply. A request without side effects that is reset this way
-  (`ECONNRESET` or `EPIPE` on a reused connection, within 1 s of going out
-  and before any byte of the reply) gets one more attempt at once, under the
+  (`ECONNRESET` or `EPIPE` on a reused connection, or one kept after its read
+  gave up, within 1 s of going out and before any byte of the reply) gets one more attempt at once, under the
   same deadline, even with `readRetries: 0` and not counted in it, and the
   other idle connections are closed first. The reset makes the chain
   confirmation stale, since a qbitd restart looks the same, and the attempt
@@ -691,8 +979,9 @@ Retries, deadlines and connections work like this:
   reply that began get no extra attempt, so a proxy in between is covered only
   if it closes idle connections silently: one that answers first (HTTP 408) is
   not retried.
-- Side-effecting calls use a fresh connection each, so a stale keep-alive
-  socket cannot turn into an unknown outcome, and are never sent twice.
+- Side-effecting calls use a fresh connection each, through `connect` too,
+  so a stale keep-alive socket cannot turn into an unknown outcome, and are
+  never sent twice.
 - A wallet `RpcError` means the node answered with an error. For
   `walletprocesspsbt`, qbit Core may still have advanced the PQC signature
   counters of keys it tried.
@@ -776,7 +1065,12 @@ arrives as the `cause` of an `RpcUnknownOutcomeError`, since the node has acted.
 
 Credentials live in private class fields. `JSON.stringify(client)` and
 `util.inspect(client)` show only the URL, chain, expected genesis hash (and,
-on signet, challenge), capabilities, auth kind and chain status. Messages and
+on signet, challenge), capabilities, auth kind and chain status; with `tls`, whether it sets a CA and a client
+certificate, its `servername` and its pins, which are public; and
+`connect: 'custom'` with a `connect` function. `tls.key` and `tls.passphrase`
+go into Node's TLS context at construction and are not kept, and an error
+about them names the option only. A `connect` function's own errors are not
+kept either. Messages and
 properties this package writes never include credentials, cookie contents,
 request parameters or request bodies.
 `RpcError.message` is the node's own text, which can quote an argument such as
