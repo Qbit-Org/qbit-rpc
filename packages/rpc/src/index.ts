@@ -1,5 +1,12 @@
 export { QbitRpcClient } from './client'
-export type { BatchItem, BatchResults, CallOptions, ChainStatus, QbitRpcClientOptions } from './client'
+export type {
+  BatchItem,
+  BatchResults,
+  CallOptions,
+  ChainStatus,
+  ExtraMethodPolicy,
+  QbitRpcClientOptions,
+} from './client'
 export type { Capability, QbitChain } from './capabilities'
 export type { RpcAuth, RpcConnect, RpcConnectTarget, RpcTlsOptions } from './endpoint'
 export {

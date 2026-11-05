@@ -925,6 +925,7 @@ const CLIENT_SAMPLES: Readonly<Record<string, unknown>> = {
   expectedGenesisHash: HASH_B,
   expectedSignetChallenge: '51',
   capabilities: ['broadcast', 'wallet-write'],
+  extraMethods: { getchaintxstats: { capability: 'read', sideEffects: false } },
   timeoutMs: 1,
   maxResponseBytes: 2048,
   readRetries: 10,
@@ -1007,7 +1008,7 @@ describe('client options under a polluted Object.prototype', () => {
 describe('client options are strict', () => {
   const OPTIONS =
     'url, wallet, auth, tls, connect, expectedChain, expectedGenesisHash, expectedSignetChallenge, capabilities, ' +
-    'timeoutMs, maxResponseBytes, readRetries, retryDelayMs, chainCheckMaxAgeMs, maxConcurrentRequests, directNode, ' +
+    'extraMethods, timeoutMs, maxResponseBytes, readRetries, retryDelayMs, chainCheckMaxAgeMs, maxConcurrentRequests, directNode, ' +
     'allowUnsupportedNodeVersion'
   const TLS = 'ca, cert, key, passphrase, servername, pinSha256'
 
