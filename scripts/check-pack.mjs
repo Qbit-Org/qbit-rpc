@@ -40,9 +40,10 @@ const FILES = [
 const MAPS = { 'lib/index.js.map': [], 'lib/index.mjs.map': ['../src/index.ts'] }
 
 // Unpacked bytes, about a quarter above the size when the ceiling was set
-// (1,452,000 and 168,000). Raise one deliberately, in the pull request that
-// needs it.
-const CEILINGS = { rpc: 1_815_000, zmq: 210_000 }
+// (1,452,000 and 168,000; zmq raised at 224,000, when heartbeats and the
+// subscriber's own reconnect came in). Raise one deliberately, in the pull
+// request that needs it.
+const CEILINGS = { rpc: 1_815_000, zmq: 280_000 }
 
 const packages = ['rpc', 'zmq']
 const rootLicense = readFileSync(join(repoRoot, 'LICENSE'), 'utf8')

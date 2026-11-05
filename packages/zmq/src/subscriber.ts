@@ -16,12 +16,16 @@ export interface ZmqSocket {
   receive(): Promise<readonly Uint8Array[]>
   close(): void
   /**
-   * Socket events (`zeromq`'s observer). When present, a `disconnect` makes
-   * the subscriber replace the socket: libzmq does not reconnect after it
-   * drops a peer for an oversized message, and messages published while
-   * disconnected are lost.
+   * Socket events (`zeromq`'s observer). When present, the subscriber replaces
+   * the socket on a `disconnect` (the connection dropped) or a `close` (a
+   * connection attempt failed), and when no `handshake` (a connection is
+   * ready) has come within its handshake deadline of `connect()`: a
+   * {@link createZeromqSocket} socket does not reconnect by itself, and
+   * messages published meanwhile are lost anyway. A custom socket with
+   * `events` emits all three, as `zeromq`'s does; for one that never emits
+   * `handshake`, the first message counts as one.
    */
-  readonly events?: { on(type: 'disconnect', listener: () => void): unknown }
+  readonly events?: { on(type: 'disconnect' | 'close' | 'handshake', listener: () => void): unknown }
 }
 
 export interface ZmqSocketSettings {
@@ -34,6 +38,39 @@ export interface ZmqSocketSettings {
    * does for its publisher. Default false.
    */
   readonly ipv6?: boolean
+  /**
+   * libzmq's `ZMQ_HEARTBEAT_IVL`: send a ZMTP PING every this many ms; 0 sends
+   * none. The subscriber always passes it; left out, libzmq's default (0) stays.
+   */
+  readonly heartbeatIntervalMs?: number
+  /**
+   * `ZMQ_HEARTBEAT_TIMEOUT`: drop the connection when nothing arrives within
+   * this many ms of a PING. The subscriber always passes it.
+   */
+  readonly heartbeatTimeoutMs?: number
+  /**
+   * `ZMQ_HEARTBEAT_TTL`: ask the publisher to drop the connection when nothing
+   * arrives from this socket within this many ms; 0 asks nothing. The
+   * subscriber always passes it.
+   */
+  readonly heartbeatTtlMs?: number
+  /**
+   * `ZMQ_HANDSHAKE_IVL`: drop a connection whose ZMTP handshake has not
+   * completed within this many ms. The subscriber always passes it:
+   * `heartbeatIntervalMs + heartbeatTimeoutMs`, or 30,000 without heartbeats.
+   */
+  readonly handshakeIntervalMs?: number
+  /**
+   * `ZMQ_TCP_KEEPALIVE`: true turns TCP keepalive on, false off. Passed only
+   * when set; left out, the operating system's default stays (off on Linux).
+   */
+  readonly tcpKeepalive?: boolean
+  /** `ZMQ_TCP_KEEPALIVE_IDLE`, in seconds. Passed only when set. */
+  readonly tcpKeepaliveIdleSeconds?: number
+  /** `ZMQ_TCP_KEEPALIVE_INTVL`, in seconds. Passed only when set. */
+  readonly tcpKeepaliveIntervalSeconds?: number
+  /** `ZMQ_TCP_KEEPALIVE_CNT`. Passed only when set. */
+  readonly tcpKeepaliveCount?: number
 }
 
 /** Makes a socket; a custom factory should apply `settings` itself. */
@@ -50,6 +87,35 @@ export const DEFAULT_MAX_MESSAGE_SIZE = MAX_BLOCK_BYTES + 65_536
 
 /** The default `staleAfterMs`: ten minutes, about ten block intervals. */
 export const DEFAULT_STALE_AFTER_MS = 600_000
+
+/** The default `heartbeatIntervalMs`. */
+export const DEFAULT_HEARTBEAT_INTERVAL_MS = 10_000
+
+/**
+ * The default `heartbeatTimeoutMs`. With the default interval, a publisher
+ * that stops answering is dropped within 30 s.
+ */
+export const DEFAULT_HEARTBEAT_TIMEOUT_MS = 20_000
+
+/** The largest `heartbeatTtlMs`: libzmq sends the TTL in deciseconds, in 16 bits. */
+const MAX_HEARTBEAT_TTL_MS = 6_553_500
+
+/** libzmq keeps the TTL in deciseconds, rounding down: 310 ms is sent as 300. */
+const HEARTBEAT_TTL_UNIT_MS = 100
+
+/**
+ * The default `heartbeatTtlMs`, or twice `heartbeatIntervalMs` rounded up to a
+ * multiple of 100 when that is longer: qbitd then drops a subscriber whose
+ * process stops for that long, and frees its queue.
+ */
+export const DEFAULT_HEARTBEAT_TTL_MS = 30_000
+
+/**
+ * The handshake deadline without heartbeats: libzmq's own default
+ * `ZMQ_HANDSHAKE_IVL`. With heartbeats it is `heartbeatIntervalMs +
+ * heartbeatTimeoutMs`.
+ */
+const HANDSHAKE_WITHOUT_HEARTBEATS_MS = 30_000
 
 export interface QbitZmqSubscriberOptions {
   /**
@@ -79,9 +145,66 @@ export interface QbitZmqSubscriberOptions {
    */
   readonly maxMessageSize?: number
   /**
+   * Send a ZMTP heartbeat (PING) to the publisher every this many ms, an
+   * integer from 100 to 3,600,000, or 0 for none. qbitd's libzmq answers each
+   * one. Default 10,000.
+   */
+  readonly heartbeatIntervalMs?: number
+  /**
+   * Drop the connection when nothing, a PONG or a message, arrives within this
+   * many ms of a heartbeat, an integer from 100 to 3,600,000; the subscriber
+   * then yields a `reconnect` with `reason: 'disconnected'` and replaces the
+   * socket. A publisher that stops answering without closing the connection
+   * (qbitd hung or paused, its host gone) is so dropped within
+   * `heartbeatIntervalMs + heartbeatTimeoutMs`, long before `staleAfterMs`, and
+   * a new connection whose handshake has not completed within that time is
+   * dropped too. So is a healthy publisher when the consumer falls behind:
+   * libzmq stops reading a connection whose receive queue (1,000 messages) is
+   * full, PONGs included. Default 20,000. Unused when `heartbeatIntervalMs` is
+   * 0, and then 0 is accepted too.
+   */
+  readonly heartbeatTimeoutMs?: number
+  /**
+   * Ask the publisher to drop the connection when it hears nothing from this
+   * subscriber for this many ms, so a subscriber that hangs does not hold
+   * qbitd's queue: 0 for no limit, or an integer up to 6,553,500 that is at
+   * least twice `heartbeatIntervalMs` once libzmq has rounded it down to a
+   * multiple of 100. qbitd restarts the limit at each heartbeat, so one shorter
+   * than the interval drops a healthy subscriber. Default 30,000, or twice the
+   * interval rounded up to a multiple of 100 when that is longer. Unused when
+   * `heartbeatIntervalMs` is 0, and then 0 (the default) or from 100.
+   */
+  readonly heartbeatTtlMs?: number
+  /**
+   * TCP keepalive on the connection: true to turn it on, false to turn it off.
+   * Default: the operating system's (off on Linux). It detects a peer host
+   * that is gone, not a process that hangs, and only on an idle connection,
+   * which heartbeats keep busy: it is for a publisher that does not answer
+   * heartbeats, with `heartbeatIntervalMs: 0`. A `TypeError` with an `ipc://` url.
+   */
+  readonly tcpKeepalive?: boolean
+  /**
+   * Idle seconds before the first keepalive probe, an integer from 1 to
+   * 32,767. Needs `tcpKeepalive: true`. Default: the OS's (7,200 on Linux).
+   */
+  readonly tcpKeepaliveIdleSeconds?: number
+  /**
+   * Seconds between keepalive probes, an integer from 1 to 32,767. Needs
+   * `tcpKeepalive: true`. Default: the OS's (75 on Linux).
+   */
+  readonly tcpKeepaliveIntervalSeconds?: number
+  /**
+   * Unanswered probes before the connection drops, an integer from 1 to 127.
+   * Needs `tcpKeepalive: true`. Default: the OS's (9 on Linux).
+   */
+  readonly tcpKeepaliveCount?: number
+  /**
    * Socket source. Default: {@link createZeromqSocket}, loaded on first use.
-   * It receives `{ maxMessageSize, ipv6 }`, with `ipv6` true when the url's
-   * host is an IPv6 address, and should apply both. A factory can throw a
+   * It receives `{ maxMessageSize, ipv6, heartbeatIntervalMs,
+   * heartbeatTimeoutMs, heartbeatTtlMs, handshakeIntervalMs }`, with `ipv6`
+   * true when the url's host is an IPv6 address, and the `tcpKeepalive`
+   * options that are set, and should apply them all, and turn off libzmq's own
+   * reconnect as {@link createZeromqSocket} does. A factory can throw a
    * {@link ZmqSetupError} to end the iteration instead of being retried.
    */
   readonly socketFactory?: ZmqSocketFactory
@@ -124,10 +247,14 @@ export type ZmqEvent =
       readonly kind: 'reconnect'
       readonly attempt: number
       /**
-       * `disconnected`: the connection to the publisher dropped (qbitd stopped
-       * or restarted, or sent a message over `maxMessageSize`). `failed`:
-       * making, connecting or receiving on the socket failed, other than with
-       * a {@link ZmqSetupError}.
+       * `disconnected`: a connection to the publisher dropped after its
+       * handshake: qbitd stopped or restarted, sent a message over
+       * `maxMessageSize`, or missed a heartbeat, which also happens when the
+       * consumer falls behind long enough to fill the receive queue.
+       * `failed`: no connection was made (qbitd down, the host name did not
+       * resolve, or no handshake within the deadline), or making, connecting
+       * or receiving on the socket failed, other than with a
+       * {@link ZmqSetupError}.
        */
       readonly reason: 'disconnected' | 'failed'
       /** For `failed`, the code of the error the socket call failed with, when it had one. */
@@ -205,14 +332,16 @@ Object.defineProperty(ZmqSetupError.prototype, SETUP_ERROR_BRAND, { value: true 
 const ZEROMQ_RANGE = '^6.5.0'
 
 /**
- * A `zeromq` `Subscriber` with `settings` applied. `zeromq` loads lazily, so
- * the parser works without the native addon; a failure to load it is a
- * {@link ZmqSetupError}.
+ * A `zeromq` `Subscriber` with `settings` applied, which libzmq does not
+ * reconnect by itself (`ZMQ_RECONNECT_IVL` -1): the subscriber replaces it
+ * instead. Code that reads one itself must replace it on a `disconnect` or
+ * `close` event. `zeromq` loads lazily, so the parser works without the native
+ * addon; a failure to load it is a {@link ZmqSetupError}.
  */
 export async function createZeromqSocket(
   settings: ZmqSocketSettings = { maxMessageSize: DEFAULT_MAX_MESSAGE_SIZE }
 ): Promise<ZmqSocket> {
-  let zeromq: { Subscriber?: new () => ZmqSocket & { maxMessageSize: number; ipv6: boolean } }
+  let zeromq: { Subscriber?: new () => ZeromqSubscriber }
   try {
     zeromq = (await import('zeromq')) as unknown as typeof zeromq
   } catch (error) {
@@ -229,9 +358,50 @@ export async function createZeromqSocket(
     )
   }
   const socket = new zeromq.Subscriber()
+  // Once libzmq has reconnected a socket by itself, reading it can abort the
+  // process: libzmq 4.3.5 asserts (`_input_stopped`, stream_engine_base.cpp)
+  // when the new connection is told to resume reading, which a read does once
+  // the old connection had filled the receive queue (libzmq #3596 and #4841,
+  // #41). Its heartbeats drop exactly such a connection, and a receive already
+  // pending when the event loop is blocked reads it before the subscriber can
+  // close the socket. A socket that never reconnects by itself never meets
+  // that, and the subscriber replaces it on `disconnect` and `close`.
+  socket.reconnectInterval = -1
   socket.maxMessageSize = settings.maxMessageSize
   if (settings.ipv6 === true) socket.ipv6 = true
+  if (settings.heartbeatIntervalMs !== undefined) socket.heartbeatInterval = settings.heartbeatIntervalMs
+  if (settings.heartbeatTimeoutMs !== undefined) socket.heartbeatTimeout = settings.heartbeatTimeoutMs
+  if (settings.heartbeatTtlMs !== undefined) socket.heartbeatTimeToLive = settings.heartbeatTtlMs
+  if (settings.handshakeIntervalMs !== undefined) socket.handshakeInterval = settings.handshakeIntervalMs
+  if (settings.tcpKeepalive !== undefined) socket.tcpKeepalive = settings.tcpKeepalive ? 1 : 0
+  if (settings.tcpKeepaliveIdleSeconds !== undefined) socket.tcpKeepaliveIdle = settings.tcpKeepaliveIdleSeconds
+  if (settings.tcpKeepaliveIntervalSeconds !== undefined) {
+    socket.tcpKeepaliveInterval = settings.tcpKeepaliveIntervalSeconds
+  }
+  if (settings.tcpKeepaliveCount !== undefined) socket.tcpKeepaliveCount = settings.tcpKeepaliveCount
   return socket
+}
+
+/** The options of `zeromq`'s `Subscriber` that {@link createZeromqSocket} sets. */
+type ZeromqSubscriber = ZmqSocket & {
+  reconnectInterval: number
+  maxMessageSize: number
+  ipv6: boolean
+  heartbeatInterval: number
+  heartbeatTimeout: number
+  heartbeatTimeToLive: number
+  handshakeInterval: number
+  tcpKeepalive: number
+  tcpKeepaliveIdle: number
+  tcpKeepaliveInterval: number
+  tcpKeepaliveCount: number
+}
+
+/** `value` if it is an integer from `min` to `max`, or `zero` and it is 0; else a RangeError. */
+function integerOption(name: string, value: number, min: number, max: number, zero = false): number {
+  if (Number.isSafeInteger(value) && ((zero && value === 0) || (value >= min && value <= max))) return value
+  const range = `an integer from ${min} to ${max}`
+  throw new RangeError(`${name} must be ${zero ? `0 or ${range}` : range}`)
 }
 
 function errorCode(error: unknown): string | undefined {
@@ -300,8 +470,9 @@ export class QbitZmqSubscriber implements AsyncIterable<ZmqEvent> {
   readonly #topics: readonly ZmqTopic[]
   readonly #reconnectDelayMs: number
   readonly #staleAfterMs: number
-  readonly #maxMessageSize: number
-  readonly #ipv6: boolean
+  readonly #socketSettings: ZmqSocketSettings
+  /** How long after `connect()` a socket's first handshake may take before it is replaced. */
+  readonly #handshakeDeadlineMs: number
   readonly #socketFactory: ZmqSocketFactory
   readonly #tracker = new SequenceTracker()
   #socket: ZmqSocket | undefined
@@ -335,12 +506,76 @@ export class QbitZmqSubscriber implements AsyncIterable<ZmqEvent> {
     if (!Number.isSafeInteger(maxMessageSize) || maxMessageSize < 1024 || maxMessageSize > 0x7fff_ffff) {
       throw new RangeError('maxMessageSize must be an integer from 1024 to 2147483647')
     }
+    const heartbeatIntervalMs = integerOption(
+      'heartbeatIntervalMs',
+      options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS,
+      100,
+      3_600_000,
+      true
+    )
+    const heartbeats = heartbeatIntervalMs > 0
+    // Unused without heartbeats, the timeout may then be 0, as the TTL may.
+    const heartbeatTimeoutMs = integerOption(
+      'heartbeatTimeoutMs',
+      options.heartbeatTimeoutMs ?? DEFAULT_HEARTBEAT_TIMEOUT_MS,
+      100,
+      3_600_000,
+      !heartbeats
+    )
+    // Without heartbeats no PING carries a TTL; a TTL must also allow a missed
+    // PING once libzmq has rounded it down to whole deciseconds.
+    const minimumTtl = Math.ceil((2 * heartbeatIntervalMs) / HEARTBEAT_TTL_UNIT_MS) * HEARTBEAT_TTL_UNIT_MS
+    const defaultTtl =
+      !heartbeats || minimumTtl > MAX_HEARTBEAT_TTL_MS ? 0 : Math.max(DEFAULT_HEARTBEAT_TTL_MS, minimumTtl)
+    const heartbeatTtlMs = integerOption(
+      'heartbeatTtlMs',
+      options.heartbeatTtlMs ?? defaultTtl,
+      100,
+      MAX_HEARTBEAT_TTL_MS,
+      true
+    )
+    const sentTtl = heartbeatTtlMs - (heartbeatTtlMs % HEARTBEAT_TTL_UNIT_MS)
+    if (heartbeats && heartbeatTtlMs > 0 && sentTtl < 2 * heartbeatIntervalMs) {
+      throw new RangeError(
+        `heartbeatTtlMs must be 0 or, rounded down to a multiple of 100 as libzmq sends it, at least twice heartbeatIntervalMs: at least ${minimumTtl}`
+      )
+    }
+    const handshakeIntervalMs = heartbeats ? heartbeatIntervalMs + heartbeatTimeoutMs : HANDSHAKE_WITHOUT_HEARTBEATS_MS
+    const keepalive = options.tcpKeepalive
+    if (keepalive !== undefined && typeof keepalive !== 'boolean') throw new TypeError('tcpKeepalive must be a boolean')
+    if (keepalive !== undefined && options.url.startsWith('ipc://')) {
+      throw new TypeError('tcpKeepalive is for a tcp:// url: an ipc:// connection has no TCP keepalive')
+    }
+    const keepaliveSettings: {
+      tcpKeepalive?: boolean
+      tcpKeepaliveIdleSeconds?: number
+      tcpKeepaliveIntervalSeconds?: number
+      tcpKeepaliveCount?: number
+    } = keepalive === undefined ? {} : { tcpKeepalive: keepalive }
+    for (const [name, max] of [
+      ['tcpKeepaliveIdleSeconds', 32_767],
+      ['tcpKeepaliveIntervalSeconds', 32_767],
+      ['tcpKeepaliveCount', 127],
+    ] as const) {
+      const value = options[name]
+      if (value === undefined) continue
+      if (keepalive !== true) throw new TypeError(`${name} needs tcpKeepalive: true`)
+      keepaliveSettings[name] = integerOption(name, value, 1, max)
+    }
     this.#url = options.url
     this.#topics = [...topics]
     this.#reconnectDelayMs = delay
     this.#staleAfterMs = stale
-    this.#maxMessageSize = maxMessageSize
-    this.#ipv6 = ipv6
+    this.#socketSettings = {
+      maxMessageSize,
+      ipv6,
+      heartbeatIntervalMs,
+      heartbeatTimeoutMs,
+      heartbeatTtlMs,
+      handshakeIntervalMs,
+      ...keepaliveSettings,
+    }
+    this.#handshakeDeadlineMs = handshakeIntervalMs
     this.#socketFactory = options.socketFactory ?? createZeromqSocket
   }
 
@@ -385,26 +620,55 @@ export class QbitZmqSubscriber implements AsyncIterable<ZmqEvent> {
       while (!this.#closed) {
         let socket: ZmqSocket | undefined
         let failure: unknown
-        let disconnected = false
+        let dropped: 'disconnected' | 'failed' | undefined
+        let handshakeTimer: ReturnType<typeof setTimeout> | undefined
         let step: 'create' | 'connect' | 'receive' = 'create'
         try {
-          socket = await this.#socketFactory({ maxMessageSize: this.#maxMessageSize, ipv6: this.#ipv6 })
+          socket = await this.#socketFactory({ ...this.#socketSettings })
           if (this.#closed) break
           const current = socket
           this.#socket = current
           this.#receivedOnSocket = false
-          current.events?.on('disconnect', () => {
-            if (this.#socket !== current || this.#closed) return
-            disconnected = true
-            this.#receivedOnSocket = false
-            current.close() // the pending receive rejects, and the loop replaces the socket
-          })
+          let handshaken = false
+          if (current.events !== undefined) {
+            // libzmq does not reconnect the socket by itself (see createZeromqSocket):
+            // a dropped connection, a failed attempt (`close`: refused, say) and an
+            // attempt that never finishes (a host name that does not resolve emits
+            // nothing; a publisher that accepts but never greets) each end the
+            // socket, and the loop replaces it after reconnectDelayMs.
+            const drop = (): void => {
+              if (this.#socket !== current || this.#closed || dropped !== undefined) return
+              dropped = handshaken ? 'disconnected' : 'failed'
+              this.#receivedOnSocket = false
+              current.close() // the pending receive rejects, and the loop replaces the socket
+            }
+            current.events.on('disconnect', drop)
+            current.events.on('close', drop)
+            current.events.on('handshake', () => {
+              handshaken = true
+              clearTimeout(handshakeTimer)
+            })
+            // A timer that expired while the event loop was blocked runs before that
+            // turn's I/O: look again after it, once a handshake waiting there has counted.
+            handshakeTimer = setTimeout(
+              () =>
+                setImmediate(() => {
+                  if (!handshaken) drop()
+                }),
+              this.#handshakeDeadlineMs
+            )
+          }
           step = 'connect'
           socket.connect(this.#url)
           step = 'receive'
           for (const topic of this.#topics) socket.subscribe(topic)
-          while (!this.#closed) {
+          while (!this.#closed && dropped === undefined) {
             const frames = await socket.receive()
+            // A message proves the handshake, also for a socket whose events emit no `handshake`.
+            if (!handshaken) {
+              handshaken = true
+              clearTimeout(handshakeTimer)
+            }
             let message: ZmqMessage
             try {
               message = parseZmqMessage(frames)
@@ -429,6 +693,7 @@ export class QbitZmqSubscriber implements AsyncIterable<ZmqEvent> {
         } catch (error) {
           failure = error
         } finally {
+          clearTimeout(handshakeTimer)
           socket?.close()
           if (this.#socket === socket) this.#socket = undefined
         }
@@ -442,8 +707,8 @@ export class QbitZmqSubscriber implements AsyncIterable<ZmqEvent> {
         this.#counts.reconnects += 1
         this.#receivedOnSocket = false
         this.#tracker.markUncertain()
-        const reason = disconnected ? 'disconnected' : 'failed'
-        const code = disconnected ? undefined : errorCode(failure)
+        const reason = dropped ?? 'failed'
+        const code = dropped === undefined ? errorCode(failure) : undefined
         yield code === undefined ? { kind: 'reconnect', attempt, reason } : { kind: 'reconnect', attempt, reason, code }
         await this.#pause()
       }

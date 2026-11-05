@@ -707,3 +707,65 @@ properties only. The API report is unchanged.
   `zeromq` and for future `@qbit-oss/*` dependencies.
 - The stray `eslint-disable` comment in `endpoint.ts` is gone: ESLint is not
   used.
+
+### Breaking: ZMQ heartbeats, and the subscriber replaces its own socket
+
+- `QbitZmqSubscriber` sends libzmq's ZMTP heartbeats by default:
+  `heartbeatIntervalMs` (10,000) and `heartbeatTimeoutMs` (20,000). A qbitd
+  that stops answering without closing the connection (hung, stopped with
+  `SIGSTOP`, its host gone) is dropped within 30 s, as a `reconnect` with
+  `reason: 'disconnected'` and `unknown` health, rather than left to
+  `staleAfterMs` (10 minutes). qbitd v1.0.0 answers the heartbeats; the regtest
+  smoke test stops it with `SIGSTOP` and sees it dropped in 20 to 30 s, and
+  messages resume, with a `gap` on each topic, after `SIGCONT`. Set
+  `heartbeatIntervalMs: 0` for a publisher that does not answer them. A
+  consumer that leaves the 1,000-message receive queue full for longer than the
+  timeout drops a healthy publisher as well, since libzmq stops reading its
+  PONGs: the queued messages are lost, and a `gap` follows. The package README
+  says how to tell that from a hung qbitd, and what to do.
+- Heartbeats run only after the ZMTP handshake, so libzmq's handshake interval
+  (`ZMQ_HANDSHAKE_IVL`, 30 s) is set to the same bound, `heartbeatIntervalMs +
+  heartbeatTimeoutMs`, and the subscriber gives up a socket whose handshake
+  has not completed that long after `connect()` (30 s without heartbeats): a
+  replacement that reaches a qbitd that is still hung is dropped within the
+  bound too, as a `reconnect` with `reason: 'failed'`.
+- `createZeromqSocket` turns off libzmq's own reconnect (`ZMQ_RECONNECT_IVL`
+  -1). libzmq 4.3.5 aborts the process (`Assertion failed: _input_stopped`)
+  when a socket it has reconnected by itself is read after the old connection
+  filled the receive queue, which a missed heartbeat while the event loop is
+  blocked brings about, even with a receive already pending. The subscriber
+  replaces the socket instead: on `disconnect`, on `close` (a connection
+  attempt failed) and at the handshake deadline (a host name that does not
+  resolve, for which libzmq emits nothing). So a node that is down, from the
+  start or after a drop, is a `reconnect` with `reason: 'failed'` and no
+  `code` every `reconnectDelayMs`, where libzmq used to retry it silently, and
+  `reason: 'disconnected'` is a connection that dropped after its handshake.
+  Code that reads a `createZeromqSocket` socket itself, without the
+  subscriber, gets no reconnect from libzmq: it replaces the socket on
+  `disconnect` and `close`.
+- `ZmqSocket.events` takes `disconnect`, `close` and `handshake`; a custom
+  socket that has `events` emits all three. For one that never emits
+  `handshake`, its first message counts as the handshake.
+- `tcpKeepalive` with an `ipc://` url is a `TypeError`: an IPC connection has
+  no TCP keepalive.
+- `heartbeatTtlMs` (default 30,000, or twice the interval rounded up to a
+  multiple of 100 when that is longer, and 0 without heartbeats) asks qbitd to
+  drop a subscriber it has not heard from, which frees its queue; a subscriber
+  process stopped that long reconnects when it runs again, and the tracker
+  reports a `gap` on each topic. It must be 0 or, once libzmq has rounded it
+  down to a multiple of 100, at least twice the interval: qbitd drops a healthy
+  subscriber whose TTL runs out between heartbeats.
+- Without heartbeats, `heartbeatTimeoutMs` and `heartbeatTtlMs` are unused, and
+  each may be 0 or a value in its range.
+- `tcpKeepalive`, `tcpKeepaliveIdleSeconds`, `tcpKeepaliveIntervalSeconds` and
+  `tcpKeepaliveCount` set TCP keepalive, left to the operating system (off on
+  Linux) by default. The last three need `tcpKeepalive: true`.
+- The constructor throws a `RangeError` for a value out of range and a
+  `TypeError` for a keepalive setting without `tcpKeepalive: true`.
+- `ZmqSocketSettings` has the optional `heartbeatIntervalMs`,
+  `heartbeatTimeoutMs`, `heartbeatTtlMs` and `handshakeIntervalMs`, which the
+  subscriber always passes, and the keepalive settings, passed when set.
+  `createZeromqSocket` applies them; a custom `socketFactory` that ignores them
+  runs without heartbeats.
+- `@qbit-oss/zmq` is about 224 KB unpacked, and its `pack:check` ceiling 280,000
+  bytes.
