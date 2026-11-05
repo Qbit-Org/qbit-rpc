@@ -12,16 +12,24 @@
 // 2. Loads the CommonJS and the ESM build of each package side by side and
 //    checks that each error class's `is()` recognizes an error from the other
 //    build, where `instanceof` cannot, and that both builds work.
+// 3. Bundles consumers with esbuild (tsup's, from this workspace): a bare
+//    import of each package must bundle to nothing, as `"sideEffects": false`
+//    allows, and a bundle of a few named exports must keep their error brands
+//    and still recognize errors from the packed CommonJS build.
+// 4. Installs `@qbit-oss/zmq` without its optional peer `zeromq`: it must
+//    type-check and parse, and a subscriber must fail with `module_load`.
 //
-// Works offline: TypeScript, `@types/node` and `zeromq` come from this
-// workspace's install, at the versions the lockfile pins.
+// Works offline: TypeScript, `@types/node`, esbuild and `zeromq` come from
+// this workspace's install, at the versions the lockfile pins.
 // Adapted from Qbit-Org/qbit-js scripts/check-packed-consumer.mjs.
 import { execFileSync } from 'node:child_process'
 import {
+  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
+  readFileSync,
   realpathSync,
   rmSync,
   symlinkSync,
@@ -39,6 +47,7 @@ const requireFromRpc = createRequire(join(rpcDir, 'package.json'))
 const tscPath = join(dirname(requireFromRpc.resolve('typescript/package.json')), 'bin', 'tsc')
 const typeRoot = join(rpcDir, 'node_modules', '@types')
 const zeromq = realpathSync(join(zmqDir, 'node_modules', 'zeromq'))
+const esbuild = createRequire(realpathSync(join(rpcDir, 'node_modules', 'tsup', 'package.json')))('esbuild')
 
 const PACKAGES = { rpc: '@qbit-oss/rpc', zmq: '@qbit-oss/zmq' }
 
@@ -202,6 +211,84 @@ for (const [from, to] of [
 console.log('zmq dual-build parser, zeromq load, address check, ZmqFrameError and ZmqSetupError: PASS')
 `
 
+// A bare import: nothing of either package may be left in the bundle.
+const BARE_IMPORT = `
+import '@qbit-oss/rpc'
+import '@qbit-oss/zmq'
+`
+
+const NAMED_IMPORT = `
+import assert from 'node:assert/strict'
+import { createRequire } from 'node:module'
+import { RpcError, RpcTimeoutError } from '@qbit-oss/rpc'
+import { ZmqFrameError, parseZmqMessage } from '@qbit-oss/zmq'
+
+const require = createRequire(import.meta.url)
+const rpcCjs = require('@qbit-oss/rpc')
+const zmqCjs = require('@qbit-oss/zmq')
+assert.equal(RpcError.is(new rpcCjs.RpcError('getblockhash', -8, 'out of range')), true)
+assert.equal(rpcCjs.RpcError.is(new RpcError('getblockhash', -8, 'out of range')), true)
+assert.equal(rpcCjs.RpcTimeoutError.is(new RpcTimeoutError('getblockhash', 5)), true)
+assert.equal(RpcTimeoutError.is(new RpcError('getblockhash', -8, 'out of range')), false)
+assert.throws(() => parseZmqMessage([]), e => zmqCjs.ZmqFrameError.is(e) && e.code === 'frame_count')
+assert.equal(ZmqFrameError.is(new zmqCjs.ZmqFrameError('topic')), true)
+console.log('bundled named imports keep their error brands: PASS')
+`
+
+const NO_ZEROMQ = `
+import { QbitZmqSubscriber, ZmqSetupError, parseZmqMessage, type ZmqEvent } from '@qbit-oss/zmq'
+
+export const parsed = parseZmqMessage
+export async function first(): Promise<ZmqEvent | undefined> {
+  const subscriber = new QbitZmqSubscriber({ url: 'tcp://127.0.0.1:28332', topics: ['hashblock'] })
+  try {
+    for await (const event of subscriber) return event
+  } catch (error) {
+    if (ZmqSetupError.is(error) && error.code === 'module_load') return undefined
+    throw error
+  }
+  return undefined
+}
+`
+
+const NO_ZEROMQ_CHECK = `
+import assert from 'node:assert/strict'
+import { createRequire } from 'node:module'
+import * as zmqEsm from '@qbit-oss/zmq'
+
+const require = createRequire(import.meta.url)
+assert.throws(() => require.resolve('zeromq'), { code: 'MODULE_NOT_FOUND' }, 'zeromq is installed after all')
+const frames = [Buffer.from('hashblock'), Buffer.alloc(32, 1), Buffer.from([1, 0, 0, 0])]
+for (const zmq of [zmqEsm, require('@qbit-oss/zmq')]) {
+  assert.deepEqual(zmq.parseZmqMessage(frames), { topic: 'hashblock', sequence: 1, hash: '01'.repeat(32) })
+  await assert.rejects(zmq.createZeromqSocket(), e => zmq.ZmqSetupError.is(e) && e.code === 'module_load')
+  const subscriber = new zmq.QbitZmqSubscriber({ url: 'tcp://127.0.0.1:28332', topics: ['hashblock'] })
+  await assert.rejects(
+    subscriber[Symbol.asyncIterator]().next(),
+    e => zmq.ZmqSetupError.is(e) && e.code === 'module_load' && e.cause !== undefined
+  )
+  assert.equal(subscriber.health().status, 'closed')
+}
+console.log('zmq without zeromq: parser works, subscriber fails with module_load: PASS')
+`
+
+function bundle(entry, cwd) {
+  const outfile = join(cwd, entry.replace(/\.mjs$/, '.bundle.mjs'))
+  console.log(`+ esbuild ${entry} --bundle --platform=node --format=esm --outfile=${outfile}`)
+  // A bare import of a side-effect-free package draws a warning, which is the point.
+  esbuild.buildSync({
+    absWorkingDir: cwd,
+    entryPoints: [entry],
+    outfile,
+    bundle: true,
+    platform: 'node',
+    format: 'esm',
+    external: ['zeromq'],
+    logLevel: 'error',
+  })
+  return outfile
+}
+
 function typeCheck(tsconfig, cwd) {
   console.log(`+ ${process.execPath} ${tscPath} -p ${tsconfig} --listFiles  (cwd: ${cwd})`)
   try {
@@ -284,6 +371,34 @@ try {
 
   writeFileSync(join(consumerDir, 'brand-check.mjs'), BRAND_CHECK)
   run(process.execPath, ['brand-check.mjs'], { cwd: consumerDir })
+
+  writeFileSync(join(consumerDir, 'bare-import.mjs'), BARE_IMPORT)
+  const bare = readFileSync(bundle('bare-import.mjs', consumerDir), 'utf8')
+  for (const marker of ['qbit-rpc.', 'qbit-zmq.', 'QbitRpcClient', 'QbitZmqSubscriber']) {
+    if (bare.includes(marker)) throw new Error(`a bare import bundled ${marker}: "sideEffects": false is not in effect`)
+  }
+  console.log(`bare import bundles to ${bare.length} bytes, without either package: PASS`)
+  writeFileSync(join(consumerDir, 'named-import.mjs'), NAMED_IMPORT)
+  // Bundled, the error classes still recognize errors from the packed CommonJS build. Such a bundle still
+  // holds the whole client: esbuild keeps a class with a computed method key, as [inspect.custom]() is.
+  run(process.execPath, [bundle('named-import.mjs', consumerDir)], { cwd: consumerDir })
+
+  // Without the optional peer: only @qbit-oss/zmq, its declarations and
+  // @types/node, in a directory no zeromq is reachable from.
+  const bareDir = join(stage, 'consumer-without-zeromq')
+  const bareZmq = join(bareDir, 'node_modules', '@qbit-oss', 'zmq')
+  mkdirSync(dirname(bareZmq), { recursive: true })
+  cpSync(join(modules, '@qbit-oss', 'zmq'), bareZmq, { recursive: true })
+  writeFileSync(join(bareDir, 'package.json'), `${JSON.stringify({ private: true, type: 'module' }, null, 2)}\n`)
+  writeFileSync(join(bareDir, 'consumer.mts'), NO_ZEROMQ)
+  writeFileSync(
+    join(bareDir, 'tsconfig.json'),
+    `${JSON.stringify({ compilerOptions, files: ['consumer.mts'] }, null, 2)}\n`
+  )
+  typeCheck('tsconfig.json', bareDir)
+  console.log('@qbit-oss/zmq consumer types without zeromq: PASS')
+  writeFileSync(join(bareDir, 'check.mjs'), NO_ZEROMQ_CHECK)
+  run(process.execPath, ['check.mjs'], { cwd: bareDir })
   passed = true
 } finally {
   if (passed) {

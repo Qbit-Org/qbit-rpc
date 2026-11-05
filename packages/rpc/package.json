@@ -6,9 +6,9 @@
   "main": "lib/index.js",
   "module": "lib/index.mjs",
   "types": "lib/index.d.ts",
+  "sideEffects": false,
   "files": [
     "lib/**/*",
-    "src/**/*",
     "README.md"
   ],
   "exports": {
@@ -30,8 +30,8 @@
   "scripts": {
     "build": "tsup",
     "prepack": "tsup",
-    "test": "vitest run --config vitest.config.ts",
-    "test:regtest": "vitest run --config test/regtest/vitest.config.ts",
+    "test": "vitest run --config vitest.config.mts",
+    "test:regtest": "vitest run --config test/regtest/vitest.config.mts",
     "typecheck": "tsc --noEmit",
     "typecheck:test": "tsc -p test",
     "api:check": "api-extractor run && api-extractor run --config etc/api-extractor.esm.json",

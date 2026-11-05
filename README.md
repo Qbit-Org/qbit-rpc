@@ -15,8 +15,9 @@ application.
   validated, and amounts are exact `bigint` bits. No runtime dependencies.
 - [`@qbit-oss/zmq`](packages/zmq/README.md) to be woken by `qbitd`'s ZMQ
   notifications (new blocks, mempool changes) and told when you missed some. It
-  depends on the native [`zeromq`](https://www.npmjs.com/package/zeromq) addon,
-  which is why it is a separate package.
+  uses the native [`zeromq`](https://www.npmjs.com/package/zeromq) addon, an
+  optional peer dependency you install beside it, which is why it is a separate
+  package.
 - A service that reacts to blocks usually wants both: ZMQ to wake up, RPC to
   read what changed.
 
@@ -30,11 +31,13 @@ corepack pnpm install --frozen-lockfile
 corepack pnpm build
 (cd packages/rpc && npm pack)   # qbit-oss-rpc-0.0.0.tgz
 (cd packages/zmq && npm pack)   # qbit-oss-zmq-0.0.0.tgz
-npm install /path/to/qbit-oss-rpc-0.0.0.tgz /path/to/qbit-oss-zmq-0.0.0.tgz
+npm install /path/to/qbit-oss-rpc-0.0.0.tgz /path/to/qbit-oss-zmq-0.0.0.tgz zeromq@^6.5.0
 ```
 
-Both packages ship CommonJS and ESM builds with type declarations. For the
-qbit Core versions, Node.js versions and platforms they support, see below.
+`zeromq` is needed only for `QbitZmqSubscriber`'s default socket; see
+[Packaging and dependencies](#packaging-and-dependencies). Both packages ship
+CommonJS and ESM builds with type declarations. For the qbit Core versions,
+Node.js versions and platforms they support, see below.
 
 ## Supported qbit Core versions
 
@@ -73,8 +76,8 @@ accepted.
 manual arm64 jobs below load its packed builds too); it is expected to work
 wherever a supported Node.js runs.
 
-`@qbit-oss/zmq` needs a prebuilt addon from `zeromq` 6.5.0, which ships one
-for each platform below:
+`@qbit-oss/zmq` is tested with `zeromq` 6.5.0, the floor of its peer range,
+which ships a prebuilt addon for each platform below:
 
 | Platform | Minimum | CI |
 | --- | --- | --- |
@@ -252,6 +255,82 @@ and again as soon as the connection drops.
 - `@qbit-oss/zmq` does not decode `rawblock` or `rawtx` bodies, and does not
   support CURVE authentication (qbitd does not offer it).
 - Neither package runs in a browser: both use Node.js built-in modules.
+
+## Packaging and dependencies
+
+Each tarball holds exactly `package.json`, `README.md`, `LICENSE` and, in
+`lib/`, the CommonJS build (`index.js`), the ESM build (`index.mjs`), a source
+map for each and the declarations for each (`index.d.ts`, `index.d.mts`). The
+maps carry every source file in `sourcesContent`, so `src/` is not shipped:
+run Node.js with `--enable-source-maps` to see `src/*.ts` lines in stack traces.
+`@qbit-oss/rpc` is about 1.45 MB unpacked (377 KB packed), most of it the two
+maps; `@qbit-oss/zmq` about 168 KB (46 KB packed). `pack:check` fails on any
+other file, on a map that does not carry its sources, and above a ceiling of
+1,815,000 and 210,000 bytes unpacked.
+
+The packages set no `"type"`: `.js` is CommonJS and `.mjs` ESM. They set
+`"sideEffects": false`: no module does anything at import that a consumer
+relies on (the error brands are set on the packages' own prototypes, and come
+with any export that is used), so a bundler may drop a package nothing is
+imported from. `consumer:check` bundles both with esbuild to check that a bare
+import bundles to nothing, and that bundled error classes still recognize
+errors from the CommonJS build.
+
+### `zeromq`
+
+`@qbit-oss/rpc` has no runtime dependencies. `@qbit-oss/zmq` has one optional
+peer dependency, `zeromq` `^6.5.0`, and no others. It is optional because
+only `QbitZmqSubscriber`'s default socket (`createZeromqSocket`) loads it, at
+the first iteration: the parser, a custom `socketFactory` and the types work
+without it, and without it a subscriber fails with `ZmqSetupError`
+`module_load`. A peer, not a dependency, so that the application chooses and
+updates the one copy of the native addon, and an install on a platform
+without a prebuilt addon (where `zeromq`'s install script tries to build
+libzmq from source) fails only for those who install `zeromq`. Applications
+that subscribe add it themselves (`npm install zeromq@^6.5.0`); npm and pnpm
+do not install an optional peer. A bundler must leave `zeromq` external, as
+for any native addon.
+
+The floor of the range is the version the workspace pins as a dev dependency,
+so CI tests the floor; `pack:check` fails when they differ. The range admits
+newer 6.x releases, which CI does not test until the floor moves. Raise the
+floor (and the pin, together) to use a newer `zeromq` API, or when an older
+6.x is known not to work.
+
+### Other `@qbit-oss/*` packages
+
+There are none yet. When one is added (say `@qbit-oss/protocol`, to check
+addresses or decode `rawtx`):
+
+- Use a caret range, never an exact pin, so an application can share one copy
+  and take a fix without a release of these packages. On `0.x`, `^0.3.1` means
+  `>=0.3.1 <0.4.0`, so a minor release is a breaking one.
+- A plain dependency when it is used internally; a peer dependency when its
+  types or classes appear in this package's API, so the application and this
+  package see the same ones.
+- The floor is the oldest version that works: raise it when using an API
+  added later. Never `workspace:` or `file:` in a published manifest.
+- The lockfile resolves the newest version in range, which every CI run tests.
+  Add a CI job with the first such dependency to test the floor too: install
+  with `pnpm install --no-frozen-lockfile --config.resolution-mode=lowest-direct`,
+  which resolves each direct dependency to the lowest version its range
+  allows, and run `pnpm verify`. A peer follows the `zeromq` rule instead:
+  the dev pin is the floor. `pack:check` refuses any runtime dependency today,
+  so the first one changes it as well.
+
+### Updates
+
+`.github/dependabot.yml` opens version update pull requests every Monday at
+06:00 UTC, two days after a release at the earliest (pnpm refuses one younger
+than a day): one for minor and patch updates of the dev tooling, one per major
+update, one for each `zeromq` update, which moves the pin only: move the peer
+range's floor by hand in that pull request (Dependabot does not update
+`peerDependencies`, and `pack:check` fails until the two agree), and one for the
+GitHub Actions, which stay pinned by SHA. Major updates of
+`@types/node`, which follows the oldest supported Node.js line, are ignored.
+Each runs the same CI as any pull request.
+
+There is no ESLint: Prettier formats, and `tsc` in strict mode checks the code.
 
 ## Development
 

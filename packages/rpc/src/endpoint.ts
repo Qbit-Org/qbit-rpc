@@ -319,7 +319,6 @@ export function codeOf(error: unknown): string | undefined {
   return typeof code === 'string' ? code : undefined
 }
 
-// eslint-disable-next-line no-control-regex
 const CONTROL = /[\u0000-\u001f\u007f]/
 
 /** Holds the credentials in private fields, out of reach of inspection and serialization. */

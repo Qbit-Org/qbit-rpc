@@ -1,0 +1,55 @@
+# Version update pull requests, every Monday at 06:00 UTC. See the root
+# README's "Packaging and dependencies" for the policy they are reviewed
+# against.
+version: 2
+updates:
+  # The pnpm workspace: the root package.json, both packages and
+  # pnpm-lock.yaml.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: '06:00'
+      timezone: Etc/UTC
+    # pnpm-workspace.yaml sets minimumReleaseAge to 1 day, and pnpm refuses to
+    # resolve a version younger than that, so wait out a longer window.
+    cooldown:
+      default-days: 2
+    ignore:
+      # @types/node follows the oldest supported Node.js line (22), not the
+      # newest.
+      - dependency-name: '@types/node'
+        update-types:
+          - version-update:semver-major
+    groups:
+      # Minor and patch updates of the dev tooling, in one pull request.
+      # zeromq is left out: it is @qbit-oss/zmq's optional peer, whose range
+      # floor is the pinned dev version, so each update comes alone. Dependabot
+      # moves only the pin: its npm support reads dependencies,
+      # devDependencies and optionalDependencies, not peerDependencies, and no
+      # versioning-strategy changes that. Move the peer floor by hand in the
+      # same pull request; scripts/check-pack.mjs fails until they agree.
+      dev-dependencies:
+        dependency-type: development
+        update-types:
+          - minor
+          - patch
+        exclude-patterns:
+          - zeromq
+
+  # Actions are pinned to full commit SHAs; Dependabot keeps them pinned and
+  # updates the trailing version comment.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: '06:00'
+      timezone: Etc/UTC
+    cooldown:
+      default-days: 2
+    groups:
+      actions:
+        patterns:
+          - '*'
