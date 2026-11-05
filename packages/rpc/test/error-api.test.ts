@@ -168,10 +168,10 @@ describe('a custom parse that throws', () => {
       .getBlockCount()
       .catch((e: unknown) => e)
     expect(single).toMatchObject({ name: 'RpcResponseError', reason: 'validation', path: 'result' })
-    expect(single).not.toHaveProperty('cause')
+    expect(single).toHaveProperty('cause', undefined)
     const [item] = await client().batch([requests.getBestBlockHash()])
     expect(!item.ok && item.error).toMatchObject({ reason: 'validation', path: 'result' })
-    expect(!item.ok && item.error).not.toHaveProperty('cause')
+    expect(!item.ok && item.error).toHaveProperty('cause', undefined)
   })
 })
 

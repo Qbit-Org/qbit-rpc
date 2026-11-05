@@ -26,11 +26,9 @@ import {
   type ChainCheck,
   type ChainMismatch,
 } from './errors'
-import { assertLosslessJsonSupport, JsonNumber, parseJsonLossless, stringifyRequest } from './json'
+import { assertLosslessJsonSupport, isJsonObject, JsonNumber, parseJsonLossless, stringifyRequest } from './json'
 import { Limiter } from './limiter'
 import {
-  CALL_OPTION_KEYS,
-  argOptions,
   requests,
   type AddressInfo,
   type AddressType,
@@ -67,6 +65,7 @@ import {
   type WalletInfo,
   type WalletTransaction,
 } from './methods'
+import { argArray, argOptions, CALL_OPTION_KEYS, keysOf, ownElements, ownValue, plainOptions } from './own'
 import { ExchangeFailure, HttpTransport } from './transport'
 import { ResultIssue } from './validate'
 
@@ -226,6 +225,11 @@ const DEFAULT_MAX_CONCURRENT_REQUESTS = 8
 const MAX_CONCURRENT_REQUESTS = 1024
 /** qbitd's whole reply body when its work queue is full (qbit Core v1.0.0). */
 const WORK_QUEUE_REJECTION = 'Work queue depth exceeded'
+/**
+ * The HTTP statuses qbitd puts on a JSON-RPC error (`JSONErrorReply` in qbit Core
+ * v1.0.0's src/httprpc.cpp): 400 for -32600, 404 for -32601, and 500 for any other.
+ */
+const NODE_ERROR_STATUSES: ReadonlySet<number> = new Set([400, 404, 500])
 const MAX_RETRY_DELAY_MS = 10_000
 const MAX_BATCH = 1000
 const RPC_IN_WARMUP = -28
@@ -235,6 +239,24 @@ const MAX_CHAIN_CHECKS = 3
 
 const TIMEOUT = Symbol('timeout')
 const CALL_OPTIONS: readonly (keyof CallOptions)[] = CALL_OPTION_KEYS
+const CLIENT_OPTIONS = keysOf<QbitRpcClientOptions>({
+  url: true,
+  wallet: true,
+  auth: true,
+  expectedChain: true,
+  expectedGenesisHash: true,
+  expectedSignetChallenge: true,
+  capabilities: true,
+  timeoutMs: true,
+  maxResponseBytes: true,
+  readRetries: true,
+  retryDelayMs: true,
+  chainCheckMaxAgeMs: true,
+  maxConcurrentRequests: true,
+  directNode: true,
+})
+/** What `batch()` reads of an entry. */
+const BATCH_ENTRY = ['method', 'params', 'parse'] as const
 
 /** An attempt's failure, with what is known about whether the node may have acted on it. */
 class Failure {
@@ -317,56 +339,60 @@ export class QbitRpcClient {
   constructor(options: QbitRpcClientOptions) {
     assertLosslessJsonSupport()
     if (typeof options !== 'object' || options === null) throw new TypeError('options must be an object')
-    this.#endpoint = parseEndpoint(options.url, options.wallet)
-    this.#credentials = new Credentials(options.auth, this.#endpoint)
-    if (!(QBIT_CHAINS as readonly unknown[]).includes(options.expectedChain)) {
+    // Read once, own properties only: an option given any other way, such as
+    // capabilities or wallet on a polluted Object.prototype, is refused. So is a
+    // key that is no option: with walletName, wallet calls would go to whichever
+    // wallet the node has loaded.
+    const own = argOptions(options, 'options', CLIENT_OPTIONS) as unknown as QbitRpcClientOptions
+    this.#endpoint = parseEndpoint(own.url, own.wallet)
+    this.#credentials = new Credentials(own.auth, this.#endpoint)
+    if (!(QBIT_CHAINS as readonly unknown[]).includes(own.expectedChain)) {
       throw new TypeError(`expectedChain must be one of ${QBIT_CHAINS.join(', ')}`)
     }
-    this.#expectedChain = options.expectedChain
+    this.#expectedChain = own.expectedChain
     this.#expectedGenesisHash =
-      checkHex(options.expectedGenesisHash, 'expectedGenesisHash', 32) ?? QBIT_GENESIS_HASHES[this.#expectedChain]
-    const challenge = checkHex(options.expectedSignetChallenge, 'expectedSignetChallenge')
+      checkHex(own.expectedGenesisHash, 'expectedGenesisHash', 32) ?? QBIT_GENESIS_HASHES[this.#expectedChain]
+    const challenge = checkHex(own.expectedSignetChallenge, 'expectedSignetChallenge')
     if (challenge !== undefined && this.#expectedChain !== 'signet') {
       throw new TypeError("expectedSignetChallenge needs expectedChain: 'signet'")
     }
     this.#expectedSignetChallenge =
       this.#expectedChain === 'signet' ? (challenge ?? QBIT_DEFAULT_SIGNET_CHALLENGE) : undefined
-    const capabilities = options.capabilities ?? []
-    if (!Array.isArray(capabilities)) throw new TypeError('capabilities must be an array')
+    const capabilities = own.capabilities === undefined ? [] : argArray(own.capabilities, 'capabilities')
     for (const capability of capabilities) {
       if (!(CAPABILITIES as readonly unknown[]).includes(capability)) {
         throw new TypeError(`unknown capability ${String(capability)}: use ${CAPABILITIES.join(', ')}`)
       }
     }
-    this.#capabilities = new Set(capabilities)
-    this.#timeoutMs = checkInteger(options.timeoutMs, 'timeoutMs', 1, 3_600_000, DEFAULT_TIMEOUT_MS)
+    this.#capabilities = new Set(capabilities as Capability[])
+    this.#timeoutMs = checkInteger(own.timeoutMs, 'timeoutMs', 1, 3_600_000, DEFAULT_TIMEOUT_MS)
     this.#maxResponseBytes = checkInteger(
-      options.maxResponseBytes,
+      own.maxResponseBytes,
       'maxResponseBytes',
       1024,
       256 * 1024 * 1024,
       DEFAULT_MAX_RESPONSE_BYTES
     )
-    this.#readRetries = checkInteger(options.readRetries, 'readRetries', 0, 10, 0)
-    this.#retryDelayMs = checkInteger(options.retryDelayMs, 'retryDelayMs', 0, 60_000, DEFAULT_RETRY_DELAY_MS)
+    this.#readRetries = checkInteger(own.readRetries, 'readRetries', 0, 10, 0)
+    this.#retryDelayMs = checkInteger(own.retryDelayMs, 'retryDelayMs', 0, 60_000, DEFAULT_RETRY_DELAY_MS)
     this.#chainCheckMaxAgeMs = checkInteger(
-      options.chainCheckMaxAgeMs,
+      own.chainCheckMaxAgeMs,
       'chainCheckMaxAgeMs',
       0,
       86_400_000,
       DEFAULT_CHAIN_CHECK_MAX_AGE_MS
     )
     const maxConcurrentRequests = checkInteger(
-      options.maxConcurrentRequests,
+      own.maxConcurrentRequests,
       'maxConcurrentRequests',
       1,
       MAX_CONCURRENT_REQUESTS,
       DEFAULT_MAX_CONCURRENT_REQUESTS
     )
-    if (options.directNode !== undefined && typeof options.directNode !== 'boolean') {
+    if (own.directNode !== undefined && typeof own.directNode !== 'boolean') {
       throw new TypeError('directNode must be a boolean')
     }
-    this.#directNode = options.directNode ?? false
+    this.#directNode = own.directNode ?? false
     this.#limiter = new Limiter(maxConcurrentRequests)
     // The pool follows the limit, so requests queue in the limiter rather than
     // in the agent, and a limit above 8 applies to reads too. The spare socket
@@ -406,11 +432,11 @@ export class QbitRpcClient {
    * `RpcTransportError` and so on, about `getblockchaininfo` or `getblockhash`),
    * never `reason: 'check_failed'`.
    */
-  async confirmChain(callOptions: CallOptions = {}): Promise<BlockchainInfo> {
+  async confirmChain(callOptions?: CallOptions): Promise<BlockchainInfo> {
     const method = 'getblockchaininfo'
     // A mismatch recorded after this point is newer than this call: it stands, and this call throws it.
     const started = this.#doubts
-    return this.#operation(method, callOptions, false, async attempt => {
+    return this.#operation(method, this.#callSettings(callOptions), false, async attempt => {
       try {
         const authorization = await this.#authorization(method, attempt.signal)
         let info: BlockchainInfo | undefined
@@ -433,7 +459,7 @@ export class QbitRpcClient {
    * strings from `formatQbt(bits)` (qbit Core accepts amount strings) and
    * integers above 2^53 as `bigint`.
    */
-  call(method: string, params: readonly unknown[] = [], callOptions: CallOptions = {}): Promise<unknown> {
+  call(method: string, params: readonly unknown[] = [], callOptions?: CallOptions): Promise<unknown> {
     return this.#lazy(() => requests.raw(method, params), callOptions)
   }
 
@@ -445,7 +471,7 @@ export class QbitRpcClient {
    */
   batch<const T extends readonly RpcRequest<unknown>[]>(
     entries: T,
-    callOptions: CallOptions = {}
+    callOptions?: CallOptions
   ): Promise<BatchResults<T>> {
     return this.#batch(entries, callOptions) as Promise<BatchResults<T>>
   }
@@ -864,11 +890,13 @@ export class QbitRpcClient {
     if (!replies.has(id))
       throw new Failure(protocolError(request.method, path, 'a reply for this request'), true, false)
     const reply = this.#envelope(request.method, replies.get(id), id, path)
-    if ('error' in reply) throw new Failure(reply.error, false, reply.error.rpcCode === RPC_IN_WARMUP)
+    if (!reply.ok) throw new Failure(reply.error, false, reply.error.rpcCode === RPC_IN_WARMUP)
     return validated(request.method, request, reply.result)
   }
 
   #authorize(method: string, inBatch: boolean): MethodPolicy {
+    // A primitive string on every path, so the method checked is the one sent.
+    if (typeof method !== 'string' || method === '') throw new TypeError('method must be a non-empty string')
     const policy = methodPolicy(method)
     if (policy === undefined) throw new RpcCapabilityError(method, 'unknown_method')
     if (inBatch && policy.capability !== 'read' && policy.capability !== 'wallet-read') {
@@ -885,12 +913,12 @@ export class QbitRpcClient {
     return policy
   }
 
-  async #single<T>(request: RpcRequest<T>, callOptions: CallOptions = {}): Promise<T> {
+  async #single<T>(request: RpcRequest<T>, callOptions?: CallOptions): Promise<T> {
     const { method } = request
     const policy = this.#authorize(method, false)
     const id = this.#nextId++
     const body = stringifyRequest({ jsonrpc: '2.0', id, method, params: request.params })
-    return this.#operation(method, callOptions, policy.sideEffects, async attempt => {
+    return this.#operation(method, this.#callSettings(callOptions), policy.sideEffects, async attempt => {
       try {
         // One cookie read per attempt: the chain check and the call are sent
         // with that header, and a new cookie (qbitd restarted) means a check.
@@ -912,7 +940,7 @@ export class QbitRpcClient {
         }
         const text = await this.#exchange(method, body, attempt.signal, policy.sideEffects, id, authorization.header)
         const reply = this.#envelope(method, parseOrProtocolError(method, text), id, 'response')
-        if ('error' in reply) {
+        if (!reply.ok) {
           throw new Failure(reply.error, false, !policy.sideEffects && reply.error.rpcCode === RPC_IN_WARMUP)
         }
         return validated(method, request, reply.result)
@@ -926,22 +954,47 @@ export class QbitRpcClient {
     })
   }
 
-  async #batch(entries: readonly RpcRequest<unknown>[], callOptions: CallOptions): Promise<BatchItem<unknown>[]> {
+  async #batch(entries: readonly RpcRequest<unknown>[], callOptions: unknown): Promise<BatchItem<unknown>[]> {
     if (!Array.isArray(entries)) throw new TypeError('batch takes an array of requests')
-    argOptions(callOptions, 'callOptions', CALL_OPTIONS)
-    if (entries.length > MAX_BATCH) throw new RangeError(`a batch holds at most ${MAX_BATCH} requests`)
-    entries.forEach((entry, index) => {
+    const settings = this.#callSettings(callOptions)
+    // Refused from the length before anything is copied, and again on the copy, which is what is sent.
+    const tooMany = (length: number): void => {
+      if (length > MAX_BATCH) throw new RangeError(`a batch holds at most ${MAX_BATCH} requests`)
+    }
+    tooMany(entries.length)
+    // Each entry's own fields, read once: a hole, or a params, method or parse
+    // an entry leaves out, is never read from a prototype.
+    const given = ownElements(entries, 'entries')
+    tooMany(given.length)
+    const list = given.map((entry, index) => {
+      const own =
+        (typeof entry === 'object' || typeof entry === 'function') && entry !== null
+          ? plainOptions(entry, `entries[${index}]`, BATCH_ENTRY)
+          : undefined
       // A caller's mistake, not the node's: refused before anything is sent.
-      if (typeof entry?.parse !== 'function') throw new TypeError(`batch() entry ${index} has no parse function`)
+      if (typeof own?.parse !== 'function') throw new TypeError(`batch() entry ${index} has no parse function`)
+      // A primitive string, so the method the allowlist checks is the one sent:
+      // a String object or a toJSON could name another.
+      if (typeof own.method !== 'string' || own.method === '') {
+        throw new TypeError(`batch() entry ${index} has no method name: method must be a non-empty string`)
+      }
+      return own as RpcRequest<unknown>
     })
-    for (const entry of entries) this.#authorize(entry.method, true)
-    if (entries.length === 0) return []
-    const ids = entries.map(() => this.#nextId++)
-    const label = `batch(${entries.length})`
-    const body = stringifyRequest(
-      entries.map((entry, index) => ({ jsonrpc: '2.0', id: ids[index], method: entry.method, params: entry.params }))
-    )
-    return this.#operation(label, callOptions, false, async attempt => {
+    for (const entry of list) this.#authorize(entry.method, true)
+    if (list.length === 0) return []
+    const ids = list.map(() => this.#nextId++)
+    const label = `batch(${list.length})`
+    const bodies = list.map((entry, index) => {
+      try {
+        // Inside the batch's array, which counts towards the depth limit.
+        return stringifyRequest({ jsonrpc: '2.0', id: ids[index], method: entry.method, params: entry.params }, 1)
+      } catch (error) {
+        if (!(error instanceof TypeError)) throw error
+        throw new TypeError(`batch() entry ${index}: ${error.message}`, { cause: error })
+      }
+    })
+    const body = `[${bodies.join(',')}]`
+    return this.#operation(label, settings, false, async attempt => {
       let text: string
       try {
         const authorization = await this.#authorization(label, attempt.signal)
@@ -950,15 +1003,16 @@ export class QbitRpcClient {
         throw asFailure(label, error, attempt)
       }
       const byId = repliesById(label, parseOrProtocolError(label, text), ids)
-      return entries.map((entry, index): BatchItem<unknown> => {
+      return list.map((entry, index): BatchItem<unknown> => {
         const id = ids[index]!
         if (!byId.has(id)) {
           return { ok: false, error: protocolError(entry.method, `response[id=${id}]`, 'a reply for this request') }
         }
         const reply = this.#envelope(entry.method, byId.get(id), id, `response[id=${id}]`)
-        if ('error' in reply) return { ok: false, error: reply.error }
+        if (!reply.ok) return { ok: false, error: reply.error }
         try {
-          return { ok: true, value: entry.parse(reply.result) }
+          // Called on the caller's entry, as entry.parse(result) would be.
+          return { ok: true, value: entry.parse.call(given[index], reply.result) }
         } catch (error) {
           return { ok: false, error: validationError(entry.method, error) }
         }
@@ -977,16 +1031,12 @@ export class QbitRpcClient {
    */
   async #operation<T>(
     label: string,
-    callOptions: CallOptions,
+    settings: CallSettings,
     sideEffects: boolean,
     attempt: (context: AttemptContext) => Promise<T>
   ): Promise<T> {
-    argOptions(callOptions, 'callOptions', CALL_OPTIONS)
     const retries = sideEffects ? 0 : this.#readRetries
-    const timeoutMs = checkInteger(callOptions.timeoutMs, 'callOptions.timeoutMs', 1, 3_600_000, this.#timeoutMs)
-    const callerSignal = callOptions.signal
-    if (callerSignal !== undefined && !(callerSignal instanceof AbortSignal))
-      throw new TypeError('callOptions.signal must be an AbortSignal')
+    const { timeoutMs, signal: callerSignal } = settings
     if (callerSignal?.aborted) throw new RpcAbortedError(label, callerSignal.reason)
     const deadline = performance.now() + timeoutMs
     const controller = new AbortController()
@@ -1029,6 +1079,20 @@ export class QbitRpcClient {
       clearTimeout(timer)
       callerSignal?.removeEventListener('abort', onAbort)
     }
+  }
+
+  /**
+   * The call options, read once as the caller's own properties (left out, a
+   * key is never read from Object.prototype) and checked: an operation takes
+   * only these, so they are read and checked once.
+   */
+  #callSettings(callOptions: unknown): CallSettings {
+    const own = argOptions(callOptions, 'callOptions', CALL_OPTIONS)
+    const timeoutMs = checkInteger(own['timeoutMs'], 'callOptions.timeoutMs', 1, 3_600_000, this.#timeoutMs)
+    const signal = own['signal']
+    if (signal !== undefined && !(signal instanceof AbortSignal))
+      throw new TypeError('callOptions.signal must be an AbortSignal')
+    return { timeoutMs, signal }
   }
 
   /**
@@ -1087,12 +1151,14 @@ export class QbitRpcClient {
     }
     if (reply.status === 401) this.#invalidateChain()
     if (reply.status === 200) return reply.body
-    // A JSON-RPC error reply for this request id under an HTTP error status
-    // (JSON-RPC 1.x behaviour, passed through by a proxy) is still the node's
-    // answer. Anything else under a 5xx may come from a proxy after the node
-    // acted, so it stays an unknown outcome for side-effecting calls.
-    const legacy = reply.status >= 400 && id !== undefined ? legacyError(method, reply.body, id) : undefined
-    if (legacy !== undefined) throw new Failure(legacy, false, false)
+    // A JSON-RPC error reply for this request id under a status qbitd uses for
+    // one (JSON-RPC 1.x behaviour, passed through by a proxy) is the node's answer.
+    // Under any other status qbitd did not send it, directNode or not: something
+    // in between read the request and may have forwarded it, so it is that
+    // status's error, and an unknown outcome for side-effecting calls. So is
+    // anything else under a 5xx, which may come from a proxy after the node acted.
+    const legacy = id === undefined ? undefined : legacyError(method, reply.body, id)
+    if (legacy !== undefined && NODE_ERROR_STATUSES.has(reply.status)) throw new Failure(legacy, false, false)
     const transportError = new RpcTransportError(method, 'http_status', { status: reply.status })
     // With the endpoint declared to be qbitd itself, this exact reply is its
     // refusal to queue the request, which it sends without running anything.
@@ -1101,8 +1167,13 @@ export class QbitRpcClient {
     }
     if (reply.status >= 500) throw new Failure(transportError, true, true)
     if (reply.status >= 300) {
-      // Rejected before execution: authentication, rpcallowip, unknown path.
-      throw new Failure(transportError, false, reply.status === 401 && this.#credentials.kind === 'cookie')
+      // Rejected before execution (authentication, rpcallowip, unknown path),
+      // unless a JSON-RPC error for this request shows something read it.
+      throw new Failure(
+        transportError,
+        legacy !== undefined,
+        reply.status === 401 && this.#credentials.kind === 'cookie'
+      )
     }
     throw new Failure(protocolError(method, 'response', `HTTP 200, not ${reply.status}`), true, false)
   }
@@ -1134,18 +1205,18 @@ export class QbitRpcClient {
     value: unknown,
     id: number,
     path: string
-  ): { readonly result: unknown } | { readonly error: RpcError } {
-    if (value === null || typeof value !== 'object' || Array.isArray(value) || value instanceof JsonNumber) {
-      throw new Failure(protocolError(method, path, 'a JSON-RPC reply object'), true, false)
-    }
-    const reply = value as Record<string, unknown>
+  ): { readonly ok: true; readonly result: unknown } | { readonly ok: false; readonly error: RpcError } {
+    if (!isJsonObject(value)) throw new Failure(protocolError(method, path, 'a JSON-RPC reply object'), true, false)
+    const reply = value
     for (const key of Object.keys(reply)) {
       if (key !== 'jsonrpc' && key !== 'id' && key !== 'result' && key !== 'error') {
         throw new Failure(protocolError(method, `${path}.${key}`, 'only jsonrpc, id, result and error'), true, false)
       }
     }
-    if (reply['jsonrpc'] !== '2.0') throw new Failure(protocolError(method, `${path}.jsonrpc`, '"2.0"'), true, false)
-    const replyId = reply['id']
+    if (ownValue(reply, 'jsonrpc') !== '2.0') {
+      throw new Failure(protocolError(method, `${path}.jsonrpc`, '"2.0"'), true, false)
+    }
+    const replyId = ownValue(reply, 'id')
     if (!(replyId instanceof JsonNumber) || replyId.source !== String(id)) {
       throw new Failure(protocolError(method, `${path}.id`, `the request id ${id}`), true, false)
     }
@@ -1154,10 +1225,11 @@ export class QbitRpcClient {
     if (hasResult === hasError) {
       throw new Failure(protocolError(method, path, 'exactly one of result and error'), true, false)
     }
-    if (hasResult) return { result: reply['result'] }
-    const error = reply['error']
-    const nodeError =
-      error !== null && typeof error === 'object' ? nodeErrorFrom(method, error as Record<string, unknown>) : undefined
+    // ok is always set, so no key of this object is read from Object.prototype.
+    if (hasResult) return { ok: true, result: ownValue(reply, 'result') }
+    const error = ownValue(reply, 'error')
+    // Any other error (an array, a number, a string) is malformed: an unknown outcome for a side-effecting call.
+    const nodeError = isJsonObject(error) ? nodeErrorFrom(method, error) : undefined
     if (nodeError === undefined) {
       throw new Failure(
         protocolError(method, `${path}.error`, 'an object with an integer code and a message'),
@@ -1165,7 +1237,7 @@ export class QbitRpcClient {
         false
       )
     }
-    return { error: nodeError }
+    return { ok: false, error: nodeError }
   }
 }
 
@@ -1180,16 +1252,20 @@ function legacyError(method: string, body: string, id: number): RpcError | undef
   } catch {
     return undefined
   }
-  if (reply === null || typeof reply !== 'object' || Array.isArray(reply)) return undefined
-  const { id: replyId, error } = reply as Record<string, unknown>
+  if (!isJsonObject(reply)) return undefined
+  const replyId = ownValue(reply, 'id')
   if (!(replyId instanceof JsonNumber) || replyId.source !== String(id)) return undefined
-  if (error === null || typeof error !== 'object') return undefined
-  return nodeErrorFrom(method, error as Record<string, unknown>)
+  // A body that also claims a result contradicts itself: not a definite node error, as in #envelope.
+  const result = ownValue(reply, 'result')
+  if (result !== undefined && result !== null) return undefined
+  const error = ownValue(reply, 'error')
+  return isJsonObject(error) ? nodeErrorFrom(method, error) : undefined
 }
 
-function nodeErrorFrom(method: string, error: Record<string, unknown>): RpcError | undefined {
-  const code = error['code']
-  const message = error['message']
+/** The node's error, from an object parseJsonLossless made. */
+function nodeErrorFrom(method: string, error: Readonly<Record<string, unknown>>): RpcError | undefined {
+  const code = ownValue(error, 'code')
+  const message = ownValue(error, 'message')
   if (!(code instanceof JsonNumber) || !/^-?(?:0|[1-9][0-9]{0,9})$/.test(code.source) || typeof message !== 'string') {
     return undefined
   }
@@ -1209,7 +1285,7 @@ function repliesById(label: string, parsed: unknown, ids: readonly number[]): Ma
   const byId = new Map<number, unknown>()
   parsed.forEach((item, index) => {
     const path = `response[${index}]`
-    const replyId = item !== null && typeof item === 'object' ? (item as Record<string, unknown>)['id'] : undefined
+    const replyId = isJsonObject(item) ? ownValue(item, 'id') : undefined
     const numericId =
       replyId instanceof JsonNumber && /^[1-9][0-9]*$/.test(replyId.source) ? Number(replyId.source) : NaN
     if (!ids.includes(numericId) || byId.has(numericId)) {
@@ -1249,6 +1325,12 @@ function validated<T>(method: string, request: RpcRequest<T>, result: unknown): 
 interface Authorization {
   readonly header: string
   readonly digest: string
+}
+
+/** The call options, read and checked by `#callSettings`. */
+interface CallSettings {
+  readonly timeoutMs: number
+  readonly signal: AbortSignal | undefined
 }
 
 interface AttemptContext {

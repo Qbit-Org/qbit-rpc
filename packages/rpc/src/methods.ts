@@ -1,6 +1,7 @@
 import { assertBits, BITS_PER_QBT, formatBitsPerVbyte, formatQbt } from './amount'
 import { IGNORED_OPTIONS, QBIT_CHAINS, type QbitChain } from './capabilities'
-import { rawDecimal, stringifyRequest } from './json'
+import { parseJsonLossless, rawDecimal, stringifyRequest } from './json'
+import { argArray, argOptions, keysOf, NO_OPTIONS, ownElements } from './own'
 import { rawTransactionTxid } from './raw-tx'
 import {
   amount,
@@ -62,9 +63,8 @@ function request<T>(
   const trimmed = [...params]
   while (trimmed.length > 0 && trimmed[trimmed.length - 1] === undefined) trimmed.pop()
   const positional = trimmed.map(value => (value === undefined ? null : value))
-  return Object.freeze(
-    txid === undefined ? { method, params: positional, parse } : { method, params: positional, parse, txid }
-  )
+  // Without a prototype, like every object a result holds: a txid left out reads as undefined.
+  return Object.freeze(compact<RpcRequest<T>>({ method, params: positional, parse, txid }))
 }
 
 // ---------------------------------------------------------------------------
@@ -93,7 +93,8 @@ function argFinite(value: unknown, name: string, min: number, max: number, minEx
   return value === 0 ? 0 : value
 }
 
-function argString(value: unknown, name: string, { nonEmpty = false } = {}): string {
+function argString(value: unknown, name: string, options: { readonly nonEmpty?: boolean } = NO_OPTIONS): string {
+  const nonEmpty = options.nonEmpty === true
   if (typeof value !== 'string' || (nonEmpty && value === '')) {
     throw new TypeError(`${name} must be a ${nonEmpty ? 'non-empty ' : ''}string`)
   }
@@ -141,97 +142,9 @@ function argOneOf<T extends string>(value: unknown, name: string, values: readon
   return value as T
 }
 
-/** The call options a client method or `batch()` takes as its last argument; never a request's own option. */
-export const CALL_OPTION_KEYS = ['signal', 'timeoutMs'] as const
-const CALL_OPTIONS_PLACE = 'the call options, the last argument of the client method or of batch()'
-
-/**
- * An options or arguments object that may hold only `keys`, own or inherited,
- * and `ignored` keys, which are allowed and not read. Any other enumerable key
- * throws a `TypeError` naming it, with the key it most likely meant: a key
- * read nowhere would be dropped silently, and TypeScript's excess-property
- * check misses spread objects, JavaScript callers and options built from
- * configuration. With `callOptions`, a call option, or a key that most likely
- * meant one, is pointed to the client method's call options instead.
- */
-export function argOptions(
-  value: unknown,
-  name: string,
-  keys: readonly string[],
-  { ignored = [], callOptions = false }: { readonly ignored?: readonly string[]; readonly callOptions?: boolean } = {}
-): Readonly<Record<string, unknown>> {
-  if (value === undefined) return {}
-  if (typeof value !== 'object' || value === null || Array.isArray(value))
-    throw new TypeError(`${name} must be an object`)
-  for (const key in value) {
-    if (keys.includes(key) || ignored.includes(key) || fromObjectPrototype(value, key)) continue
-    throw new TypeError(unknownKey(name, key, keys, callOptions))
-  }
-  return value as Record<string, unknown>
-}
-
 /** A builder's top-level `options`: a typed client method takes its call options in a separate, last argument. */
 function methodOptions(value: unknown, keys: readonly string[]): Readonly<Record<string, unknown>> {
   return argOptions(value, 'options', keys, { callOptions: true })
-}
-
-/** Whether `value` inherits `key` from Object.prototype: a key a polluted prototype puts on every object, which no caller set. */
-function fromObjectPrototype(value: object, key: string): boolean {
-  if (Object.hasOwn(value, key)) return false
-  for (let o: object | null = Object.getPrototypeOf(value); o !== null; o = Object.getPrototypeOf(o)) {
-    if (Object.hasOwn(o, key)) return o === Object.prototype
-  }
-  return false
-}
-
-/** The keys of `T`, listed in full: the compiler refuses a missing or an extra one. */
-function keysOf<T>(keys: { readonly [K in keyof Required<T>]: true }): readonly string[] {
-  return Object.keys(keys)
-}
-
-/** Case, `_` and `-` aside: `subtract_fee_from_outputs` matches `subtractFeeFromOutputs`. */
-const looseKey = (key: string): string => key.toLowerCase().replace(/[_-]/g, '')
-
-/** What a key gains with its unit suffix: the node's `fee_rate` is bits/vB, `feeRateBitsPerKvB` bits per 1,000 vB. */
-const UNIT_NOTES: Readonly<Record<string, string>> = {
-  bits: ', a bigint in bits (1 QBT is 100,000,000 bits)',
-  bitsperkvb: ', a bigint in bits per 1,000 vbytes (1000n is 1 bit/vB)',
-  ms: ', in milliseconds',
-}
-
-/**
- * Keys this package names in a message: a near-miss of a known key, or a
- * short identifier in an options object, as option names are. The keys of an
- * array entry (`outputs[0]`) are never named otherwise: there the node's own
- * format puts data in keys (`{ "<address>": amount }`), and messages never
- * include request parameters.
- */
-const NAMEABLE_KEY = /^[A-Za-z_][A-Za-z0-9_]{0,23}$/
-
-/** The key among `keys` that `key` most likely meant, with what its unit suffix adds. */
-function meantKey(key: string, keys: readonly string[]): { readonly key: string; readonly note: string } | undefined {
-  // The node's spelling, or this package's without its unit or plural (fee_rate, minimumAmount, timeout).
-  const loose = looseKey(key)
-  for (const suffix of ['', 's', 'bits', 'bitsperkvb', 'ms']) {
-    const meant = keys.find(known => looseKey(known) === `${loose}${suffix}`)
-    if (meant !== undefined) return { key: meant, note: UNIT_NOTES[suffix] ?? '' }
-  }
-  return undefined
-}
-
-function unknownKey(name: string, key: string, keys: readonly string[], callOptions: boolean): string {
-  if (callOptions && (CALL_OPTION_KEYS as readonly string[]).includes(key)) {
-    return `${name}.${key} is a call option: pass it in ${CALL_OPTIONS_PLACE}`
-  }
-  const meant = meantKey(key, keys)
-  if (meant !== undefined) return `${name}.${key} is not a known key: use ${name}.${meant.key}${meant.note}`
-  const call = callOptions ? meantKey(key, CALL_OPTION_KEYS) : undefined
-  if (call !== undefined)
-    return `${name}.${key} is not a known key: use ${call.key}${call.note}, in ${CALL_OPTIONS_PLACE}`
-  if (name.endsWith(']') || !NAMEABLE_KEY.test(key)) {
-    return `${name} has an unknown key (not shown); the known keys are ${keys.join(', ')}`
-  }
-  return `${name}.${key} is not a known key; the known keys are ${keys.join(', ')}`
 }
 
 function opt<T>(value: unknown, check: (value: unknown) => T): T | undefined {
@@ -342,15 +255,15 @@ function parseBlockchainInfo(value: unknown): BlockchainInfo {
     automaticPruning: optional(o, 'automatic_pruning', R, boolean),
     pruneTargetSize: optional(o, 'prune_target_size', R, nonNegativeInteger),
     signetChallenge: optional(o, 'signet_challenge', R, hex()),
-    p2mrValidationWeight: {
+    p2mrValidationWeight: compact<BlockchainInfo['p2mrValidationWeight']>({
       legacyPerSigop: field(weight, 'legacy_per_sigop', wp, nonNegativeInteger),
       v2PerSigop: field(weight, 'v2_per_sigop', wp, nonNegativeInteger),
       activationHeight: field(weight, 'activation_height', wp, int32),
       activeForTip: field(weight, 'active_for_tip', wp, boolean),
       activeForNextBlock: field(weight, 'active_for_next_block', wp, boolean),
       blocksRemaining: field(weight, 'blocks_remaining', wp, nonNegativeInteger),
-    },
-    futureBlockTime: {
+    }),
+    futureBlockTime: compact<BlockchainInfo['futureBlockTime']>({
       legacyLimitSeconds: field(future, 'legacy_limit_seconds', fp, nonNegativeInteger),
       v2LimitSeconds: field(future, 'v2_limit_seconds', fp, nonNegativeInteger),
       activationHeight: field(future, 'activation_height', fp, int32),
@@ -362,7 +275,7 @@ function parseBlockchainInfo(value: unknown): BlockchainInfo {
       nextBlockMinTime: field(future, 'next_block_min_time', fp, anyInteger),
       nextBlockMaxTime: field(future, 'next_block_max_time', fp, anyInteger),
       nextBlockTimeHeadroomSeconds: field(future, 'next_block_time_headroom_seconds', fp, anyInteger),
-    },
+    }),
     warnings: field(o, 'warnings', R, warnings),
   })
 }
@@ -413,13 +326,13 @@ function parseNetworkInfo(value: unknown): NetworkInfo {
     networks: field(o, 'networks', R, (v, p) =>
       array(v, p, (entry, ep) => {
         const n = object(entry, ep)
-        return {
+        return compact<NetworkInfo['networks'][number]>({
           name: field(n, 'name', ep, string),
           limited: field(n, 'limited', ep, boolean),
           reachable: field(n, 'reachable', ep, boolean),
           proxy: field(n, 'proxy', ep, string),
           proxyRandomizeCredentials: field(n, 'proxy_randomize_credentials', ep, boolean),
-        }
+        })
       })
     ),
     relayFeeBitsPerKvB: optional(o, 'relayfee', R, amount),
@@ -427,11 +340,11 @@ function parseNetworkInfo(value: unknown): NetworkInfo {
     localAddresses: field(o, 'localaddresses', R, (v, p) =>
       array(v, p, (entry, ep) => {
         const a = object(entry, ep)
-        return {
+        return compact<NetworkInfo['localAddresses'][number]>({
           address: field(a, 'address', ep, string),
           port: field(a, 'port', ep, integer(0, 65535)),
           score: field(a, 'score', ep, anyInteger),
-        }
+        })
       })
     ),
     warnings: field(o, 'warnings', R, warnings),
@@ -555,10 +468,10 @@ function parseInput(value: unknown, path: string): TransactionInput {
   return compact<TransactionInput>({
     txid: field(i, 'txid', path, hash),
     vout: field(i, 'vout', path, uint32),
-    scriptSig: {
+    scriptSig: compact<{ readonly asm: string; readonly hex: string }>({
       asm: field(sig, 'asm', `${path}.scriptSig`, string),
       hex: field(sig, 'hex', `${path}.scriptSig`, hex()),
-    },
+    }),
     txinwitness,
     sequence,
   })
@@ -577,11 +490,11 @@ function parseScriptPubKey(value: unknown, path: string): ScriptPubKey {
 
 function parseOutput(value: unknown, path: string): TransactionOutput {
   const out = object(value, path)
-  return {
+  return compact<TransactionOutput>({
     valueBits: field(out, 'value', path, amount),
     n: field(out, 'n', path, uint32),
     scriptPubKey: field(out, 'scriptPubKey', path, parseScriptPubKey),
-  }
+  })
 }
 
 function parseDecodedTransaction(requestedTxid: string): (value: unknown) => DecodedTransaction {
@@ -659,12 +572,12 @@ function parseMempoolEntry(value: unknown): MempoolEntry {
     ancestorCount: field(o, 'ancestorcount', R, count),
     ancestorSize: field(o, 'ancestorsize', R, nonNegativeInteger),
     wtxid: field(o, 'wtxid', R, hash),
-    fees: {
+    fees: compact<MempoolEntry['fees']>({
       baseBits: field(f, 'base', fp, amount),
       modifiedBits: field(f, 'modified', fp, signedAmount),
       ancestorBits: field(f, 'ancestor', fp, signedAmount),
       descendantBits: field(f, 'descendant', fp, signedAmount),
-    },
+    }),
     depends: field(o, 'depends', R, txids),
     spentBy: field(o, 'spentby', R, txids),
     bip125Replaceable: optional(o, 'bip125-replaceable', R, boolean),
@@ -686,13 +599,13 @@ export interface TxOut {
 function parseTxOut(value: unknown): TxOut | null {
   if (value === null) return null
   const o = object(value, R)
-  const out: TxOut = {
+  const out = compact<TxOut>({
     bestBlock: field(o, 'bestblock', R, hash),
     confirmations: field(o, 'confirmations', R, nonNegativeInteger),
     valueBits: field(o, 'value', R, amount),
     scriptPubKey: field(o, 'scriptPubKey', R, parseScriptPubKey),
     coinbase: field(o, 'coinbase', R, boolean),
-  }
+  })
   // A coinbase transaction is never in the mempool.
   if (out.coinbase && out.confirmations === 0) {
     throw new ResultIssue(`${R}.confirmations`, 'at least 1 for a coinbase output')
@@ -740,7 +653,7 @@ function parseConfirmationTarget(value: unknown): ConfirmationTarget {
   const m = field(o, 'model', R, object)
   const mp = `${R}.model`
   const nonNegative = finite(0)
-  return {
+  return compact<ConfirmationTarget>({
     requiredConfirmations: field(o, 'required_confirmations', R, nonNegativeInteger),
     requiredMinutes: field(o, 'required_minutes', R, nonNegative),
     equivalentBtcConfirmations: field(o, 'equivalent_btc_confirmations', R, nonNegative),
@@ -749,7 +662,7 @@ function parseConfirmationTarget(value: unknown): ConfirmationTarget {
     totalObservedHashrate: field(o, 'total_observed_hashrate', R, nonNegative),
     orphanRate: field(o, 'orphan_rate', R, finite(0, 1)),
     securityLevel: field(o, 'security_level', R, oneOf(SECURITY_LEVELS)),
-    model: {
+    model: compact<ConfirmationTarget['model']>({
       btcTargetConfirmations: field(m, 'btc_target_confirmations', mp, nonNegativeInteger),
       blockTimeSeconds: field(m, 'block_time_seconds', mp, nonNegativeInteger),
       hashrateSource: field(
@@ -766,8 +679,8 @@ function parseConfirmationTarget(value: unknown): ConfirmationTarget {
       orphanRatePenalty: field(m, 'orphan_rate_penalty', mp, nonNegative),
       securityPerConfirmation: field(m, 'security_per_confirmation', mp, nonNegative),
       cadenceMergedFraction: field(m, 'cadence_merged_fraction', mp, finite(0, 1)),
-    },
-  }
+    }),
+  })
 }
 
 export type FeeEstimateMode = 'unset' | 'economical' | 'conservative'
@@ -823,11 +736,11 @@ function parseAddressValidation(value: unknown): AddressValidation {
       witnessProgram: optional(o, 'witness_program', R, hex()),
     })
   }
-  return {
+  return compact<AddressValidation>({
     isValid: false,
     error: field(o, 'error', R, string),
     errorLocations: field(o, 'error_locations', R, (v, p) => array(v, p, nonNegativeInteger)),
-  }
+  })
 }
 
 /** The proof `signdatapqchash` returns, as `verifydatapqchash` takes it. */
@@ -908,11 +821,11 @@ function parseMempoolAcceptance(rawTxs: readonly string[]): (value: unknown) => 
         vsize: optional(o, 'vsize', path, nonNegativeInteger),
         fees: optional(o, 'fees', path, (v, fp) => {
           const f = object(v, fp)
-          return {
+          return compact<NonNullable<MempoolAcceptance['fees']>>({
             baseBits: field(f, 'base', fp, amount),
             effectiveFeeRateBitsPerKvB: field(f, 'effective-feerate', fp, amount),
             effectiveIncludes: field(f, 'effective-includes', fp, (w, wp) => array(w, wp, hash)),
-          }
+          })
         }),
         rejectReason: optional(o, 'reject-reason', path, string),
         rejectDetails: optional(o, 'reject-details', path, string),
@@ -968,13 +881,13 @@ function pqcUsage(o: JsonObject): { [K in keyof PqcUsage]: PqcUsage[K] | undefin
     pqcKeyStates: optional(o, 'pqc_key_states', R, (v, p) =>
       array(v, p, (entry, ep) => {
         const k = object(entry, ep)
-        return {
+        return compact<PqcKeyState>({
           pubkey: field(k, 'pubkey', ep, hex(32)),
           pqcSignatureCount: field(k, 'pqc_signature_count', ep, uint32),
           pqcSignatureLimit: field(k, 'pqc_signature_limit', ep, uint32),
           pqcSignaturesRemaining: field(k, 'pqc_signatures_remaining', ep, uint32),
           pqcLimitState: field(k, 'pqc_limit_state', ep, limitState),
-        }
+        })
       })
     ),
     pqcOverallLimitState: optional(o, 'pqc_overall_limit_state', R, limitState),
@@ -1030,7 +943,10 @@ export interface LastProcessedBlock {
 
 function parseLastProcessedBlock(value: unknown, path: string): LastProcessedBlock {
   const o = object(value, path)
-  return { hash: field(o, 'hash', path, hash), height: field(o, 'height', path, nonNegativeInteger) }
+  return compact<LastProcessedBlock>({
+    hash: field(o, 'hash', path, hash),
+    height: field(o, 'height', path, nonNegativeInteger),
+  })
 }
 
 function parseWalletInfo(value: unknown): WalletInfo {
@@ -1051,13 +967,13 @@ function parseWalletInfo(value: unknown): WalletInfo {
     scanning: field(o, 'scanning', R, (s, sp) => {
       if (s === false) return false as const
       const scan = object(s, sp)
-      return {
+      return compact<{ readonly duration: number; readonly progress: number }>({
         duration: field(scan, 'duration', sp, nonNegativeInteger),
         progress: field(scan, 'progress', sp, finite(0, 1)),
-      }
+      })
     }),
     descriptors: field(o, 'descriptors', R, boolean),
-    pqcKeyValidation: {
+    pqcKeyValidation: compact<WalletInfo['pqcKeyValidation']>({
       status: field(v, 'status', vp, oneOf(['not_required', 'pending', 'running', 'complete', 'failed'] as const)),
       progress: field(v, 'progress', vp, finite(0, 1)),
       plaintextRecords: field(v, 'plaintext_records', vp, nonNegativeInteger),
@@ -1066,7 +982,7 @@ function parseWalletInfo(value: unknown): WalletInfo {
       failedRecords: field(v, 'failed_records', vp, nonNegativeInteger),
       signingBlocked: field(v, 'signing_blocked', vp, boolean),
       encryptionRecommended: field(v, 'encryption_recommended', vp, boolean),
-    },
+    }),
     externalSigner: field(o, 'external_signer', R, boolean),
     blank: field(o, 'blank', R, boolean),
     birthtime: optional(o, 'birthtime', R, nonNegativeInteger),
@@ -1381,7 +1297,7 @@ export interface Outpoint {
 
 function parseOutpoint(value: unknown, path: string): Outpoint {
   const o = object(value, path)
-  return { txid: field(o, 'txid', path, hash), vout: field(o, 'vout', path, uint32) }
+  return compact<Outpoint>({ txid: field(o, 'txid', path, hash), vout: field(o, 'vout', path, uint32) })
 }
 
 /**
@@ -1611,7 +1527,7 @@ function parseBalances(value: unknown): WalletBalances {
   const o = object(value, R)
   const m = field(o, 'mine', R, object)
   const mp = `${R}.mine`
-  return {
+  return compact<WalletBalances>({
     mine: compact<WalletBalances['mine']>({
       trustedBits: field(m, 'trusted', mp, amount),
       untrustedPendingBits: field(m, 'untrusted_pending', mp, amount),
@@ -1619,7 +1535,7 @@ function parseBalances(value: unknown): WalletBalances {
       usedBits: optional(m, 'used', mp, amount),
     }),
     lastProcessedBlock: field(o, 'lastprocessedblock', R, parseLastProcessedBlock),
-  }
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -1694,11 +1610,11 @@ export interface FundedPsbt {
 
 function parseFundedPsbt(value: unknown): FundedPsbt {
   const o = object(value, R)
-  return {
+  return compact<FundedPsbt>({
     psbt: field(o, 'psbt', R, base64),
     feeBits: field(o, 'fee', R, amount),
     changePos: field(o, 'changepos', R, integer(-1, Number.MAX_SAFE_INTEGER)),
-  }
+  })
 }
 
 /** `walletprocesspsbt`. */
@@ -1795,12 +1711,12 @@ export interface BumpedPsbt {
 
 function parseBumpedPsbt(value: unknown): BumpedPsbt {
   const o = object(value, R)
-  return {
+  return compact<BumpedPsbt>({
     psbt: field(o, 'psbt', R, base64),
     originalFeeBits: field(o, 'origfee', R, amount),
     feeBits: field(o, 'fee', R, amount),
     errors: field(o, 'errors', R, strings),
-  }
+  })
 }
 
 const parseNull = (value: unknown): null => nullValue(value, R)
@@ -1870,7 +1786,7 @@ const DATA_PQC_HASH_PROOF = keysOf<DataPqcHashProof>({
 function fundedPsbtOptions(value: unknown): Record<string, unknown> | undefined {
   if (value === undefined) return undefined
   const o = argOptions(value, 'args.options', FUNDED_PSBT_OPTIONS)
-  // The options the check below relates are read once, so a getter cannot pass it and then send both.
+  // argOptions read each option once, so a getter cannot pass the check below and then send both.
   const feeRate = o['feeRateBitsPerKvB']
   const confTarget = o['confTarget']
   const estimateMode = o['estimateMode']
@@ -1891,10 +1807,11 @@ function fundedPsbtOptions(value: unknown): Record<string, unknown> | undefined 
     change_type: opt(o['changeType'], v => argOneOf(v, 'args.options.changeType', ADDRESS_TYPES)),
     lock_unspents: opt(o['lockUnspents'], v => argBoolean(v, 'args.options.lockUnspents')),
     fee_rate: opt(feeRate, v => feeRateParam(v, 'args.options.feeRateBitsPerKvB')),
-    subtractFeeFromOutputs: opt(o['subtractFeeFromOutputs'], v => {
-      if (!Array.isArray(v)) throw new TypeError('args.options.subtractFeeFromOutputs must be an array')
-      return v.map((index, i) => argInteger(index, `args.options.subtractFeeFromOutputs[${i}]`, 0, 0x7fff_ffff))
-    }),
+    subtractFeeFromOutputs: opt(o['subtractFeeFromOutputs'], v =>
+      argArray(v, 'args.options.subtractFeeFromOutputs').map((index, i) =>
+        argInteger(index, `args.options.subtractFeeFromOutputs[${i}]`, 0, 0x7fff_ffff)
+      )
+    ),
     // MIN_STANDARD_TX_NONWITNESS_SIZE (65) times WITNESS_SCALE_FACTOR (1) to MAX_STANDARD_TX_WEIGHT.
     max_tx_weight: opt(o['maxTxWeight'], v => argInteger(v, 'args.options.maxTxWeight', 65, 400_000)),
     replaceable: opt(o['replaceable'], v => argBoolean(v, 'args.options.replaceable')),
@@ -1911,7 +1828,7 @@ function fundedPsbtOptions(value: unknown): Record<string, unknown> | undefined 
  */
 function outputsParam(value: unknown, name: string): Record<string, unknown>[] {
   if (!Array.isArray(value) || value.length === 0) throw new TypeError(`${name} must be a non-empty array`)
-  return value.map((output: unknown, i) => {
+  return ownElements(value, name).map((output, i) => {
     const p = argOptions(output, `${name}[${i}]`, ['address', 'amountBits', 'data'])
     // Each field is read once, so the either/or check and the output sent see the same values.
     const { address: addressField, amountBits, data } = p
@@ -1931,7 +1848,7 @@ function outpointsParam(value: unknown): { txid: string; vout: number }[] {
   if (!Array.isArray(value) || value.length === 0) {
     throw new RangeError('outputs must be a non-empty array of { txid, vout }')
   }
-  return value.map((output: unknown, i) => {
+  return ownElements(value, 'outputs').map((output, i) => {
     const p = argOptions(output, `outputs[${i}]`, ['txid', 'vout'], { ignored: OUTPOINT_EXTRAS })
     return {
       txid: argHash(p['txid'], `outputs[${i}].txid`),
@@ -1952,15 +1869,22 @@ export const requests = {
    * Any allowlisted method, untyped: the result keeps every number as a
    * `JsonNumber`. For `sendrawtransaction` the txid is computed from the hex,
    * as the typed method does, so an unknown outcome still names it.
+   *
+   * The params are serialized here, once, and the request holds them as they
+   * will be sent: parsed back without loss, every number a `JsonNumber` and
+   * every object without a prototype. So a `toJSON` or a getter in them runs
+   * once, and cannot pass the check below and then send something else. The
+   * depth limit counts the request envelope they are sent in, as `call()` sends
+   * them; `batch()` refuses an entry its array takes over the limit.
    */
   raw(method: string, params: readonly unknown[] = []): RpcRequest<unknown> {
     argString(method, 'method', { nonEmpty: true })
-    if (!Array.isArray(params)) throw new TypeError('params must be an array')
+    const list = parseJsonLossless(stringifyRequest(argArray(params, 'params'), 1)) as unknown[]
     const ignored = Object.hasOwn(IGNORED_OPTIONS, method) ? IGNORED_OPTIONS[method] : undefined
-    if (ignored !== undefined && params[ignored.param] !== undefined) {
+    if (ignored !== undefined) {
       // The options as they will be sent: after toJSON(), and without the
       // undefined, function and symbol values JSON.stringify leaves out.
-      const options = (JSON.parse(stringifyRequest([...params])) as unknown[])[ignored.param]
+      const options = list[ignored.param]
       for (const [key, read] of Object.entries(ignored.keys)) {
         if (typeof options === 'object' && options !== null && Object.hasOwn(options, key)) {
           throw new TypeError(
@@ -1970,11 +1894,9 @@ export const requests = {
       }
     }
     const parse = (result: unknown): unknown => result
-    const hexTx = params[0]
+    const hexTx = list[0]
     const txid = method === 'sendrawtransaction' && typeof hexTx === 'string' ? rawTransactionTxid(hexTx) : undefined
-    return Object.freeze(
-      txid === undefined ? { method, params: [...params], parse } : { method, params: [...params], parse, txid }
-    )
+    return Object.freeze(compact<RpcRequest<unknown>>({ method, params: list, parse, txid }))
   },
 
   getBlockchainInfo: (): RpcRequest<BlockchainInfo> => request('getblockchaininfo', [], parseBlockchainInfo),
@@ -2100,7 +2022,7 @@ export const requests = {
     if (!Array.isArray(rawTxs) || rawTxs.length < 1 || rawTxs.length > MAX_PACKAGE_COUNT) {
       throw new RangeError(`rawTxs must be an array of 1 to ${MAX_PACKAGE_COUNT} transactions`)
     }
-    const txs = rawTxs.map((tx, i) => argHex(tx, `rawTxs[${i}]`))
+    const txs = ownElements(rawTxs, 'rawTxs').map((tx, i) => argHex(tx, `rawTxs[${i}]`))
     const o = methodOptions(options, ['maxFeeRateBitsPerKvB'])
     return request(
       'testmempoolaccept',
@@ -2160,10 +2082,9 @@ export const requests = {
       [
         opt(o['minConf'], v => argInteger(v, 'options.minConf', 0, 0x7fff_ffff)),
         opt(o['maxConf'], v => argInteger(v, 'options.maxConf', 0, 0x7fff_ffff)),
-        opt(o['addresses'], v => {
-          if (!Array.isArray(v)) throw new TypeError('options.addresses must be an array')
-          return v.map((a, i) => argString(a, `options.addresses[${i}]`, { nonEmpty: true }))
-        }),
+        opt(o['addresses'], v =>
+          argArray(v, 'options.addresses').map((a, i) => argString(a, `options.addresses[${i}]`, { nonEmpty: true }))
+        ),
         opt(o['includeUnsafe'], v => argBoolean(v, 'options.includeUnsafe')),
         Object.keys(query).length > 0 ? query : undefined,
       ],
@@ -2226,9 +2147,8 @@ export const requests = {
   walletCreateFundedPsbt(args: WalletCreateFundedPsbtArgs): RpcRequest<FundedPsbt> {
     const a = argOptions(args, 'args', FUNDED_PSBT_ARGS, { callOptions: true })
     const outputs = outputsParam(a['outputs'], 'args.outputs')
-    const inputs = opt(a['inputs'], v => {
-      if (!Array.isArray(v)) throw new TypeError('args.inputs must be an array')
-      return v.map((input, i) => {
+    const inputs = opt(a['inputs'], v =>
+      argArray(v, 'args.inputs').map((input, i) => {
         const p = argOptions(input, `args.inputs[${i}]`, ['txid', 'vout', 'sequence'], {
           ignored: OUTPOINT_EXTRAS,
         })
@@ -2239,7 +2159,7 @@ export const requests = {
           sequence: opt(p['sequence'], s => argInteger(s, `args.inputs[${i}].sequence`, 0, 0xffff_ffff)),
         })
       })
-    })
+    )
     return request(
       'walletcreatefundedpsbt',
       [
@@ -2303,7 +2223,7 @@ export const requests = {
   psbtBumpFee(txid: string, options?: PsbtBumpFeeOptions): RpcRequest<BumpedPsbt> {
     const requested = argHash(txid, 'txid')
     const o = methodOptions(options, PSBT_BUMP_FEE_OPTIONS)
-    // Each option is read once, so a getter cannot pass the checks below and then send something else.
+    // argOptions read each option once, so a getter cannot pass the checks below and then send something else.
     const feeRate = o['feeRateBitsPerKvB']
     const confTarget = o['confTarget']
     const estimateMode = o['estimateMode']

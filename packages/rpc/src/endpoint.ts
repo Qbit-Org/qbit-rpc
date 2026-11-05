@@ -1,6 +1,8 @@
 import { open } from 'node:fs/promises'
 import { isIP } from 'node:net'
 
+import { argOptions, keysOf } from './own'
+
 /**
  * How the client authenticates. Exactly one form:
  *
@@ -11,6 +13,10 @@ import { isIP } from 'node:net'
  *   rotate it without restarting your service.
  */
 export type RpcAuth = { readonly username: string; readonly password: string } | { readonly cookieFile: string }
+
+/** The keys of every member of a union. */
+type KeysOfUnion<T> = T extends unknown ? keyof T : never
+const AUTH_KEYS = keysOf<Record<KeysOfUnion<RpcAuth>, unknown>>({ username: true, password: true, cookieFile: true })
 
 export interface Endpoint {
   readonly url: URL
@@ -61,10 +67,11 @@ export class Credentials {
   readonly #cookieFile: string | undefined
 
   constructor(auth: unknown, endpoint: Endpoint) {
-    if (typeof auth !== 'object' || auth === null) {
+    if (typeof auth !== 'object' || auth === null || Array.isArray(auth)) {
       throw new TypeError('auth must be { username, password } or { cookieFile }')
     }
-    const record = auth as Record<string, unknown>
+    // Own properties only: a password on a polluted Object.prototype must not fill a missing one.
+    const record = argOptions(auth, 'auth', AUTH_KEYS)
     const hasBasic = 'username' in record || 'password' in record
     const hasCookie = 'cookieFile' in record
     if (hasBasic === hasCookie) throw new TypeError('auth must be { username, password } or { cookieFile }')

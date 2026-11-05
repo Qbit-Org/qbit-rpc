@@ -13,6 +13,7 @@ import {
 } from '../src'
 import { METHOD_POLICIES } from '../src/capabilities'
 import { chainResults, CHECK, FakeNode, HASH_A } from './helpers/fake-node'
+import { bare } from './helpers/null-prototype'
 
 let node: FakeNode
 
@@ -75,12 +76,9 @@ describe('psbtBumpFee', () => {
   it('sends the txid, and the options under the names qbit Core reads, leaving out the rest', async () => {
     const rpc = await confirmed()
     node.results({ psbtbumpfee: json(BUMPED) })
-    expect(await rpc.psbtBumpFee(HASH_A)).toStrictEqual({
-      psbt: PSBT,
-      originalFeeBits: 3861n,
-      feeBits: 15444n,
-      errors: [],
-    })
+    expect(await rpc.psbtBumpFee(HASH_A)).toStrictEqual(
+      bare({ psbt: PSBT, originalFeeBits: 3861n, feeBits: 15444n, errors: [] })
+    )
     expect(params()).toEqual([HASH_A])
     await rpc.psbtBumpFee(HASH_A.toUpperCase(), {})
     expect(params()).toEqual([HASH_A])

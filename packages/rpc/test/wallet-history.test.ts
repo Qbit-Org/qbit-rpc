@@ -13,6 +13,7 @@ import {
 } from '../src'
 import { METHOD_POLICIES } from '../src/capabilities'
 import { chainResults, FakeNode } from './helpers/fake-node'
+import { bare } from './helpers/null-prototype'
 
 let node: FakeNode
 
@@ -462,29 +463,31 @@ describe('listSinceBlock', () => {
     expect(history.lastBlock).toBe(TIP)
     const [send, selfSend, receive, generate, immature, orphan, replaced, replacement, conflicted, data, partial] =
       history.transactions
-    expect(send).toStrictEqual(SEND_PARSED)
+    expect(send).toStrictEqual(bare(SEND_PARSED))
     expect(selfSend).toMatchObject({ category: 'send', amountBits: -225_000_000n, label: 'deposit-alice', vout: 1 })
-    expect(receive).toStrictEqual({
-      address: DEPOSIT,
-      parentDescs: [],
-      category: 'receive',
-      amountBits: 225_000_000n,
-      label: 'deposit-alice',
-      vout: 1,
-      abandoned: false,
-      confirmations: 1,
-      blockHash: BLOCK_1011,
-      blockHeight: 1011,
-      blockIndex: 2,
-      blockTime: 1793733321,
-      txid: SELF_TXID,
-      wtxid: SELF_WTXID,
-      walletConflicts: [],
-      mempoolConflicts: [],
-      time: 1793733152,
-      timeReceived: 1793733152,
-      bip125Replaceable: 'no',
-    })
+    expect(receive).toStrictEqual(
+      bare({
+        address: DEPOSIT,
+        parentDescs: [],
+        category: 'receive',
+        amountBits: 225_000_000n,
+        label: 'deposit-alice',
+        vout: 1,
+        abandoned: false,
+        confirmations: 1,
+        blockHash: BLOCK_1011,
+        blockHeight: 1011,
+        blockIndex: 2,
+        blockTime: 1793733321,
+        txid: SELF_TXID,
+        wtxid: SELF_WTXID,
+        walletConflicts: [],
+        mempoolConflicts: [],
+        time: 1793733152,
+        timeReceived: 1793733152,
+        bip125Replaceable: 'no',
+      })
+    )
     expect(generate).toMatchObject({ category: 'generate', amountBits: 21_000_000_000n, generated: true, label: '' })
     expect(generate).not.toHaveProperty('feeBits')
     expect(immature).toMatchObject({ category: 'immature', amountBits: 16_111_882_817n, blockHeight: 1010 })
@@ -746,7 +749,7 @@ describe('listTransactions', () => {
     node.results({ listtransactions: json([IMMATURE, SEND, ABANDONED]) })
     const entries = await client().listTransactions()
     expect(entries).toHaveLength(3)
-    expect(entries[1]).toStrictEqual(SEND_PARSED)
+    expect(entries[1]).toStrictEqual(bare(SEND_PARSED))
     expect(entries[2]).toMatchObject({ abandoned: true, amountBits: -125_000_000n, feeBits: -38_610n })
     node.results({ listtransactions: '[]' })
     expect(await client().listTransactions({ count: 0 })).toEqual([])
@@ -820,10 +823,12 @@ describe('getBalances', () => {
     const rpc = client()
     node.results({ getbalances: json(BALANCES) })
     const balances = await rpc.getBalances()
-    expect(balances).toStrictEqual({
-      mine: { trustedBits: 209_849_922_780n, untrustedPendingBits: 0n, immatureBits: 18_530_048_095_437n },
-      lastProcessedBlock: { hash: TIP, height: 1010 },
-    })
+    expect(balances).toStrictEqual(
+      bare({
+        mine: { trustedBits: 209_849_922_780n, untrustedPendingBits: 0n, immatureBits: 18_530_048_095_437n },
+        lastProcessedBlock: { hash: TIP, height: 1010 },
+      })
+    )
     expect(params()).toEqual([])
     // An avoid_reuse wallet.
     node.results({ getbalances: json({ ...BALANCES, mine: { ...BALANCES.mine, used: '#0.00000000' } }) })
@@ -1009,7 +1014,7 @@ describe('wallet history capabilities', () => {
       requests.listTransactions({ count: 1 }),
       requests.getBalances(),
     ])
-    expect(since.ok && since.value.transactions[0]).toStrictEqual(SEND_PARSED)
+    expect(since.ok && since.value.transactions[0]).toStrictEqual(bare(SEND_PARSED))
     expect(!list.ok && list.error).toMatchObject({ reason: 'validation', path: 'result[0].fee' })
     expect(balances.ok && balances.value.mine.immatureBits).toBe(18_530_048_095_437n)
     const sent = node.requests.length
