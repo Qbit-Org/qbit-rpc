@@ -134,65 +134,45 @@ function argBase64(value: unknown, name: string): string {
 }
 
 function argOneOf<T extends string>(value: unknown, name: string, values: readonly T[]): T {
-  if (typeof value !== 'string' || !(values as readonly string[]).includes(value)) {
+  if (typeof value !== 'string') throw new TypeError(`${name} must be a string, one of ${values.join(', ')}`)
+  if (!(values as readonly string[]).includes(value)) {
     throw new RangeError(`${name} must be one of ${values.join(', ')}`)
   }
   return value as T
 }
 
-/**
- * Options objects a typed client method is building a request from, counted
- * (a nested build with the same object keeps the mark): they also carry its
- * call options.
- */
-const CALL_OPTION_CARRIERS = new WeakMap<object, number>()
-const CALL_OPTION_KEYS: readonly string[] = ['signal', 'timeoutMs']
-
-/**
- * Build a request from a typed client method's `options`, which also carry
- * its call options (`signal`, `timeoutMs`): the builder's top-level options
- * check then allows them, unread, on that object only. The builder reads the
- * caller's own object, so getters keep their receiver.
- */
-export function withCallOptions<T>(options: object, build: () => T): T {
-  CALL_OPTION_CARRIERS.set(options, (CALL_OPTION_CARRIERS.get(options) ?? 0) + 1)
-  try {
-    return build()
-  } finally {
-    const count = (CALL_OPTION_CARRIERS.get(options) ?? 1) - 1
-    if (count === 0) CALL_OPTION_CARRIERS.delete(options)
-    else CALL_OPTION_CARRIERS.set(options, count)
-  }
-}
+/** The call options a client method or `batch()` takes as its last argument; never a request's own option. */
+export const CALL_OPTION_KEYS = ['signal', 'timeoutMs'] as const
+const CALL_OPTIONS_PLACE = 'the call options, the last argument of the client method or of batch()'
 
 /**
  * An options or arguments object that may hold only `keys`, own or inherited,
  * and `ignored` keys, which are allowed and not read. Any other enumerable key
- * throws a `TypeError` naming it, with the key it most likely meant among
- * `keys` and `hinted`: a key read nowhere would be dropped silently, and
- * TypeScript's excess-property check misses spread objects, JavaScript callers
- * and options built from configuration.
+ * throws a `TypeError` naming it, with the key it most likely meant: a key
+ * read nowhere would be dropped silently, and TypeScript's excess-property
+ * check misses spread objects, JavaScript callers and options built from
+ * configuration. With `callOptions`, a call option, or a key that most likely
+ * meant one, is pointed to the client method's call options instead.
  */
 export function argOptions(
   value: unknown,
   name: string,
   keys: readonly string[],
-  { ignored = [], hinted = [] }: { readonly ignored?: readonly string[]; readonly hinted?: readonly string[] } = {}
+  { ignored = [], callOptions = false }: { readonly ignored?: readonly string[]; readonly callOptions?: boolean } = {}
 ): Readonly<Record<string, unknown>> {
   if (value === undefined) return {}
   if (typeof value !== 'object' || value === null || Array.isArray(value))
     throw new TypeError(`${name} must be an object`)
   for (const key in value) {
     if (keys.includes(key) || ignored.includes(key) || fromObjectPrototype(value, key)) continue
-    throw new TypeError(unknownKey(name, key, [...keys, ...hinted]))
+    throw new TypeError(unknownKey(name, key, keys, callOptions))
   }
   return value as Record<string, unknown>
 }
 
-/** A builder's top-level `options`, with the call options allowed when a typed client method passed them. */
+/** A builder's top-level `options`: a typed client method takes its call options in a separate, last argument. */
 function methodOptions(value: unknown, keys: readonly string[]): Readonly<Record<string, unknown>> {
-  const carrier = typeof value === 'object' && value !== null && CALL_OPTION_CARRIERS.has(value)
-  return argOptions(value, 'options', keys, carrier ? { ignored: CALL_OPTION_KEYS, hinted: CALL_OPTION_KEYS } : {})
+  return argOptions(value, 'options', keys, { callOptions: true })
 }
 
 /** Whether `value` inherits `key` from Object.prototype: a key a polluted prototype puts on every object, which no caller set. */
@@ -228,15 +208,26 @@ const UNIT_NOTES: Readonly<Record<string, string>> = {
  */
 const NAMEABLE_KEY = /^[A-Za-z_][A-Za-z0-9_]{0,23}$/
 
-function unknownKey(name: string, key: string, keys: readonly string[]): string {
+/** The key among `keys` that `key` most likely meant, with what its unit suffix adds. */
+function meantKey(key: string, keys: readonly string[]): { readonly key: string; readonly note: string } | undefined {
   // The node's spelling, or this package's without its unit or plural (fee_rate, minimumAmount, timeout).
   const loose = looseKey(key)
   for (const suffix of ['', 's', 'bits', 'bitsperkvb', 'ms']) {
     const meant = keys.find(known => looseKey(known) === `${loose}${suffix}`)
-    if (meant !== undefined) {
-      return `${name}.${key} is not a known key: use ${name}.${meant}${UNIT_NOTES[suffix] ?? ''}`
-    }
+    if (meant !== undefined) return { key: meant, note: UNIT_NOTES[suffix] ?? '' }
   }
+  return undefined
+}
+
+function unknownKey(name: string, key: string, keys: readonly string[], callOptions: boolean): string {
+  if (callOptions && (CALL_OPTION_KEYS as readonly string[]).includes(key)) {
+    return `${name}.${key} is a call option: pass it in ${CALL_OPTIONS_PLACE}`
+  }
+  const meant = meantKey(key, keys)
+  if (meant !== undefined) return `${name}.${key} is not a known key: use ${name}.${meant.key}${meant.note}`
+  const call = callOptions ? meantKey(key, CALL_OPTION_KEYS) : undefined
+  if (call !== undefined)
+    return `${name}.${key} is not a known key: use ${call.key}${call.note}, in ${CALL_OPTIONS_PLACE}`
   if (name.endsWith(']') || !NAMEABLE_KEY.test(key)) {
     return `${name} has an unknown key (not shown); the known keys are ${keys.join(', ')}`
   }
@@ -252,10 +243,18 @@ function qbtParam(bits: unknown, name: string): unknown {
   return rawDecimal(formatQbt(assertBits(bits, name)))
 }
 
-/** qbit Core refuses `maxfeerate` values of 1 QBT/kvB or more. */
+/**
+ * `maxfeerate`, bits per 1,000 vbytes. qbit Core v1.0.0 refuses 1 QBT/kvB or
+ * more, and reads 0 as no cap at all, the opposite of a cap of zero: so 0n is
+ * refused. Left out, the node applies its default cap of 0.1 QBT/kvB.
+ */
 function maxFeeRateParam(value: unknown, name: string): unknown {
   const bits = assertBits(value, name)
-  if (bits >= BITS_PER_QBT) throw new RangeError(`${name} must be below 100000000 bits/kvB (1 QBT/kvB)`)
+  if (bits === 0n || bits >= BITS_PER_QBT) {
+    throw new RangeError(
+      `${name} must be from 1 to 99999999 bits/kvB: qbit Core reads 0 as no cap and refuses 1 QBT/kvB or more`
+    )
+  }
   return rawDecimal(formatQbt(bits))
 }
 
@@ -1627,13 +1626,37 @@ function parseBalances(value: unknown): WalletBalances {
 // Wallet write
 // ---------------------------------------------------------------------------
 
+/**
+ * An address (output) type: the five qbit Core v1.0.0 parses
+ * (`src/outputtype.cpp`); it refuses any other name with `RpcError` -5. Which
+ * ones a wallet can make depends on the chain: main, test, testnet4 and signet
+ * make only `p2mr`, and so does regtest unless qbitd runs with `-p2mronly=0`,
+ * which allows all five. A type the chain does not allow is refused with
+ * `RpcError` -5 too.
+ */
+export type AddressType = 'p2mr' | 'bech32m' | 'bech32' | 'p2sh-segwit' | 'legacy'
+// A record, so the compiler requires every AddressType here exactly once.
+const ADDRESS_TYPE_SET: Readonly<Record<AddressType, true>> = {
+  p2mr: true,
+  bech32m: true,
+  bech32: true,
+  'p2sh-segwit': true,
+  legacy: true,
+}
+const ADDRESS_TYPES = Object.keys(ADDRESS_TYPE_SET) as AddressType[]
+
 export type FundedPsbtOutput = { readonly address: string; readonly amountBits: bigint } | { readonly data: string }
 
 export interface WalletCreateFundedPsbtArgs {
-  /** Inputs to spend; leave out to let the wallet select coins. */
+  /**
+   * Inputs to spend; leave out to let the wallet select coins. `vout` is 0 to
+   * 2,147,483,647 (qbit Core reads it as a signed 32-bit integer), `sequence`
+   * 0 to 4,294,967,295.
+   */
   readonly inputs?: readonly { readonly txid: string; readonly vout: number; readonly sequence?: number }[]
   /** At least one output. Each address once; at most one `data` (OP_RETURN) output. */
   readonly outputs: readonly FundedPsbtOutput[]
+  /** 0 to 4,294,967,295. */
   readonly locktime?: number
   readonly options?: {
     readonly addInputs?: boolean
@@ -1642,20 +1665,22 @@ export interface WalletCreateFundedPsbtArgs {
     readonly maxConf?: number
     readonly changeAddress?: string
     readonly changePosition?: number
-    /** For example `p2mr`. */
-    readonly changeType?: string
+    /** The change output's type; see {@link AddressType}. Default: the wallet's `-changetype`. */
+    readonly changeType?: AddressType
     /** Lock the selected coins in the wallet until they are spent or unlocked. */
     readonly lockUnspents?: boolean
     /** An explicit fee rate in bits per 1,000 vbytes (`250n` is 0.25 bits/vB). Exclusive with `confTarget`. */
     readonly feeRateBitsPerKvB?: bigint
     /** Output indexes, before change is added, that pay the fee. */
     readonly subtractFeeFromOutputs?: readonly number[]
+    /** The largest weight the transaction may have, 65 to 400,000 (qbit Core's standard limit, the default). */
     readonly maxTxWeight?: number
     readonly replaceable?: boolean
     readonly confTarget?: number
     readonly estimateMode?: FeeEstimateMode
   }
   readonly bip32derivs?: boolean
+  /** The transaction version, 1 to 3: qbit Core refuses a non-standard one. Default 2. */
   readonly version?: number
 }
 
@@ -1780,6 +1805,12 @@ function parseBumpedPsbt(value: unknown): BumpedPsbt {
 
 const parseNull = (value: unknown): null => nullValue(value, R)
 
+/** `lockunspent`'s reply: it answers `true` or an error, never `false`. */
+function parseTrue(value: unknown): true {
+  if (value !== true) throw new ResultIssue(R, 'true')
+  return true
+}
+
 /** An address the wallet returns: bech32 or base58 characters only. */
 function parseAddress(value: unknown, path = R): string {
   if (typeof value !== 'string' || !/^[0-9A-Za-z]+$/.test(value)) throw new ResultIssue(path, 'an address')
@@ -1857,14 +1888,15 @@ function fundedPsbtOptions(value: unknown): Record<string, unknown> | undefined 
     maxconf: opt(o['maxConf'], v => argInteger(v, 'args.options.maxConf', 0, 0x7fff_ffff)),
     change_address: opt(o['changeAddress'], v => argString(v, 'args.options.changeAddress', { nonEmpty: true })),
     change_position: opt(o['changePosition'], v => argInteger(v, 'args.options.changePosition', 0, 0x7fff_ffff)),
-    change_type: opt(o['changeType'], v => argString(v, 'args.options.changeType', { nonEmpty: true })),
+    change_type: opt(o['changeType'], v => argOneOf(v, 'args.options.changeType', ADDRESS_TYPES)),
     lock_unspents: opt(o['lockUnspents'], v => argBoolean(v, 'args.options.lockUnspents')),
     fee_rate: opt(feeRate, v => feeRateParam(v, 'args.options.feeRateBitsPerKvB')),
     subtractFeeFromOutputs: opt(o['subtractFeeFromOutputs'], v => {
       if (!Array.isArray(v)) throw new TypeError('args.options.subtractFeeFromOutputs must be an array')
       return v.map((index, i) => argInteger(index, `args.options.subtractFeeFromOutputs[${i}]`, 0, 0x7fff_ffff))
     }),
-    max_tx_weight: opt(o['maxTxWeight'], v => argInteger(v, 'args.options.maxTxWeight', 1, 0x7fff_ffff)),
+    // MIN_STANDARD_TX_NONWITNESS_SIZE (65) times WITNESS_SCALE_FACTOR (1) to MAX_STANDARD_TX_WEIGHT.
+    max_tx_weight: opt(o['maxTxWeight'], v => argInteger(v, 'args.options.maxTxWeight', 65, 400_000)),
     replaceable: opt(o['replaceable'], v => argBoolean(v, 'args.options.replaceable')),
     conf_target: opt(confTarget, v => argInteger(v, 'args.options.confTarget', 1, 1008)),
     estimate_mode: opt(estimateMode, v => argOneOf(v, 'args.options.estimateMode', FEE_MODES)),
@@ -1891,6 +1923,21 @@ function outputsParam(value: unknown, name: string): Record<string, unknown>[] {
     }
     const address = argString(addressField, `${name}[${i}].address`, { nonEmpty: true })
     return { [address]: qbtParam(amountBits, `${name}[${i}].amountBits`) }
+  })
+}
+
+/** `lockunspent`'s outputs: a non-empty array of outpoints, each as `{ txid, vout }`. */
+function outpointsParam(value: unknown): { txid: string; vout: number }[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new RangeError('outputs must be a non-empty array of { txid, vout }')
+  }
+  return value.map((output: unknown, i) => {
+    const p = argOptions(output, `outputs[${i}]`, ['txid', 'vout'], { ignored: OUTPOINT_EXTRAS })
+    return {
+      txid: argHash(p['txid'], `outputs[${i}].txid`),
+      // qbit Core reads it as an int and refuses a negative one.
+      vout: argInteger(p['vout'], `outputs[${i}].vout`, 0, 0x7fff_ffff),
+    }
   })
 }
 
@@ -1974,7 +2021,8 @@ export const requests = {
   /**
    * An unspent output, or null when it is spent or does not exist. With
    * `includeMempool` (the node's default, true), outputs of mempool
-   * transactions are found and outputs spent in the mempool are not.
+   * transactions are found and outputs spent in the mempool are not. `vout`
+   * is 0 to 4,294,967,295: qbit Core reads it as an unsigned 32-bit integer.
    */
   getTxOut(txid: string, vout: number, options?: { readonly includeMempool?: boolean }): RpcRequest<TxOut | null> {
     const o = methodOptions(options, ['includeMempool'])
@@ -1982,7 +2030,7 @@ export const requests = {
       'gettxout',
       [
         argHash(txid, 'txid'),
-        argInteger(vout, 'vout', 0, 0x7fff_ffff),
+        argInteger(vout, 'vout', 0, 0xffff_ffff),
         opt(o['includeMempool'], v => argBoolean(v, 'options.includeMempool')),
       ],
       parseTxOut
@@ -2020,7 +2068,7 @@ export const requests = {
   validateAddress: (address: string): RpcRequest<AddressValidation> =>
     request('validateaddress', [argString(address, 'address')], parseAddressValidation),
   verifyDataPqcHash(proof: DataPqcHashProof): RpcRequest<DataPqcHashVerification> {
-    const p = argOptions(proof, 'proof', DATA_PQC_HASH_PROOF)
+    const p = argOptions(proof, 'proof', DATA_PQC_HASH_PROOF, { callOptions: true })
     return request(
       'verifydatapqchash',
       [
@@ -2039,6 +2087,12 @@ export const requests = {
     )
   },
 
+  /**
+   * Whether the mempool would accept each transaction, without broadcasting.
+   * `maxFeeRateBitsPerKvB` caps the fee rate, 1n to 99,999,999n bits per 1,000
+   * vbytes; left out, qbit Core's default cap of 0.1 QBT/kvB (10,000,000n)
+   * applies. 0n is refused: qbit Core reads 0 as no cap at all.
+   */
   testMempoolAccept(
     rawTxs: readonly string[],
     options?: { readonly maxFeeRateBitsPerKvB?: bigint }
@@ -2054,7 +2108,14 @@ export const requests = {
       parseMempoolAcceptance(txs)
     )
   },
-  /** Returns the txid. A failure after the request may have reached the node is an `RpcUnknownOutcomeError`. */
+  /**
+   * Returns the txid. A failure after the request may have reached the node is
+   * an `RpcUnknownOutcomeError`. `maxFeeRateBitsPerKvB` caps the fee rate, 1n
+   * to 99,999,999n bits per 1,000 vbytes; left out, qbit Core's default cap of
+   * 0.1 QBT/kvB (10,000,000n) applies. 0n is refused: qbit Core reads 0 as no
+   * cap at all. `maxBurnAmountBits` (default 0n) is the most the transaction
+   * may send to provably unspendable outputs.
+   */
   sendRawTransaction(
     hexTx: string,
     options?: { readonly maxFeeRateBitsPerKvB?: bigint; readonly maxBurnAmountBits?: bigint }
@@ -2163,7 +2224,7 @@ export const requests = {
   getBalances: (): RpcRequest<WalletBalances> => request('getbalances', [], parseBalances),
 
   walletCreateFundedPsbt(args: WalletCreateFundedPsbtArgs): RpcRequest<FundedPsbt> {
-    const a = argOptions(args, 'args', FUNDED_PSBT_ARGS)
+    const a = argOptions(args, 'args', FUNDED_PSBT_ARGS, { callOptions: true })
     const outputs = outputsParam(a['outputs'], 'args.outputs')
     const inputs = opt(a['inputs'], v => {
       if (!Array.isArray(v)) throw new TypeError('args.inputs must be an array')
@@ -2173,7 +2234,8 @@ export const requests = {
         })
         return compact<Record<string, unknown>>({
           txid: argHash(p['txid'], `args.inputs[${i}].txid`),
-          vout: argInteger(p['vout'], `args.inputs[${i}].vout`, 0, 0xffff_ffff),
+          // qbit Core reads it as an int and refuses a negative one.
+          vout: argInteger(p['vout'], `args.inputs[${i}].vout`, 0, 0x7fff_ffff),
           sequence: opt(p['sequence'], s => argInteger(s, `args.inputs[${i}].sequence`, 0, 0xffff_ffff)),
         })
       })
@@ -2186,7 +2248,8 @@ export const requests = {
         opt(a['locktime'], v => argInteger(v, 'args.locktime', 0, 0xffff_ffff)),
         fundedPsbtOptions(a['options']),
         opt(a['bip32derivs'], v => argBoolean(v, 'args.bip32derivs')),
-        opt(a['version'], v => argInteger(v, 'args.version', 1, 0xffff_ffff)),
+        // TX_MIN_STANDARD_VERSION to TX_MAX_STANDARD_VERSION.
+        opt(a['version'], v => argInteger(v, 'args.version', 1, 3)),
       ],
       parseFundedPsbt
     )
@@ -2283,28 +2346,29 @@ export const requests = {
     ),
   walletLock: (): RpcRequest<null> => request('walletlock', [], parseNull),
   /**
-   * A new address from the wallet's internal (change) keypool. Launch chains
-   * offer only `p2mr`. An unknown or unavailable type rejects with `RpcError`
-   * code -5. On regtest, a wallet encrypted at creation rejects with code -12
-   * unless `addressType` is `p2mr` or the node runs with `-changetype=p2mr`.
+   * A new address from the wallet's internal (change) keypool. See
+   * {@link AddressType} for the types each chain offers; one the chain or the
+   * wallet does not offer rejects with `RpcError` code -5. On regtest, a wallet
+   * encrypted at creation rejects with code -12 unless `addressType` is `p2mr`
+   * or the node runs with `-changetype=p2mr`.
    */
-  getRawChangeAddress(options?: { readonly addressType?: string }): RpcRequest<string> {
+  getRawChangeAddress(options?: { readonly addressType?: AddressType }): RpcRequest<string> {
     const o = methodOptions(options, ['addressType'])
     return request(
       'getrawchangeaddress',
-      [opt(o['addressType'], v => argString(v, 'options.addressType', { nonEmpty: true }))],
+      [opt(o['addressType'], v => argOneOf(v, 'options.addressType', ADDRESS_TYPES))],
       parseAddress
     )
   },
   /**
    * A new receiving address from the wallet's external keypool, listed under
    * `label` (the default label, `''`, when left out; qbit Core reserves `*`).
-   * Launch chains offer only `p2mr`. An unknown or unavailable type rejects with
-   * `RpcError` code -5, and a wallet with no keys with code -4. On regtest, a
-   * wallet encrypted at creation rejects with code -12 unless `addressType` is
-   * `p2mr`.
+   * See {@link AddressType} for the types each chain offers; one the chain or
+   * the wallet does not offer rejects with `RpcError` code -5, and a wallet
+   * with no keys with code -4. On regtest, a wallet encrypted at creation
+   * rejects with code -12 unless `addressType` is `p2mr`.
    */
-  getNewAddress(options?: { readonly label?: string; readonly addressType?: string }): RpcRequest<string> {
+  getNewAddress(options?: { readonly label?: string; readonly addressType?: AddressType }): RpcRequest<string> {
     const o = methodOptions(options, ['label', 'addressType'])
     return request(
       'getnewaddress',
@@ -2314,44 +2378,38 @@ export const requests = {
           if (label === '*') throw new RangeError('options.label must not be *')
           return label
         }),
-        opt(o['addressType'], v => argString(v, 'options.addressType', { nonEmpty: true })),
+        opt(o['addressType'], v => argOneOf(v, 'options.addressType', ADDRESS_TYPES)),
       ],
       parseAddress
     )
   },
   /**
-   * Lock (`unlock` false) or unlock (`unlock` true) wallet outputs against
-   * automatic coin selection. Locks are kept in memory and gone after a node
-   * restart, unless `persistent` is set when locking. The node checks every
-   * output first and rejects with `RpcError` code -8, changing nothing, when one
-   * is unknown, spent, already locked (locking) or not locked (unlocking).
-   * `outputs` must not be empty: to unlock every output, use
-   * `call('lockunspent', [true])`.
+   * Lock wallet outputs against automatic coin selection (`lockunspent` with
+   * `unlock` false). A lock is kept in memory and gone after a node restart,
+   * unless `persistent` is set: then it is written to the wallet and loaded
+   * again on start. The node checks every output first and rejects with
+   * `RpcError` code -8, changing nothing, when one is unknown, spent or already
+   * locked; with `persistent`, an output already locked is locked again,
+   * persistently. `outputs` must not be empty.
    */
-  lockUnspent(
-    unlock: boolean,
-    outputs: readonly Outpoint[],
-    options?: { readonly persistent?: boolean }
-  ): RpcRequest<boolean> {
-    const unlocking = argBoolean(unlock, 'unlock')
-    if (!Array.isArray(outputs) || outputs.length === 0) {
-      throw new RangeError('outputs must be a non-empty array of { txid, vout }')
-    }
+  lockUnspent(outputs: readonly Outpoint[], options?: { readonly persistent?: boolean }): RpcRequest<true> {
+    const locked = outpointsParam(outputs)
     const o = methodOptions(options, ['persistent'])
     return request(
       'lockunspent',
-      [
-        unlocking,
-        outputs.map((output: unknown, i) => {
-          const p = argOptions(output, `outputs[${i}]`, ['txid', 'vout'], { ignored: OUTPOINT_EXTRAS })
-          return {
-            txid: argHash(p['txid'], `outputs[${i}].txid`),
-            vout: argInteger(p['vout'], `outputs[${i}].vout`, 0, 0x7fff_ffff),
-          }
-        }),
-        opt(o['persistent'], v => argBoolean(v, 'options.persistent')),
-      ],
-      v => boolean(v, R)
+      [false, locked, opt(o['persistent'], v => argBoolean(v, 'options.persistent'))],
+      parseTrue
     )
+  },
+  /**
+   * Unlock wallet outputs (`lockunspent` with `unlock` true), whether they were
+   * locked persistently or in memory only. The node checks every output first
+   * and rejects with `RpcError` code -8, changing nothing, when one is unknown,
+   * spent or not locked. `outputs` must not be empty: qbit Core unlocks nothing
+   * for an empty list and every output when the list is left out, which is
+   * `call('lockunspent', [true])`.
+   */
+  unlockUnspent(outputs: readonly Outpoint[]): RpcRequest<true> {
+    return request('lockunspent', [true, outpointsParam(outputs)], parseTrue)
   },
 }

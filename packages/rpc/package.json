@@ -34,6 +34,8 @@
     "test:regtest": "vitest run --config test/regtest/vitest.config.ts",
     "typecheck": "tsc --noEmit",
     "typecheck:test": "tsc -p test",
+    "api:check": "api-extractor run && api-extractor run --config etc/api-extractor.esm.json",
+    "api:update": "api-extractor run --local && api-extractor run --config etc/api-extractor.esm.json",
     "clean": "rm -rf lib coverage"
   },
   "keywords": [
@@ -54,6 +56,7 @@
   },
   "homepage": "https://github.com/Qbit-Org/qbit-rpc/tree/main/packages/rpc#readme",
   "devDependencies": {
+    "@microsoft/api-extractor": "7.59.4",
     "@types/node": "^22.20.5",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",

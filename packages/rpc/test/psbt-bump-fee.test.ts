@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import {
-  METHOD_POLICIES,
   QbitRpcClient,
   requests,
   RpcCapabilityError,
@@ -12,6 +11,7 @@ import {
   type Capability,
   type QbitRpcClientOptions,
 } from '../src'
+import { METHOD_POLICIES } from '../src/capabilities'
 import { chainResults, CHECK, FakeNode, HASH_A } from './helpers/fake-node'
 
 let node: FakeNode
@@ -84,7 +84,7 @@ describe('psbtBumpFee', () => {
     expect(params()).toEqual([HASH_A])
     await rpc.psbtBumpFee(HASH_A.toUpperCase(), {})
     expect(params()).toEqual([HASH_A])
-    await rpc.psbtBumpFee(HASH_A, { feeRateBitsPerKvB: 1250n, replaceable: false, timeoutMs: 5000 })
+    await rpc.psbtBumpFee(HASH_A, { feeRateBitsPerKvB: 1250n, replaceable: false }, { timeoutMs: 5000 })
     expect(node.requests.at(-1)!.body).toContain(`"params":["${HASH_A}",{"fee_rate":1.250,"replaceable":false}]`)
     await rpc.psbtBumpFee(HASH_A, { confTarget: 6, estimateMode: 'economical', originalChangeIndex: 1 })
     expect(params()).toEqual([HASH_A, { conf_target: 6, estimate_mode: 'economical', original_change_index: 1 }])
@@ -187,7 +187,7 @@ describe('psbtBumpFee', () => {
       [HASH_A, { confTarget: '6' }, RangeError],
       [HASH_A, { estimateMode: 'foo' }, RangeError, /must be one of unset, economical, conservative/],
       [HASH_A, { estimateMode: 'ECONOMICAL' }, RangeError],
-      [HASH_A, { estimateMode: 1 }, RangeError],
+      [HASH_A, { estimateMode: 1 }, TypeError],
       [HASH_A, { replaceable: 'yes' }, TypeError, /^options\.replaceable must be a boolean$/],
       [HASH_A, { replaceable: null }, TypeError],
       [HASH_A, { outputs: [] }, TypeError, /^options\.outputs must be a non-empty array$/],

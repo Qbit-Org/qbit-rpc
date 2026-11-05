@@ -29,10 +29,11 @@ import {
 import { assertLosslessJsonSupport, JsonNumber, parseJsonLossless, stringifyRequest } from './json'
 import { Limiter } from './limiter'
 import {
+  CALL_OPTION_KEYS,
   argOptions,
   requests,
-  withCallOptions,
   type AddressInfo,
+  type AddressType,
   type AddressValidation,
   type BlockchainInfo,
   type BlockHeader,
@@ -84,16 +85,16 @@ export interface QbitRpcClientOptions {
   /**
    * The genesis block hash the node must report (`getblockhash 0`) on every
    * chain check: 64 hex characters, in either case (compared in lowercase).
-   * Default: `expectedChain`'s genesis in qbit Core v1.0.0, from
-   * `QBIT_GENESIS_HASHES`. Set it for a node built with other chain parameters.
+   * Default: `expectedChain`'s genesis block in qbit Core v1.0.0, which the
+   * package README lists. Set it for a node built with other chain parameters.
    */
   readonly expectedGenesisHash?: string
   /**
    * The challenge (block script) a signet node must report as
    * `signet_challenge` on every chain check: non-empty hex of whole bytes, in
    * either case (compared in lowercase). Only with `expectedChain: 'signet'`.
-   * Default `51` (`QBIT_DEFAULT_SIGNET_CHALLENGE`), the default signet's open
-   * challenge, which anyone can mine a separate signet with.
+   * Default `51`, OP_TRUE, the default signet's open challenge, which anyone
+   * can mine a separate signet with.
    */
   readonly expectedSignetChallenge?: string
   /** Capabilities beyond chain reads. Default none: read-only. */
@@ -148,7 +149,10 @@ export interface QbitRpcClientOptions {
   readonly directNode?: boolean
 }
 
-/** Per-call options. */
+/**
+ * Per-call options: the last argument of every client method, apart from the
+ * method's own options. Each key is checked: any other is a `TypeError`.
+ */
 export interface CallOptions {
   /**
    * Aborts the call. An abort after a side-effecting request was sent is an
@@ -230,7 +234,7 @@ const MAX_NODE_MESSAGE = 1000
 const MAX_CHAIN_CHECKS = 3
 
 const TIMEOUT = Symbol('timeout')
-const CALL_OPTIONS = ['signal', 'timeoutMs'] as const satisfies readonly (keyof CallOptions)[]
+const CALL_OPTIONS: readonly (keyof CallOptions)[] = CALL_OPTION_KEYS
 
 /** An attempt's failure, with what is known about whether the node may have acted on it. */
 class Failure {
@@ -274,6 +278,11 @@ function checkInteger(value: unknown, name: string, min: number, max: number, fa
  * before anything is sent, wallet-write and broadcast calls also need a
  * confirmed chain, and every typed result is validated before it is returned.
  * Amounts are `bigint` bits. See the package README for the failure model.
+ *
+ * Each typed method takes the arguments of the request builder of the same
+ * name in {@link requests}, then {@link CallOptions} (`signal`, `timeoutMs`)
+ * as a separate last argument: `getTxOut(txid, vout, { includeMempool },
+ * { timeoutMs })`. A method's own options never hold call options.
  */
 export class QbitRpcClient {
   readonly #endpoint: Endpoint
@@ -397,11 +406,11 @@ export class QbitRpcClient {
    * `RpcTransportError` and so on, about `getblockchaininfo` or `getblockhash`),
    * never `reason: 'check_failed'`.
    */
-  async confirmChain(options: CallOptions = {}): Promise<BlockchainInfo> {
+  async confirmChain(callOptions: CallOptions = {}): Promise<BlockchainInfo> {
     const method = 'getblockchaininfo'
     // A mismatch recorded after this point is newer than this call: it stands, and this call throws it.
     const started = this.#doubts
-    return this.#operation(method, options, false, async attempt => {
+    return this.#operation(method, callOptions, false, async attempt => {
       try {
         const authorization = await this.#authorization(method, attempt.signal)
         let info: BlockchainInfo | undefined
@@ -424,8 +433,8 @@ export class QbitRpcClient {
    * strings from `formatQbt(bits)` (qbit Core accepts amount strings) and
    * integers above 2^53 as `bigint`.
    */
-  call(method: string, params: readonly unknown[] = [], options: CallOptions = {}): Promise<unknown> {
-    return this.#lazy(() => requests.raw(method, params), options)
+  call(method: string, params: readonly unknown[] = [], callOptions: CallOptions = {}): Promise<unknown> {
+    return this.#lazy(() => requests.raw(method, params), callOptions)
   }
 
   /**
@@ -436,109 +445,130 @@ export class QbitRpcClient {
    */
   batch<const T extends readonly RpcRequest<unknown>[]>(
     entries: T,
-    options: CallOptions = {}
+    callOptions: CallOptions = {}
   ): Promise<BatchResults<T>> {
-    return this.#batch(entries, options) as Promise<BatchResults<T>>
+    return this.#batch(entries, callOptions) as Promise<BatchResults<T>>
   }
 
-  getBlockchainInfo(options?: CallOptions): Promise<BlockchainInfo> {
-    return this.#single(requests.getBlockchainInfo(), options)
+  getBlockchainInfo(callOptions?: CallOptions): Promise<BlockchainInfo> {
+    return this.#single(requests.getBlockchainInfo(), callOptions)
   }
-  getNetworkInfo(options?: CallOptions): Promise<NetworkInfo> {
-    return this.#single(requests.getNetworkInfo(), options)
+  getNetworkInfo(callOptions?: CallOptions): Promise<NetworkInfo> {
+    return this.#single(requests.getNetworkInfo(), callOptions)
   }
-  getBestBlockHash(options?: CallOptions): Promise<string> {
-    return this.#single(requests.getBestBlockHash(), options)
+  getBestBlockHash(callOptions?: CallOptions): Promise<string> {
+    return this.#single(requests.getBestBlockHash(), callOptions)
   }
-  getBlockCount(options?: CallOptions): Promise<number> {
-    return this.#single(requests.getBlockCount(), options)
+  getBlockCount(callOptions?: CallOptions): Promise<number> {
+    return this.#single(requests.getBlockCount(), callOptions)
   }
-  getBlockHash(height: number, options?: CallOptions): Promise<string> {
-    return this.#lazy(() => requests.getBlockHash(height), options)
+  getBlockHash(height: number, callOptions?: CallOptions): Promise<string> {
+    return this.#lazy(() => requests.getBlockHash(height), callOptions)
   }
-  getBlockHeader(blockHash: string, options?: CallOptions): Promise<BlockHeader> {
-    return this.#lazy(() => requests.getBlockHeader(blockHash), options)
+  getBlockHeader(blockHash: string, callOptions?: CallOptions): Promise<BlockHeader> {
+    return this.#lazy(() => requests.getBlockHeader(blockHash), callOptions)
   }
-  getRawTransaction(txid: string, options?: { readonly blockHash?: string } & CallOptions): Promise<string> {
-    return this.#lazyWith(options, own => requests.getRawTransaction(txid, own))
+  /** See {@link requests.getRawTransaction}. */
+  getRawTransaction(
+    txid: string,
+    options?: { readonly blockHash?: string },
+    callOptions?: CallOptions
+  ): Promise<string> {
+    return this.#lazy(() => requests.getRawTransaction(txid, options), callOptions)
   }
+  /** See {@link requests.getRawTransactionVerbose}. */
   getRawTransactionVerbose(
     txid: string,
-    options?: { readonly blockHash?: string } & CallOptions
+    options?: { readonly blockHash?: string },
+    callOptions?: CallOptions
   ): Promise<DecodedTransaction> {
-    return this.#lazyWith(options, own => requests.getRawTransactionVerbose(txid, own))
+    return this.#lazy(() => requests.getRawTransactionVerbose(txid, options), callOptions)
   }
-  getMempoolEntry(txid: string, options?: CallOptions): Promise<MempoolEntry> {
-    return this.#lazy(() => requests.getMempoolEntry(txid), options)
+  getMempoolEntry(txid: string, callOptions?: CallOptions): Promise<MempoolEntry> {
+    return this.#lazy(() => requests.getMempoolEntry(txid), callOptions)
   }
+  /** See {@link requests.getTxOut}. */
   getTxOut(
     txid: string,
     vout: number,
-    options?: { readonly includeMempool?: boolean } & CallOptions
+    options?: { readonly includeMempool?: boolean },
+    callOptions?: CallOptions
   ): Promise<TxOut | null> {
-    return this.#lazyWith(options, own => requests.getTxOut(txid, vout, own))
+    return this.#lazy(() => requests.getTxOut(txid, vout, options), callOptions)
   }
+  /** See {@link requests.getConfirmationTarget}. */
   getConfirmationTarget(
     valueBits: bigint,
     options?: {
       readonly securityLevel?: SecurityLevel
       readonly mergeMiningPct?: number
       readonly btcHashrate?: number
-    } & CallOptions
+    },
+    callOptions?: CallOptions
   ): Promise<ConfirmationTarget> {
-    return this.#lazyWith(options, own => requests.getConfirmationTarget(valueBits, own))
+    return this.#lazy(() => requests.getConfirmationTarget(valueBits, options), callOptions)
   }
+  /** See {@link requests.estimateSmartFee}. */
   estimateSmartFee(
     confTarget: number,
-    options?: { readonly mode?: FeeEstimateMode } & CallOptions
+    options?: { readonly mode?: FeeEstimateMode },
+    callOptions?: CallOptions
   ): Promise<SmartFeeEstimate> {
-    return this.#lazyWith(options, own => requests.estimateSmartFee(confTarget, own))
+    return this.#lazy(() => requests.estimateSmartFee(confTarget, options), callOptions)
   }
-  validateAddress(address: string, options?: CallOptions): Promise<AddressValidation> {
-    return this.#lazy(() => requests.validateAddress(address), options)
+  validateAddress(address: string, callOptions?: CallOptions): Promise<AddressValidation> {
+    return this.#lazy(() => requests.validateAddress(address), callOptions)
   }
-  verifyDataPqcHash(proof: DataPqcHashProof, options?: CallOptions): Promise<DataPqcHashVerification> {
-    return this.#lazy(() => requests.verifyDataPqcHash(proof), options)
+  verifyDataPqcHash(proof: DataPqcHashProof, callOptions?: CallOptions): Promise<DataPqcHashVerification> {
+    return this.#lazy(() => requests.verifyDataPqcHash(proof), callOptions)
   }
+  /** See {@link requests.testMempoolAccept}. */
   testMempoolAccept(
     rawTxs: readonly string[],
-    options?: { readonly maxFeeRateBitsPerKvB?: bigint } & CallOptions
+    options?: { readonly maxFeeRateBitsPerKvB?: bigint },
+    callOptions?: CallOptions
   ): Promise<MempoolAcceptance[]> {
-    return this.#lazyWith(options, own => requests.testMempoolAccept(rawTxs, own))
+    return this.#lazy(() => requests.testMempoolAccept(rawTxs, options), callOptions)
   }
+  /** See {@link requests.sendRawTransaction}. */
   sendRawTransaction(
     hex: string,
-    options?: { readonly maxFeeRateBitsPerKvB?: bigint; readonly maxBurnAmountBits?: bigint } & CallOptions
+    options?: { readonly maxFeeRateBitsPerKvB?: bigint; readonly maxBurnAmountBits?: bigint },
+    callOptions?: CallOptions
   ): Promise<string> {
-    return this.#lazyWith(options, own => requests.sendRawTransaction(hex, own))
+    return this.#lazy(() => requests.sendRawTransaction(hex, options), callOptions)
   }
-  getWalletInfo(options?: CallOptions): Promise<WalletInfo> {
-    return this.#single(requests.getWalletInfo(), options)
+  getWalletInfo(callOptions?: CallOptions): Promise<WalletInfo> {
+    return this.#single(requests.getWalletInfo(), callOptions)
   }
-  getTransaction(txid: string, options?: CallOptions): Promise<WalletTransaction> {
-    return this.#lazy(() => requests.getTransaction(txid), options)
+  getTransaction(txid: string, callOptions?: CallOptions): Promise<WalletTransaction> {
+    return this.#lazy(() => requests.getTransaction(txid), callOptions)
   }
-  listUnspent(options?: ListUnspentOptions & CallOptions): Promise<UnspentOutput[]> {
-    return this.#lazyWith(options, own => requests.listUnspent(own))
+  /** See {@link requests.listUnspent}. */
+  listUnspent(options?: ListUnspentOptions, callOptions?: CallOptions): Promise<UnspentOutput[]> {
+    return this.#lazy(() => requests.listUnspent(options), callOptions)
   }
-  getAddressInfo(address: string, options?: CallOptions): Promise<AddressInfo> {
-    return this.#lazy(() => requests.getAddressInfo(address), options)
+  getAddressInfo(address: string, callOptions?: CallOptions): Promise<AddressInfo> {
+    return this.#lazy(() => requests.getAddressInfo(address), callOptions)
   }
-  listLockUnspent(options?: CallOptions): Promise<Outpoint[]> {
-    return this.#single(requests.listLockUnspent(), options)
+  listLockUnspent(callOptions?: CallOptions): Promise<Outpoint[]> {
+    return this.#single(requests.listLockUnspent(), callOptions)
   }
-  listSinceBlock(options?: ListSinceBlockOptions & CallOptions): Promise<SinceBlockHistory> {
-    return this.#lazyWith(options, own => requests.listSinceBlock(own))
+  /** See {@link requests.listSinceBlock}. */
+  listSinceBlock(options?: ListSinceBlockOptions, callOptions?: CallOptions): Promise<SinceBlockHistory> {
+    return this.#lazy(() => requests.listSinceBlock(options), callOptions)
   }
-  listTransactions(options?: ListTransactionsOptions & CallOptions): Promise<WalletHistoryEntry[]> {
-    return this.#lazyWith(options, own => requests.listTransactions(own))
+  /** See {@link requests.listTransactions}. */
+  listTransactions(options?: ListTransactionsOptions, callOptions?: CallOptions): Promise<WalletHistoryEntry[]> {
+    return this.#lazy(() => requests.listTransactions(options), callOptions)
   }
-  getBalances(options?: CallOptions): Promise<WalletBalances> {
-    return this.#single(requests.getBalances(), options)
+  getBalances(callOptions?: CallOptions): Promise<WalletBalances> {
+    return this.#single(requests.getBalances(), callOptions)
   }
-  walletCreateFundedPsbt(args: WalletCreateFundedPsbtArgs, options?: CallOptions): Promise<FundedPsbt> {
-    return this.#lazy(() => requests.walletCreateFundedPsbt(args), options)
+  walletCreateFundedPsbt(args: WalletCreateFundedPsbtArgs, callOptions?: CallOptions): Promise<FundedPsbt> {
+    return this.#lazy(() => requests.walletCreateFundedPsbt(args), callOptions)
   }
+  /** See {@link requests.walletProcessPsbt}. */
   walletProcessPsbt(
     psbt: string,
     options?: {
@@ -546,34 +576,58 @@ export class QbitRpcClient {
       readonly sighashType?: SighashType
       readonly bip32derivs?: boolean
       readonly finalize?: boolean
-    } & CallOptions
+    },
+    callOptions?: CallOptions
   ): Promise<ProcessedPsbt> {
-    return this.#lazyWith(options, own => requests.walletProcessPsbt(psbt, own))
+    return this.#lazy(() => requests.walletProcessPsbt(psbt, options), callOptions)
   }
-  finalizePsbt(psbt: string, options?: { readonly extract?: boolean } & CallOptions): Promise<FinalizedPsbt> {
-    return this.#lazyWith(options, own => requests.finalizePsbt(psbt, own))
+  /** See {@link requests.finalizePsbt}. */
+  finalizePsbt(
+    psbt: string,
+    options?: { readonly extract?: boolean },
+    callOptions?: CallOptions
+  ): Promise<FinalizedPsbt> {
+    return this.#lazy(() => requests.finalizePsbt(psbt, options), callOptions)
   }
-  psbtBumpFee(txid: string, options?: PsbtBumpFeeOptions & CallOptions): Promise<BumpedPsbt> {
-    return this.#lazyWith(options, own => requests.psbtBumpFee(txid, own))
+  /** See {@link requests.psbtBumpFee}. */
+  psbtBumpFee(txid: string, options?: PsbtBumpFeeOptions, callOptions?: CallOptions): Promise<BumpedPsbt> {
+    return this.#lazy(() => requests.psbtBumpFee(txid, options), callOptions)
   }
-  walletPassphrase(passphrase: string, timeoutSeconds: number, options?: CallOptions): Promise<void> {
-    return this.#lazy(() => requests.walletPassphrase(passphrase, timeoutSeconds), options).then(() => undefined)
+  walletPassphrase(passphrase: string, timeoutSeconds: number, callOptions?: CallOptions): Promise<void> {
+    return this.#lazy(() => requests.walletPassphrase(passphrase, timeoutSeconds), callOptions).then(() => undefined)
   }
-  walletLock(options?: CallOptions): Promise<void> {
-    return this.#single(requests.walletLock(), options).then(() => undefined)
+  walletLock(callOptions?: CallOptions): Promise<void> {
+    return this.#single(requests.walletLock(), callOptions).then(() => undefined)
   }
-  getRawChangeAddress(options?: { readonly addressType?: string } & CallOptions): Promise<string> {
-    return this.#lazyWith(options, own => requests.getRawChangeAddress(own))
+  /** See {@link requests.getRawChangeAddress}. */
+  getRawChangeAddress(options?: { readonly addressType?: AddressType }, callOptions?: CallOptions): Promise<string> {
+    return this.#lazy(() => requests.getRawChangeAddress(options), callOptions)
   }
-  getNewAddress(options?: { readonly label?: string; readonly addressType?: string } & CallOptions): Promise<string> {
-    return this.#lazyWith(options, own => requests.getNewAddress(own))
+  /** See {@link requests.getNewAddress}. */
+  getNewAddress(
+    options?: { readonly label?: string; readonly addressType?: AddressType },
+    callOptions?: CallOptions
+  ): Promise<string> {
+    return this.#lazy(() => requests.getNewAddress(options), callOptions)
   }
+  /**
+   * Lock wallet outputs against automatic coin selection, in memory or, with
+   * `persistent`, in the wallet. Resolves once every output is locked; see
+   * {@link requests.lockUnspent}.
+   */
   lockUnspent(
-    unlock: boolean,
     outputs: readonly Outpoint[],
-    options?: { readonly persistent?: boolean } & CallOptions
-  ): Promise<boolean> {
-    return this.#lazyWith(options, own => requests.lockUnspent(unlock, outputs, own))
+    options?: { readonly persistent?: boolean },
+    callOptions?: CallOptions
+  ): Promise<void> {
+    return this.#lazy(() => requests.lockUnspent(outputs, options), callOptions).then(() => undefined)
+  }
+  /**
+   * Unlock wallet outputs, however they were locked. Resolves once every
+   * output is unlocked; see {@link requests.unlockUnspent}.
+   */
+  unlockUnspent(outputs: readonly Outpoint[], callOptions?: CallOptions): Promise<void> {
+    return this.#lazy(() => requests.unlockUnspent(outputs), callOptions).then(() => undefined)
   }
 
   /** Close pooled keep-alive connections. The client stays usable; later calls open new ones. */
@@ -604,28 +658,8 @@ export class QbitRpcClient {
   // -------------------------------------------------------------------------
 
   /** Build the request inside the promise, so an invalid argument rejects instead of throwing. */
-  async #lazy<T>(build: () => RpcRequest<T>, options?: CallOptions): Promise<T> {
-    return this.#single(build(), options)
-  }
-
-  /**
-   * `#lazy` for a typed method whose options carry the call options too: its
-   * request builder checks the other keys, and allows these two there.
-   */
-  async #lazyWith<T, O extends object>(
-    options: (O & CallOptions) | undefined,
-    build: (own: O | undefined) => RpcRequest<T>
-  ): Promise<T> {
-    if (options === undefined) return this.#single(build(undefined))
-    if (typeof options !== 'object' || options === null || Array.isArray(options)) {
-      throw new TypeError('options must be an object')
-    }
-    const view = options as Record<string, unknown>
-    const call = { signal: view['signal'], timeoutMs: view['timeoutMs'] }
-    return this.#single(
-      withCallOptions(options, () => build(options)),
-      call as CallOptions
-    )
+  async #lazy<T>(build: () => RpcRequest<T>, callOptions?: CallOptions): Promise<T> {
+    return this.#single(build(), callOptions)
   }
 
   #chainExpired(at: number): boolean {
@@ -851,12 +885,12 @@ export class QbitRpcClient {
     return policy
   }
 
-  async #single<T>(request: RpcRequest<T>, options: CallOptions = {}): Promise<T> {
+  async #single<T>(request: RpcRequest<T>, callOptions: CallOptions = {}): Promise<T> {
     const { method } = request
     const policy = this.#authorize(method, false)
     const id = this.#nextId++
     const body = stringifyRequest({ jsonrpc: '2.0', id, method, params: request.params })
-    return this.#operation(method, options, policy.sideEffects, async attempt => {
+    return this.#operation(method, callOptions, policy.sideEffects, async attempt => {
       try {
         // One cookie read per attempt: the chain check and the call are sent
         // with that header, and a new cookie (qbitd restarted) means a check.
@@ -892,9 +926,9 @@ export class QbitRpcClient {
     })
   }
 
-  async #batch(entries: readonly RpcRequest<unknown>[], options: CallOptions): Promise<BatchItem<unknown>[]> {
+  async #batch(entries: readonly RpcRequest<unknown>[], callOptions: CallOptions): Promise<BatchItem<unknown>[]> {
     if (!Array.isArray(entries)) throw new TypeError('batch takes an array of requests')
-    argOptions(options, 'options', CALL_OPTIONS)
+    argOptions(callOptions, 'callOptions', CALL_OPTIONS)
     if (entries.length > MAX_BATCH) throw new RangeError(`a batch holds at most ${MAX_BATCH} requests`)
     entries.forEach((entry, index) => {
       // A caller's mistake, not the node's: refused before anything is sent.
@@ -907,7 +941,7 @@ export class QbitRpcClient {
     const body = stringifyRequest(
       entries.map((entry, index) => ({ jsonrpc: '2.0', id: ids[index], method: entry.method, params: entry.params }))
     )
-    return this.#operation(label, options, false, async attempt => {
+    return this.#operation(label, callOptions, false, async attempt => {
       let text: string
       try {
         const authorization = await this.#authorization(label, attempt.signal)
@@ -943,16 +977,16 @@ export class QbitRpcClient {
    */
   async #operation<T>(
     label: string,
-    options: CallOptions,
+    callOptions: CallOptions,
     sideEffects: boolean,
     attempt: (context: AttemptContext) => Promise<T>
   ): Promise<T> {
-    argOptions(options, 'options', CALL_OPTIONS)
+    argOptions(callOptions, 'callOptions', CALL_OPTIONS)
     const retries = sideEffects ? 0 : this.#readRetries
-    const timeoutMs = checkInteger(options.timeoutMs, 'timeoutMs', 1, 3_600_000, this.#timeoutMs)
-    const callerSignal = options.signal
+    const timeoutMs = checkInteger(callOptions.timeoutMs, 'callOptions.timeoutMs', 1, 3_600_000, this.#timeoutMs)
+    const callerSignal = callOptions.signal
     if (callerSignal !== undefined && !(callerSignal instanceof AbortSignal))
-      throw new TypeError('signal must be an AbortSignal')
+      throw new TypeError('callOptions.signal must be an AbortSignal')
     if (callerSignal?.aborted) throw new RpcAbortedError(label, callerSignal.reason)
     const deadline = performance.now() + timeoutMs
     const controller = new AbortController()

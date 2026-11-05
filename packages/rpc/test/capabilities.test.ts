@@ -1,13 +1,10 @@
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import {
-  METHOD_POLICIES,
-  QbitRpcClient,
-  requests,
-  RpcCapabilityError,
-  RpcChainGuardError,
-  type Capability,
-} from '../src'
+import { METHOD_POLICIES } from '../src/capabilities'
+import { QbitRpcClient, requests, RpcCapabilityError, RpcChainGuardError, type Capability } from '../src'
 import { chainResults, CHECK, FakeNode, HASH_A, TX_HEX } from './helpers/fake-node'
 
 let node: FakeNode
@@ -53,7 +50,7 @@ describe('capabilities', () => {
       [rpc.walletLock(), 'wallet-write'],
       [rpc.getRawChangeAddress({ addressType: 'p2mr' }), 'wallet-write'],
       [rpc.getNewAddress({ label: 'deposit' }), 'wallet-write'],
-      [rpc.lockUnspent(false, [{ txid: HASH_A, vout: 0 }]), 'wallet-write'],
+      [rpc.lockUnspent([{ txid: HASH_A, vout: 0 }]), 'wallet-write'],
       [rpc.walletPassphrase('secret passphrase', 10), 'wallet-write'],
       [rpc.walletProcessPsbt('cHNidP8='), 'wallet-write'],
       [rpc.finalizePsbt('cHNidP8='), 'wallet-write'],
@@ -97,7 +94,7 @@ describe('capabilities', () => {
     expect((await refusal(rpc.batch([requests.getRawChangeAddress()]))).reason).toBe('not_batchable')
     expect((await refusal(rpc.batch([requests.getBalances(), requests.getNewAddress()]))).reason).toBe('not_batchable')
     expect((await refusal(rpc.batch([requests.psbtBumpFee(HASH_A)]))).reason).toBe('not_batchable')
-    const lock = requests.lockUnspent(true, [{ txid: HASH_A, vout: 0 }])
+    const lock = requests.unlockUnspent([{ txid: HASH_A, vout: 0 }])
     expect((await refusal(rpc.batch([requests.listLockUnspent(), lock]))).reason).toBe('not_batchable')
     expect((await refusal(client().batch([requests.getWalletInfo()]))).reason).toBe('not_enabled')
     expect((await refusal(client().batch([requests.getBlockCount(), requests.listLockUnspent()]))).reason).toBe(
@@ -148,7 +145,7 @@ describe('capabilities', () => {
     const walletReader = client(['wallet-read'])
     for (const promise of [
       walletReader.getRawChangeAddress(),
-      walletReader.lockUnspent(true, [{ txid: HASH_A, vout: 0 }]),
+      walletReader.unlockUnspent([{ txid: HASH_A, vout: 0 }]),
     ]) {
       expect((await refusal(promise)).required).toBe('wallet-write')
     }
@@ -184,6 +181,28 @@ describe('capabilities', () => {
   it('rejects unknown capability names at construction', () => {
     expect(() => client(['admin' as Capability])).toThrow(TypeError)
   })
+
+  // The allowlist is not exported, so the README's table is its only public form.
+  it('lists every allowlisted method in the README table, under its capability, and no other', () => {
+    const readme = readFileSync(fileURLToPath(new URL('../README.md', import.meta.url)), 'utf8')
+    const lines = readme.split('\n')
+    const head = lines.indexOf('| Capability | Methods |')
+    expect(head).toBeGreaterThan(-1)
+    const documented: Record<string, string> = {}
+    for (let i = head + 2; lines[i]?.startsWith('|') === true; i += 1) {
+      const [cell, methods] = lines[i]!.split('|')
+        .slice(1, 3)
+        .map(part => part.trim())
+      const capability = cell === 'none (read)' ? 'read' : cell!.replace(/`/g, '')
+      for (const [, method] of methods!.matchAll(/`([a-z]+)`/g)) {
+        expect(documented).not.toHaveProperty(method!)
+        documented[method!] = capability
+      }
+    }
+    expect(documented).toEqual(
+      Object.fromEntries(Object.entries(METHOD_POLICIES).map(([method, policy]) => [method, policy.capability]))
+    )
+  })
 })
 
 describe('chain guard', () => {
@@ -193,7 +212,7 @@ describe('chain guard', () => {
       rpc.walletLock(),
       rpc.sendRawTransaction(TX_HEX),
       rpc.call('lockunspent', [true]),
-      rpc.lockUnspent(false, [{ txid: HASH_A, vout: 0 }]),
+      rpc.lockUnspent([{ txid: HASH_A, vout: 0 }]),
       rpc.getRawChangeAddress(),
       rpc.getNewAddress(),
       rpc.psbtBumpFee(HASH_A),

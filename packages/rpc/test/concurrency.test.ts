@@ -194,7 +194,7 @@ describe('maxConcurrentRequests', () => {
     const running = rpc.walletLock()
     await expect.poll(() => held.length).toBe(1)
 
-    const error = await failure(rpc.sendRawTransaction(TX_HEX, { timeoutMs: 30 }))
+    const error = await failure(rpc.sendRawTransaction(TX_HEX, {}, { timeoutMs: 30 }))
     expect(RpcTimeoutError.is(error)).toBe(true)
     expect(error).toMatchObject({ method: 'sendrawtransaction', timeoutMs: 30 })
     expect(node.requests).toHaveLength(1)
@@ -214,7 +214,7 @@ describe('maxConcurrentRequests', () => {
 
     const controller = new AbortController()
     const reason = new Error('changed my mind')
-    const aborted = failure(rpc.getRawChangeAddress({ signal: controller.signal }))
+    const aborted = failure(rpc.getRawChangeAddress({}, { signal: controller.signal }))
     const next = rpc.getBlockCount()
     controller.abort(reason)
     const error = await aborted

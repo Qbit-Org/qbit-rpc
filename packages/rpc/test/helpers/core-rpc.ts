@@ -1,10 +1,15 @@
 // An adapted copy of the `CoreRpc` interface the qbit Core wallet adapter in
 // Qbit-Org/qbit-payments takes (packages/payments/src/core-wallet/rpc.ts at
-// 8030b00). It differs from that file in three places: `Outpoint` is copied in
+// 8030b00). It differs from that file in four places: `Outpoint` is copied in
 // from its src/tx.ts instead of imported, the `CoreRpc` comment names
-// `QbitRpcClient` at 8ad6854 where the original names 09eac4a, and `rpcErrorCode`
+// `QbitRpcClient` at 8ad6854 where the original names 09eac4a, `rpcErrorCode`
 // and the `CoreRpc` comments read `rpcCode`, the property `RpcError` has had
-// since qbit-rpc issue #8, where the original reads `code`.
+// since qbit-rpc issue #8, where the original reads `code`, and the methods take
+// the shapes qbit-rpc issue #9 settled, where the original has the earlier ones:
+// the call options are a separate last argument instead of merged into a
+// method's options, `lockUnspent(outputs, options)` locks and
+// `unlockUnspent(outputs)` unlocks instead of `lockUnspent(unlock, outputs,
+// options)`, both resolve `void`, and `addressType` is `'p2mr'`, not `string`.
 // test/core-rpc.test.ts proves `QbitRpcClient` satisfies it without a wrapper.
 // The adapter has changed since 8030b00 and this copy has not: a check that
 // catches the drift, in place of the copy, is tracked in qbit-rpc issue #22.
@@ -173,38 +178,47 @@ export interface CoreMempoolAcceptance {
  * `getRawChangeAddress`, `lockUnspent` and `listLockUnspent`.
  */
 export interface CoreRpc {
-  getBlockchainInfo(options?: CoreRpcCallOptions): Promise<CoreBlockchainInfo>
-  getBlockCount(options?: CoreRpcCallOptions): Promise<number>
-  getBestBlockHash(options?: CoreRpcCallOptions): Promise<string>
+  getBlockchainInfo(callOptions?: CoreRpcCallOptions): Promise<CoreBlockchainInfo>
+  getBlockCount(callOptions?: CoreRpcCallOptions): Promise<number>
+  getBestBlockHash(callOptions?: CoreRpcCallOptions): Promise<string>
   /** Rejects with `rpcCode` -5 for a transaction not in the mempool. */
-  getMempoolEntry(txid: string, options?: CoreRpcCallOptions): Promise<object>
+  getMempoolEntry(txid: string, callOptions?: CoreRpcCallOptions): Promise<object>
   /** `null` for an output that is spent, or unknown; with `includeMempool`, spent in the mempool too. */
   getTxOut(
     txid: string,
     vout: number,
-    options?: { readonly includeMempool?: boolean } & CoreRpcCallOptions
+    options?: { readonly includeMempool?: boolean },
+    callOptions?: CoreRpcCallOptions
   ): Promise<CoreTxOut | null>
   getConfirmationTarget(
     valueBits: bigint,
-    options?: { readonly securityLevel?: 'low' | 'medium' | 'high' | 'maximum' } & CoreRpcCallOptions
+    options?: { readonly securityLevel?: 'low' | 'medium' | 'high' | 'maximum' },
+    callOptions?: CoreRpcCallOptions
   ): Promise<{ readonly requiredConfirmations: number }>
-  testMempoolAccept(rawTxs: readonly string[], options?: CoreRpcCallOptions): Promise<CoreMempoolAcceptance[]>
-  /** Resolves with the txid. */
-  sendRawTransaction(hex: string, options?: CoreRpcCallOptions): Promise<string>
+  /** No options of its own: the node's default fee-rate cap applies. */
+  testMempoolAccept(
+    rawTxs: readonly string[],
+    options?: undefined,
+    callOptions?: CoreRpcCallOptions
+  ): Promise<CoreMempoolAcceptance[]>
+  /** Resolves with the txid. No options of its own: the node's default fee-rate cap applies. */
+  sendRawTransaction(hex: string, options?: undefined, callOptions?: CoreRpcCallOptions): Promise<string>
 
-  getWalletInfo(options?: CoreRpcCallOptions): Promise<CoreWalletInfo>
+  getWalletInfo(callOptions?: CoreRpcCallOptions): Promise<CoreWalletInfo>
   /** Rejects with `rpcCode` -5 for a transaction the wallet does not know. */
-  getTransaction(txid: string, options?: CoreRpcCallOptions): Promise<CoreWalletTransaction>
-  getAddressInfo(address: string, options?: CoreRpcCallOptions): Promise<CoreAddressInfo>
-  getRawChangeAddress(options?: { readonly addressType?: string } & CoreRpcCallOptions): Promise<string>
-  /** `lockunspent`: `unlock` `false` locks, `true` unlocks. Rejects with `rpcCode` -8 for an output it cannot lock or unlock. */
+  getTransaction(txid: string, callOptions?: CoreRpcCallOptions): Promise<CoreWalletTransaction>
+  getAddressInfo(address: string, callOptions?: CoreRpcCallOptions): Promise<CoreAddressInfo>
+  getRawChangeAddress(options?: { readonly addressType?: 'p2mr' }, callOptions?: CoreRpcCallOptions): Promise<string>
+  /** `lockunspent` with `unlock` false. Rejects with `rpcCode` -8 for an output it cannot lock. */
   lockUnspent(
-    unlock: boolean,
     outputs: readonly Outpoint[],
-    options?: { readonly persistent?: boolean } & CoreRpcCallOptions
-  ): Promise<boolean>
-  listLockUnspent(options?: CoreRpcCallOptions): Promise<Outpoint[]>
-  walletCreateFundedPsbt(args: CoreFundedPsbtArgs, options?: CoreRpcCallOptions): Promise<CoreFundedPsbt>
+    options?: { readonly persistent?: boolean },
+    callOptions?: CoreRpcCallOptions
+  ): Promise<void>
+  /** `lockunspent` with `unlock` true. Rejects with `rpcCode` -8 for an output it cannot unlock. */
+  unlockUnspent(outputs: readonly Outpoint[], callOptions?: CoreRpcCallOptions): Promise<void>
+  listLockUnspent(callOptions?: CoreRpcCallOptions): Promise<Outpoint[]>
+  walletCreateFundedPsbt(args: CoreFundedPsbtArgs, callOptions?: CoreRpcCallOptions): Promise<CoreFundedPsbt>
   walletProcessPsbt(
     psbt: string,
     options?: {
@@ -212,11 +226,16 @@ export interface CoreRpc {
       readonly sighashType?: 'DEFAULT'
       readonly bip32derivs?: boolean
       readonly finalize?: boolean
-    } & CoreRpcCallOptions
+    },
+    callOptions?: CoreRpcCallOptions
   ): Promise<CoreProcessedPsbt>
-  finalizePsbt(psbt: string, options?: { readonly extract?: boolean } & CoreRpcCallOptions): Promise<CoreFinalizedPsbt>
-  walletPassphrase(passphrase: string, timeoutSeconds: number, options?: CoreRpcCallOptions): Promise<void>
-  walletLock(options?: CoreRpcCallOptions): Promise<void>
+  finalizePsbt(
+    psbt: string,
+    options?: { readonly extract?: boolean },
+    callOptions?: CoreRpcCallOptions
+  ): Promise<CoreFinalizedPsbt>
+  walletPassphrase(passphrase: string, timeoutSeconds: number, callOptions?: CoreRpcCallOptions): Promise<void>
+  walletLock(callOptions?: CoreRpcCallOptions): Promise<void>
 }
 
 /** The node's numeric JSON-RPC error code of `error`, or `undefined` when it is not a node answer. */
@@ -227,7 +246,7 @@ export function rpcErrorCode(error: unknown): number | undefined {
 
 /** RPC_INVALID_ADDRESS_OR_KEY: no such transaction (`gettransaction`, `getmempoolentry`). */
 export const RPC_NOT_FOUND = -5
-/** RPC_INVALID_PARAMETER: `lockunspent` of an output it cannot lock or unlock. */
+/** RPC_INVALID_PARAMETER: `lockUnspent` or `unlockUnspent` of an output it cannot lock or unlock. */
 export const RPC_INVALID_PARAMETER = -8
 /** RPC_WALLET_INSUFFICIENT_FUNDS. */
 export const RPC_WALLET_INSUFFICIENT_FUNDS = -6

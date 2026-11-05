@@ -8,7 +8,6 @@ import { describe, expect, it } from 'vitest'
 import {
   createZeromqSocket,
   QbitZmqSubscriber,
-  ZMQ_TOPICS,
   type QbitZmqSubscriberOptions,
   type ZmqEvent,
   type ZmqMessage,
@@ -16,6 +15,7 @@ import {
   type ZmqSocketSettings,
   type ZmqTopic,
 } from '../../src'
+import { ZMQ_TOPICS } from '../../src/parser'
 
 // Runs only under scripts/regtest-smoke.sh, which starts a throwaway regtest
 // node on loopback with every -zmqpub<topic> on one address, and passes the

@@ -3,29 +3,27 @@ export type ZmqTopic = 'hashblock' | 'hashtx' | 'rawblock' | 'rawtx' | 'sequence
 
 export const ZMQ_TOPICS: readonly ZmqTopic[] = ['hashblock', 'hashtx', 'rawblock', 'rawtx', 'sequence']
 
-interface Base {
-  /** The publisher's per-topic message counter, an unsigned 32-bit value that wraps. */
-  readonly sequence: number
-}
-
 /**
  * A parsed notification. Hashes are hex in the byte order RPC and explorers
  * show; qbit Core already puts them on the wire in that order.
  */
-export type ZmqMessage =
-  | (Base & { readonly topic: 'hashblock'; readonly hash: string })
-  | (Base & { readonly topic: 'hashtx'; readonly txid: string })
-  | (Base & {
+export type ZmqMessage = {
+  /** The publisher's per-topic message counter, an unsigned 32-bit value that wraps. */
+  readonly sequence: number
+} & (
+  | { readonly topic: 'hashblock'; readonly hash: string }
+  | { readonly topic: 'hashtx'; readonly txid: string }
+  | {
       readonly topic: 'rawblock'
       /** The serialized block, as qbit Core stores it: a copy of the frame, not decoded here. */
       readonly bytes: Uint8Array
-    })
-  | (Base & {
+    }
+  | {
       readonly topic: 'rawtx'
       /** The serialized transaction: a copy of the frame, not decoded here. */
       readonly bytes: Uint8Array
-    })
-  | (Base & {
+    }
+  | {
       readonly topic: 'sequence'
       /** Block connected (`C`) or disconnected (`D`), or a transaction added to (`A`) or removed from (`R`) the mempool. */
       readonly event: 'block_connected' | 'block_disconnected' | 'mempool_added' | 'mempool_removed'
@@ -33,7 +31,8 @@ export type ZmqMessage =
       readonly hash: string
       /** The mempool sequence number, an unsigned 64-bit value, for mempool events only. */
       readonly mempoolSequence?: bigint
-    })
+    }
+)
 
 export type ZmqFrameErrorCode = 'frame_count' | 'topic' | 'body_length' | 'label' | 'sequence_length'
 

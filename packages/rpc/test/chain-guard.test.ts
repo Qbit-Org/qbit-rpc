@@ -5,10 +5,8 @@ import { join } from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { QBIT_CHAINS, QBIT_DEFAULT_SIGNET_CHALLENGE, QBIT_GENESIS_HASHES } from '../src/capabilities'
 import {
-  QBIT_CHAINS,
-  QBIT_DEFAULT_SIGNET_CHALLENGE,
-  QBIT_GENESIS_HASHES,
   QbitRpcClient,
   RpcAbortedError,
   RpcChainGuardError,
@@ -241,7 +239,7 @@ describe('chain guard freshness', () => {
     await rpc.confirmChain()
     hangChainCheck = true
     const started = performance.now()
-    const error = await rpc.sendRawTransaction(TX_HEX, { timeoutMs: 100 }).catch((e: unknown) => e)
+    const error = await rpc.sendRawTransaction(TX_HEX, {}, { timeoutMs: 100 }).catch((e: unknown) => e)
     expect(performance.now() - started).toBeLessThan(600)
     expect(error).toMatchObject({ name: 'RpcChainGuardError', reason: 'check_failed' })
     expect(RpcTimeoutError.is((error as RpcChainGuardError).cause)).toBe(true)
@@ -301,7 +299,7 @@ describe('chain guard races', () => {
     await rpc.confirmChain()
     // Each read is released once its call has given up, so a call that did not would go on and send.
     const timed = holdNextCookieRead()
-    const timeout = rpc.sendRawTransaction(TX_HEX, { timeoutMs: 50 }).catch((e: unknown) => e)
+    const timeout = rpc.sendRawTransaction(TX_HEX, {}, { timeoutMs: 50 }).catch((e: unknown) => e)
     await timed.started
     await new Promise(resolve => setTimeout(resolve, 100))
     timed.release()
@@ -309,7 +307,7 @@ describe('chain guard races', () => {
     expect(await timeout).toMatchObject({ method: 'sendrawtransaction', timeoutMs: 50 })
     const aborted = holdNextCookieRead()
     const controller = new AbortController()
-    const abort = rpc.sendRawTransaction(TX_HEX, { signal: controller.signal }).catch((e: unknown) => e)
+    const abort = rpc.sendRawTransaction(TX_HEX, {}, { signal: controller.signal }).catch((e: unknown) => e)
     await aborted.started
     controller.abort('user')
     aborted.release()
@@ -604,10 +602,10 @@ describe('a failed chain re-check', () => {
       .join(',')}]`
 
   const GUARDED: [method: string, run: (rpc: QbitRpcClient, signal?: AbortSignal) => Promise<unknown>][] = [
-    ['sendrawtransaction', (rpc, signal) => rpc.sendRawTransaction(TX_HEX, signal === undefined ? {} : { signal })],
+    ['sendrawtransaction', (rpc, signal) => rpc.sendRawTransaction(TX_HEX, {}, signal === undefined ? {} : { signal })],
     ['walletlock', (rpc, signal) => rpc.walletLock(signal === undefined ? {} : { signal })],
-    ['testmempoolaccept', (rpc, signal) => rpc.testMempoolAccept([TX_HEX], signal === undefined ? {} : { signal })],
-    ['finalizepsbt', (rpc, signal) => rpc.finalizePsbt('cHNidP8=', signal === undefined ? {} : { signal })],
+    ['testmempoolaccept', (rpc, signal) => rpc.testMempoolAccept([TX_HEX], {}, signal === undefined ? {} : { signal })],
+    ['finalizepsbt', (rpc, signal) => rpc.finalizePsbt('cHNidP8=', {}, signal === undefined ? {} : { signal })],
   ]
 
   describe.each(GUARDED)('before %s', (method, run) => {
@@ -771,7 +769,9 @@ describe('a guarded call that fails before it is sent, with no re-check involved
 
   it('reports a signal already aborted, naming the call', async () => {
     const rpc = await confirmed()
-    const error = await rpc.sendRawTransaction(TX_HEX, { signal: AbortSignal.abort('user') }).catch((e: unknown) => e)
+    const error = await rpc
+      .sendRawTransaction(TX_HEX, {}, { signal: AbortSignal.abort('user') })
+      .catch((e: unknown) => e)
     expect(RpcAbortedError.is(error)).toBe(true)
     expect(error).toMatchObject({ method: 'sendrawtransaction', cause: 'user' })
     expect(methods()).toEqual([...CHECK])
@@ -784,7 +784,7 @@ describe('a guarded call that fails before it is sent, with no re-check involved
     const held = rpc.getBlockchainInfo({ signal: holder.signal }).catch((e: unknown) => e)
     await expect.poll(() => checks()).toBe(2)
 
-    const timedOut = await rpc.sendRawTransaction(TX_HEX, { timeoutMs: 30 }).catch((e: unknown) => e)
+    const timedOut = await rpc.sendRawTransaction(TX_HEX, {}, { timeoutMs: 30 }).catch((e: unknown) => e)
     expect(RpcTimeoutError.is(timedOut)).toBe(true)
     expect(timedOut).toMatchObject({ method: 'sendrawtransaction', timeoutMs: 30 })
 
@@ -804,7 +804,7 @@ describe('a guarded call that fails before it is sent, with no re-check involved
   it('reports an abort before a connection exists, naming the call', async () => {
     const rpc = await confirmed()
     const controller = new AbortController()
-    const pending = rpc.sendRawTransaction(TX_HEX, { signal: controller.signal }).catch((e: unknown) => e)
+    const pending = rpc.sendRawTransaction(TX_HEX, {}, { signal: controller.signal }).catch((e: unknown) => e)
     // Past the slot and the guard, which take microtasks; a connection takes the event loop.
     for (let i = 0; i < 50; i += 1) await Promise.resolve()
     controller.abort('user')

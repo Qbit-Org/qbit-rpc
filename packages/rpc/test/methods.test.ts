@@ -1,6 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { QbitRpcClient, requests, RpcResponseError, RpcUnknownOutcomeError } from '../src'
+import {
+  QbitRpcClient,
+  requests,
+  RpcResponseError,
+  RpcUnknownOutcomeError,
+  type AddressType,
+  type RpcRequest,
+  type WalletCreateFundedPsbtArgs,
+} from '../src'
 import { blockchainInfoJson, chainResults, FakeNode, HASH_A, HASH_B, TX_HEX, TX_TXID } from './helpers/fake-node'
 
 let node: FakeNode
@@ -364,10 +372,16 @@ describe('chain methods', () => {
     node.results({ gettxout: 'false' })
     await invalid(rpc.getTxOut(HASH_A, 0), 'result')
 
+    // qbit Core reads vout as an unsigned 32-bit integer.
+    node.results({ gettxout: 'null' })
+    for (const vout of [2 ** 31, 2 ** 32 - 1]) {
+      expect(await rpc.getTxOut(HASH_A, vout)).toBeNull()
+      expect(params()).toEqual([HASH_A, vout])
+    }
     const sent = node.requests.length
     await expect(rpc.getTxOut(HASH_A, -1)).rejects.toThrow(RangeError)
     await expect(rpc.getTxOut(HASH_A, 1.5)).rejects.toThrow(RangeError)
-    await expect(rpc.getTxOut(HASH_A, 2 ** 31)).rejects.toThrow(RangeError)
+    await expect(rpc.getTxOut(HASH_A, 2 ** 32)).rejects.toThrow(/^vout must be an integer from 0 to 4294967295$/)
     await expect(rpc.getTxOut('zz', 0)).rejects.toThrow(TypeError)
     await expect(rpc.getTxOut(HASH_A, 0, { includeMempool: 'yes' as never })).rejects.toThrow(TypeError)
     expect(node.requests).toHaveLength(sent)
@@ -455,8 +469,80 @@ describe('broadcast methods', () => {
   it('sendrawtransaction passes fee and burn caps as QBT decimals', async () => {
     await confirm()
     node.rpc(() => ({ result: JSON.stringify(HASH_A) }))
-    expect(await rpc.sendRawTransaction('00', { maxFeeRateBitsPerKvB: 0n, maxBurnAmountBits: 1n })).toBe(HASH_A)
-    expect(node.requests.at(-1)!.body).toContain('"params":["00",0.00000000,0.00000001]')
+    expect(await rpc.sendRawTransaction('00', { maxFeeRateBitsPerKvB: 1n, maxBurnAmountBits: 0n })).toBe(HASH_A)
+    expect(node.requests.at(-1)!.body).toContain('"params":["00",0.00000001,0.00000000]')
+    expect(await rpc.sendRawTransaction('00', { maxBurnAmountBits: 1n })).toBe(HASH_A)
+    expect(node.requests.at(-1)!.body).toContain('"params":["00",null,0.00000001]')
+  })
+
+  it('refuses a fee-rate cap of 0n, which qbit Core reads as no cap at all, and takes 1n to 99,999,999n', async () => {
+    await confirm()
+    node.rpc(call => ({ result: call.method === 'sendrawtransaction' ? JSON.stringify(HASH_A) : '[]' }))
+    const builds: [string, (cap?: bigint) => RpcRequest<unknown>][] = [
+      [
+        'testMempoolAccept',
+        cap => requests.testMempoolAccept(['00'], cap === undefined ? {} : { maxFeeRateBitsPerKvB: cap }),
+      ],
+      [
+        'sendRawTransaction',
+        cap => requests.sendRawTransaction('00', cap === undefined ? {} : { maxFeeRateBitsPerKvB: cap }),
+      ],
+    ]
+    for (const [, build] of builds) {
+      for (const cap of [0n, 100_000_000n]) {
+        expect(() => build(cap)).toThrow(
+          /^options\.maxFeeRateBitsPerKvB must be from 1 to 99999999 bits\/kvB: qbit Core reads 0 as no cap and refuses 1 QBT\/kvB or more$/
+        )
+      }
+      expect(JSON.stringify(build(1n).params[1])).toBe('0.00000001')
+      expect(JSON.stringify(build(99_999_999n).params[1])).toBe('0.99999999')
+      // Left out, the node applies its own default cap, 0.10 QBT/kvB.
+      expect(build().params).toHaveLength(1)
+    }
+    const sent = node.requests.length
+    await expect(rpc.testMempoolAccept(['00'], { maxFeeRateBitsPerKvB: 0n })).rejects.toThrow(RangeError)
+    await expect(rpc.sendRawTransaction('00', { maxFeeRateBitsPerKvB: 0n })).rejects.toThrow(RangeError)
+    expect(node.requests).toHaveLength(sent)
+  })
+})
+
+describe('argument ranges, as qbit Core v1.0.0 reads each', () => {
+  const outputs = [{ address: 'rq1a', amountBits: 1n }]
+  it.each<[string, (value: number) => RpcRequest<unknown>, string, number, number]>([
+    // gettxout: getInt<uint32_t>.
+    ['getTxOut vout', v => requests.getTxOut(HASH_A, v), 'vout', 0, 0xffff_ffff],
+    // walletcreatefundedpsbt's inputs and lockunspent: getInt<int>, negative refused.
+    [
+      'walletCreateFundedPsbt input vout',
+      v => requests.walletCreateFundedPsbt({ inputs: [{ txid: HASH_A, vout: v }], outputs }),
+      'args.inputs[0].vout',
+      0,
+      0x7fff_ffff,
+    ],
+    ['lockUnspent vout', v => requests.lockUnspent([{ txid: HASH_A, vout: v }]), 'outputs[0].vout', 0, 0x7fff_ffff],
+    ['unlockUnspent vout', v => requests.unlockUnspent([{ txid: HASH_A, vout: v }]), 'outputs[0].vout', 0, 0x7fff_ffff],
+    // TX_MIN_STANDARD_VERSION to TX_MAX_STANDARD_VERSION.
+    [
+      'walletCreateFundedPsbt version',
+      v => requests.walletCreateFundedPsbt({ outputs, version: v }),
+      'args.version',
+      1,
+      3,
+    ],
+    // MIN_STANDARD_TX_NONWITNESS_SIZE times WITNESS_SCALE_FACTOR (1) to MAX_STANDARD_TX_WEIGHT.
+    [
+      'walletCreateFundedPsbt maxTxWeight',
+      v => requests.walletCreateFundedPsbt({ outputs, options: { maxTxWeight: v } }),
+      'args.options.maxTxWeight',
+      65,
+      400_000,
+    ],
+  ])('%s: sends its minimum and maximum, and refuses one beyond either', (_label, build, name, min, max) => {
+    for (const value of [min, max]) expect(JSON.stringify(build(value).params)).toMatch(new RegExp(`\\b${value}\\b`))
+    for (const value of [min - 1, max + 1]) {
+      expect(() => build(value)).toThrow(RangeError)
+      expect(() => build(value)).toThrow(`${name} must be an integer from ${min} to ${max}`)
+    }
   })
 })
 
@@ -799,21 +885,58 @@ describe('wallet methods', () => {
       node.results({ getrawchangeaddress: bad })
       await invalidAfterSideEffect(rpc.getRawChangeAddress(), 'result')
     }
-    node.rpc(() => ({ error: { code: -5, message: "Unknown address type 'bogus'" } }))
-    await expect(rpc.getRawChangeAddress({ addressType: 'bogus' })).rejects.toMatchObject({ rpcCode: -5 })
+    // A type the chain does not offer is the node's answer.
+    node.rpc(() => ({ error: { code: -5, message: "change type 'bech32' is not available on this chain" } }))
+    await expect(rpc.getRawChangeAddress({ addressType: 'bech32' })).rejects.toMatchObject({ rpcCode: -5 })
     const sent = node.requests.length
-    await expect(rpc.getRawChangeAddress({ addressType: '' })).rejects.toThrow(TypeError)
+    // @ts-expect-error qbit Core v1.0.0 parses no such type.
+    await expect(rpc.getRawChangeAddress({ addressType: 'bogus' })).rejects.toThrow(RangeError)
+    // @ts-expect-error The names are lowercase.
+    await expect(rpc.getRawChangeAddress({ addressType: 'P2MR' })).rejects.toThrow(RangeError)
+    await expect(rpc.getRawChangeAddress({ addressType: '' as never })).rejects.toThrow(RangeError)
     await expect(rpc.getRawChangeAddress({ addressType: 2 as never })).rejects.toThrow(TypeError)
     expect(node.requests).toHaveLength(sent)
   })
 
-  it('lockunspent sends outpoints positionally with the persistent flag', async () => {
+  it('types addressType and changeType as the five types qbit Core v1.0.0 parses, and sends each as it is', async () => {
+    await confirm()
+    const types: AddressType[] = ['p2mr', 'bech32m', 'bech32', 'p2sh-segwit', 'legacy']
+    node.results({
+      getnewaddress: JSON.stringify(ADDRESS),
+      getrawchangeaddress: JSON.stringify(ADDRESS),
+      walletcreatefundedpsbt: JSON.stringify({ psbt: 'cHNidP8=', fee: 0.0001, changepos: -1 }),
+    })
+    for (const type of types) {
+      await rpc.getNewAddress({ addressType: type })
+      expect(params()).toEqual([null, type])
+      await rpc.getRawChangeAddress({ addressType: type })
+      expect(params()).toEqual([type])
+      await rpc.walletCreateFundedPsbt({
+        outputs: [{ address: ADDRESS, amountBits: 1000n }],
+        options: { changeType: type },
+      })
+      expect(params()[3]).toEqual({ change_type: type })
+    }
+    const sent = node.requests.length
+    // @ts-expect-error Not a type qbit Core v1.0.0 parses.
+    await expect(rpc.getNewAddress({ addressType: 'p2tr' })).rejects.toThrow(
+      /^options\.addressType must be one of p2mr, bech32m, bech32, p2sh-segwit, legacy$/
+    )
+    const outputs = [{ address: ADDRESS, amountBits: 1000n }]
+    // @ts-expect-error Not a type qbit Core v1.0.0 parses.
+    const p2tr: WalletCreateFundedPsbtArgs = { outputs, options: { changeType: 'p2tr' } }
+    await expect(rpc.walletCreateFundedPsbt(p2tr)).rejects.toThrow(
+      /^args\.options\.changeType must be one of p2mr, bech32m, bech32, p2sh-segwit, legacy$/
+    )
+    expect(node.requests).toHaveLength(sent)
+  })
+
+  it('lockunspent locks outpoints, with the persistent flag', async () => {
     await confirm()
     node.results({ lockunspent: 'true' })
-    expect(await rpc.lockUnspent(false, [{ txid: HASH_A.toUpperCase(), vout: 1 }])).toBe(true)
+    expect(await rpc.lockUnspent([{ txid: HASH_A.toUpperCase(), vout: 1 }])).toBeUndefined()
     expect(params()).toEqual([false, [{ txid: HASH_A, vout: 1 }]])
     await rpc.lockUnspent(
-      false,
       [
         { txid: HASH_A, vout: 1 },
         { txid: HASH_B, vout: 0 },
@@ -828,34 +951,76 @@ describe('wallet methods', () => {
       ],
       true,
     ])
+    await rpc.lockUnspent([{ txid: HASH_A, vout: 1 }], { persistent: false }, { timeoutMs: 1000 })
+    expect(params()).toEqual([false, [{ txid: HASH_A, vout: 1 }], false])
     // Only txid and vout go out, so listUnspent() entries can be passed; any other key is refused.
     const outpoint = Object.assign({ txid: HASH_A, vout: 1 }, { amountBits: 5n, safe: true })
-    await rpc.lockUnspent(true, [outpoint])
-    expect(params()).toEqual([true, [{ txid: HASH_A, vout: 1 }]])
-    await expect(rpc.lockUnspent(true, [{ txid: HASH_A, vout: 1, index: 1 } as never])).rejects.toThrow(
+    await rpc.lockUnspent([outpoint])
+    expect(params()).toEqual([false, [{ txid: HASH_A, vout: 1 }]])
+    await expect(rpc.lockUnspent([{ txid: HASH_A, vout: 1, index: 1 } as never])).rejects.toThrow(
       /outputs\[0\] has an unknown key \(not shown\); the known keys are txid, vout/
     )
-    node.results({ lockunspent: 'false' })
-    expect(await rpc.lockUnspent(true, [outpoint])).toBe(false)
-    for (const bad of ['null', '"true"', '1']) {
+    // qbit Core answers true or an error: anything else is not a lock.
+    for (const bad of ['false', 'null', '"true"', '1']) {
       node.results({ lockunspent: bad })
-      await invalidAfterSideEffect(rpc.lockUnspent(true, [outpoint]), 'result')
+      await invalidAfterSideEffect(rpc.lockUnspent([outpoint]), 'result')
     }
     node.rpc(() => ({ error: { code: -8, message: 'Invalid parameter, output already locked' } }))
-    await expect(rpc.lockUnspent(false, [outpoint])).rejects.toMatchObject({ rpcCode: -8, method: 'lockunspent' })
+    await expect(rpc.lockUnspent([outpoint])).rejects.toMatchObject({ rpcCode: -8, method: 'lockunspent' })
 
     const sent = node.requests.length
     const refused: [() => Promise<unknown>, typeof TypeError | typeof RangeError][] = [
-      [() => rpc.lockUnspent(true, []), RangeError],
-      [() => rpc.lockUnspent(true, 'all' as never), RangeError],
-      [() => rpc.lockUnspent('false' as never, [outpoint]), TypeError],
-      [() => rpc.lockUnspent(false, [{ txid: 'zz', vout: 0 }]), TypeError],
-      [() => rpc.lockUnspent(false, [{ txid: HASH_A, vout: -1 }]), RangeError],
-      [() => rpc.lockUnspent(false, [{ txid: HASH_A, vout: 2 ** 31 }]), RangeError],
-      [() => rpc.lockUnspent(false, [null as never]), TypeError],
-      [() => rpc.lockUnspent(false, [outpoint], { persistent: 'yes' as never }), TypeError],
+      [() => rpc.lockUnspent([]), RangeError],
+      [() => rpc.lockUnspent('all' as never), RangeError],
+      // The old (unlock, outputs) order is refused, not read as outputs.
+      [() => rpc.lockUnspent(false as never, [outpoint] as never), RangeError],
+      [() => rpc.lockUnspent([{ txid: 'zz', vout: 0 }]), TypeError],
+      [() => rpc.lockUnspent([{ txid: HASH_A, vout: -1 }]), RangeError],
+      [() => rpc.lockUnspent([null as never]), TypeError],
+      [() => rpc.lockUnspent([outpoint], { persistent: 'yes' as never }), TypeError],
+      [() => rpc.lockUnspent([outpoint], { unlock: true } as never), TypeError],
     ]
     for (const [run, type] of refused) await expect(run()).rejects.toThrow(type)
+    expect(node.requests).toHaveLength(sent)
+  })
+
+  it('unlockunspent unlocks outpoints, with no persistent flag', async () => {
+    await confirm()
+    node.results({ lockunspent: 'true' })
+    const outpoint = Object.assign({ txid: HASH_A.toUpperCase(), vout: 1 }, { amountBits: 5n, safe: true })
+    expect(await rpc.unlockUnspent([outpoint, { txid: HASH_B, vout: 0 }])).toBeUndefined()
+    expect(params()).toEqual([
+      true,
+      [
+        { txid: HASH_A, vout: 1 },
+        { txid: HASH_B, vout: 0 },
+      ],
+    ])
+    expect(requests.unlockUnspent([outpoint])).toMatchObject({
+      method: 'lockunspent',
+      params: [true, [{ txid: HASH_A, vout: 1 }]],
+    })
+    for (const bad of ['false', 'null']) {
+      node.results({ lockunspent: bad })
+      await invalidAfterSideEffect(rpc.unlockUnspent([outpoint]), 'result')
+    }
+    node.rpc(() => ({ error: { code: -8, message: 'Invalid parameter, expected locked output' } }))
+    await expect(rpc.unlockUnspent([outpoint])).rejects.toMatchObject({ rpcCode: -8, method: 'lockunspent' })
+
+    const sent = node.requests.length
+    const refused: [() => Promise<unknown>, typeof TypeError | typeof RangeError, RegExp][] = [
+      // An empty list unlocks nothing in qbit Core, and leaving it out unlocks everything: neither is sent.
+      [() => rpc.unlockUnspent([]), RangeError, /^outputs must be a non-empty array of \{ txid, vout \}$/],
+      [() => rpc.unlockUnspent(undefined as never), RangeError, /non-empty array/],
+      [() => rpc.unlockUnspent([{ txid: HASH_A, vout: 2 ** 31 }]), RangeError, /from 0 to 2147483647/],
+      // persistent only applies to locking.
+      [() => rpc.unlockUnspent([outpoint], { persistent: true } as never), TypeError, /callOptions\.persistent/],
+    ]
+    for (const [run, type, message] of refused) {
+      const error = await run().catch((e: unknown) => e)
+      expect(error).toBeInstanceOf(type)
+      expect((error as Error).message).toMatch(message)
+    }
     expect(node.requests).toHaveLength(sent)
   })
 

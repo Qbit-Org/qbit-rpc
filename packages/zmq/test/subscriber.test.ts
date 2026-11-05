@@ -7,8 +7,6 @@ import { Publisher } from 'zeromq'
 
 import {
   createZeromqSocket,
-  DEFAULT_MAX_MESSAGE_SIZE,
-  DEFAULT_STALE_AFTER_MS,
   QbitZmqSubscriber,
   ZmqSetupError,
   type ZmqEvent,
@@ -18,6 +16,7 @@ import {
   type ZmqSocketFactory,
   type ZmqSocketSettings,
 } from '../src'
+import { DEFAULT_MAX_MESSAGE_SIZE, DEFAULT_STALE_AFTER_MS } from '../src/subscriber'
 
 const HASH = '12'.repeat(32)
 const counter = (sequence: number): Buffer => {
