@@ -1,7 +1,5 @@
 # @qbit-oss/rpc
 
-> **Unaudited MVP**, not published to npm. See the [repository README](../../README.md).
-
 A Node.js JSON-RPC client for qbit Core (`qbitd`) v1.0.0. No runtime
 dependencies and no native code.
 
