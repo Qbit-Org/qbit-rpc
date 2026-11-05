@@ -1,4 +1,5 @@
 import type { Capability, QbitChain } from './capabilities'
+import { ownValue } from './own'
 
 // Every error class carries a brand, `Symbol.for('qbit-rpc.<ClassName>')`, on
 // its prototype. `Symbol.for` keys are shared across realms and across the
@@ -28,7 +29,17 @@ export class QbitRpcError extends Error {
   readonly method?: string
 
   constructor(message: string, method?: string, options?: { cause?: unknown }) {
-    super(message, options)
+    super(message)
+    // Always the error's own, with the attributes Error gives one, and
+    // undefined when none was given: an absent cause would read a polluted
+    // Object.prototype's. Like every details object here, often `{}` or built
+    // with spreads, options is read by its own keys only.
+    Object.defineProperty(this, 'cause', {
+      value: options === undefined ? undefined : ownValue(options, 'cause'),
+      writable: true,
+      enumerable: false,
+      configurable: true,
+    })
     this.name = new.target.name
     if (method !== undefined) this.method = method
   }
@@ -97,8 +108,8 @@ function mismatchText(expected: QbitChain, actual: string | undefined, mismatch:
       check === 'chain'
         ? chain
         : check === 'genesis_hash'
-          ? `genesis block ${mismatch.actualGenesisHash ?? 'unknown'}, expected ${mismatch.expectedGenesisHash}`
-          : `signet challenge ${challengeText(mismatch.actualSignetChallenge)}, expected ${challengeText(mismatch.expectedSignetChallenge)}`
+          ? `genesis block ${ownValue(mismatch, 'actualGenesisHash') ?? 'unknown'}, expected ${mismatch.expectedGenesisHash}`
+          : `signet challenge ${challengeText(ownValue(mismatch, 'actualSignetChallenge'))}, expected ${challengeText(ownValue(mismatch, 'expectedSignetChallenge'))}`
     )
     .join('; ')
 }
@@ -154,7 +165,9 @@ export class RpcChainGuardError extends QbitRpcError {
     expectedChain: QbitChain,
     details: { readonly actualChain?: string; readonly mismatch?: ChainMismatch; readonly cause?: unknown } = {}
   ) {
-    const { actualChain, mismatch } = details
+    const actualChain = ownValue(details, 'actualChain')
+    const mismatch = ownValue(details, 'mismatch')
+    const hasCause = Object.hasOwn(details, 'cause')
     super(
       reason === 'unconfirmed'
         ? `RPC method ${method} refused: call confirmChain() first to check the node is on ${expectedChain}`
@@ -162,9 +175,9 @@ export class RpcChainGuardError extends QbitRpcError {
           ? `RPC method ${method} refused: the node reports ${mismatchText(expectedChain, actualChain, mismatch)}`
           : reason === 'stale'
             ? `RPC method ${method} refused: its chain checks kept being overtaken by connection errors, HTTP 401s or other checks; try again`
-            : `RPC method ${method} refused: its chain re-check failed${'cause' in details ? ` (${causeText(details.cause)})` : ''}`,
+            : `RPC method ${method} refused: its chain re-check failed${hasCause ? ` (${causeText(details.cause)})` : ''}`,
       method,
-      'cause' in details ? { cause: details.cause } : undefined
+      hasCause ? { cause: details.cause } : undefined
     )
     this.reason = reason
     this.expectedChain = expectedChain
@@ -172,10 +185,12 @@ export class RpcChainGuardError extends QbitRpcError {
     if (mismatch !== undefined) {
       this.differs = Object.freeze([...mismatch.differs])
       this.expectedGenesisHash = mismatch.expectedGenesisHash
-      if (mismatch.actualGenesisHash !== undefined) this.actualGenesisHash = mismatch.actualGenesisHash
-      if (mismatch.expectedSignetChallenge !== undefined)
-        this.expectedSignetChallenge = mismatch.expectedSignetChallenge
-      if (mismatch.actualSignetChallenge !== undefined) this.actualSignetChallenge = mismatch.actualSignetChallenge
+      const actualGenesisHash = ownValue(mismatch, 'actualGenesisHash')
+      const expectedSignetChallenge = ownValue(mismatch, 'expectedSignetChallenge')
+      const actualSignetChallenge = ownValue(mismatch, 'actualSignetChallenge')
+      if (actualGenesisHash !== undefined) this.actualGenesisHash = actualGenesisHash
+      if (expectedSignetChallenge !== undefined) this.expectedSignetChallenge = expectedSignetChallenge
+      if (actualSignetChallenge !== undefined) this.actualSignetChallenge = actualSignetChallenge
     }
   }
 
@@ -229,16 +244,18 @@ export class RpcTransportError extends QbitRpcError {
     reason: 'network' | 'http_status' | 'credentials',
     details: { status?: number; code?: string } = {}
   ) {
+    const status = ownValue(details, 'status')
+    const code = ownValue(details, 'code')
     const message =
       reason === 'http_status'
-        ? `RPC ${method} failed: HTTP ${details.status}${details.status === 401 ? ' (credentials rejected)' : ''}`
+        ? `RPC ${method} failed: HTTP ${status}${status === 401 ? ' (credentials rejected)' : ''}`
         : reason === 'credentials'
-          ? `RPC ${method} failed: the cookie file could not be read${details.code ? ` (${details.code})` : ''}`
-          : `RPC ${method} failed: connection error${details.code ? ` (${details.code})` : ''}`
+          ? `RPC ${method} failed: the cookie file could not be read${code ? ` (${code})` : ''}`
+          : `RPC ${method} failed: connection error${code ? ` (${code})` : ''}`
     super(message, method)
     this.reason = reason
-    if (details.status !== undefined) this.status = details.status
-    if (details.code !== undefined) this.code = details.code
+    if (status !== undefined) this.status = status
+    if (code !== undefined) this.code = code
   }
 
   static override is(value: unknown): value is RpcTransportError {
@@ -322,7 +339,8 @@ brand(RpcResponseError, 'RpcResponseError')
  * A wallet-write or broadcast request may have been executed, but no valid
  * reply arrived: the deadline expired, the caller aborted, the connection
  * dropped, the reply was too large or malformed, or a proxy answered with a
- * 5xx status after the request was sent. The client never retries such a call.
+ * 5xx status, or a JSON-RPC error under a status qbitd does not use for one,
+ * after the request was sent. The client never retries such a call.
  * Reconcile before trying again: for `sendrawtransaction`, look the `txid` up
  * (`getrawtransaction`, `gettransaction`, `getmempoolentry`); resubmitting the
  * same hex is harmless, but never rebuild the payment with different inputs.

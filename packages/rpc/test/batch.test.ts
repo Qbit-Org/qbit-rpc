@@ -28,6 +28,31 @@ describe('batch', () => {
     expect(node.calls()).toEqual([])
   })
 
+  it.each([
+    [
+      'a String object',
+      (): unknown => Object.assign(new String('sendrawtransaction'), { toString: (): string => 'getblockcount' }),
+    ],
+    [
+      'an object with toJSON',
+      (): unknown => ({ toString: (): string => 'getblockcount', toJSON: (): string => 'sendrawtransaction' }),
+    ],
+    ['an empty string', (): unknown => ''],
+  ])('refuses a method name that is %s, so the method checked is the one sent', async (_name, method) => {
+    const entry = { method: method(), params: ['00'], parse: (x: unknown) => x } as unknown as RpcRequest<unknown>
+    await expect(rpc.batch([entry])).rejects.toThrow(
+      new TypeError('batch() entry 0 has no method name: method must be a non-empty string')
+    )
+    expect(node.calls()).toEqual([])
+  })
+
+  it('refuses an oversized batch from its length, before reading its entries', async () => {
+    await expect(rpc.batch(new Array(2000) as RpcRequest<unknown>[])).rejects.toThrow(
+      new RangeError('a batch holds at most 1000 requests')
+    )
+    expect(node.calls()).toEqual([])
+  })
+
   it('sends one request and matches replies by id, whatever their order', async () => {
     node.handler = (request, response) => {
       const calls = JSON.parse(request.body) as Call[]

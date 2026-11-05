@@ -1,5 +1,5 @@
-import { JsonNumber } from './json'
-import { MAX_MONEY_BITS, parseQbt } from './amount'
+import { isJsonObject, JsonNumber } from './json'
+import { MAX_MONEY_BITS, qbtBits } from './amount'
 
 /** A result value failed validation. The client turns it into an `RpcResponseError`. */
 export class ResultIssue extends Error {
@@ -16,10 +16,8 @@ export class ResultIssue extends Error {
 export type JsonObject = Readonly<Record<string, unknown>>
 
 export function object(value: unknown, path: string): JsonObject {
-  if (typeof value !== 'object' || value === null || Array.isArray(value) || value instanceof JsonNumber) {
-    throw new ResultIssue(path, 'an object')
-  }
-  return value as JsonObject
+  if (!isJsonObject(value)) throw new ResultIssue(path, 'an object')
+  return value
 }
 
 export function array<T>(value: unknown, path: string, item: (value: unknown, path: string) => T): T[] {
@@ -44,9 +42,14 @@ export function optional<T>(
   return parse(source[key], `${path}.${key}`)
 }
 
-/** Copy the defined entries of `fields` onto a fresh object, so optional properties stay absent. */
+/**
+ * Copy the defined entries of `fields` onto a fresh object without a
+ * prototype, so optional properties stay absent and an absent one reads as
+ * undefined whatever Object.prototype holds. Every object of a typed result
+ * is built here.
+ */
 export function compact<T extends object>(fields: { [K in keyof T]: T[K] | undefined }): T {
-  const out: Record<string, unknown> = {}
+  const out = Object.create(null) as Record<string, unknown>
   for (const [key, value] of Object.entries(fields)) if (value !== undefined) out[key] = value
   return out as T
 }
@@ -148,7 +151,7 @@ export function bigUnsigned(max: bigint): (value: unknown, path: string) => bigi
 export function amount(value: unknown, path: string): bigint {
   const expected = 'a QBT amount from 0 to 210000000 with at most 8 decimals'
   try {
-    return parseQbt(numberSource(value, path, expected))
+    return qbtBits(numberSource(value, path, expected), false)
   } catch (error) {
     if (error instanceof ResultIssue) throw error
     throw new ResultIssue(path, expected)
@@ -159,7 +162,7 @@ export function amount(value: unknown, path: string): bigint {
 export function signedAmount(value: unknown, path: string): bigint {
   const expected = 'a QBT amount within ±210000000 with at most 8 decimals'
   try {
-    return parseQbt(numberSource(value, path, expected), { allowNegative: true })
+    return qbtBits(numberSource(value, path, expected), true)
   } catch (error) {
     if (error instanceof ResultIssue) throw error
     throw new ResultIssue(path, expected)

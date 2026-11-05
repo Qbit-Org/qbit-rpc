@@ -30,7 +30,7 @@ afterEach(async () => {
 })
 
 async function confirmed(
-  options: { capabilities?: Capability[]; readRetries?: number; timeoutMs?: number } = {}
+  options: { capabilities?: Capability[]; readRetries?: number; timeoutMs?: number; directNode?: boolean } = {}
 ): Promise<QbitRpcClient> {
   const previous = node.handler
   node.results(chainResults('regtest'))
@@ -42,6 +42,7 @@ async function confirmed(
     retryDelayMs: 0,
     ...(options.readRetries === undefined ? {} : { readRetries: options.readRetries }),
     ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+    ...(options.directNode === undefined ? {} : { directNode: options.directNode }),
   })
   await rpc.confirmChain()
   node.requests.length = 0
@@ -140,6 +141,13 @@ describe('unknown outcomes after a side effect may have happened', () => {
       response => {
         response.statusCode = 502
         response.end('{"error":{"code":502,"message":"Bad Gateway"}}')
+      },
+    ],
+    [
+      'a 502 whose body claims both a result and a node error',
+      (response, id) => {
+        response.statusCode = 502
+        response.end(`{"result":"${TXID}","error":{"code":-1,"message":"x"},"id":${JSON.stringify(id)}}`)
       },
     ],
     ['a malformed body', response => response.end('{"jsonrpc":"2.0","result":')],
@@ -401,6 +409,69 @@ describe('malformed and oversized responses', () => {
       response.end(`{"result":null,"error":{"code":-1,"message":"legacy"},"id":${idOf(request.body)}}`)
     }
     await expect(rpcWith().getBestBlockHash()).rejects.toSatisfy(error => RpcError.is(error) && error.rpcCode === -1)
+  })
+})
+
+describe('a JSON-RPC error under an HTTP error status', () => {
+  /** A JSON-RPC-aware gateway: it read the request's id, and may have forwarded the request first. */
+  const answering = (status: number, id: (body: string) => unknown = idOf): void => {
+    node.handler = (request, response) => {
+      response.statusCode = status
+      response.setHeader('content-type', 'application/json')
+      response.end(
+        `{"jsonrpc":"2.0","id":${JSON.stringify(id(request.body))},"error":{"code":-32603,"message":"upstream timeout"}}`
+      )
+    }
+  }
+
+  // JSONErrorReply in qbit Core v1.0.0's src/httprpc.cpp, the only place qbitd writes one.
+  describe.each([[400], [404], [500]])('at %i, a status qbitd uses for one', status => {
+    it.each([[false], [true]])('is the node’s answer for a side-effecting call, directNode %s', async directNode => {
+      const rpc = await confirmed({ directNode })
+      answering(status)
+      const error = await failure(rpc.sendRawTransaction(TX_HEX))
+      expect(RpcError.is(error)).toBe(true)
+      expect(error).toMatchObject({ rpcCode: -32603, message: 'upstream timeout', method: 'sendrawtransaction' })
+    })
+
+    it('is the node’s answer for a read, with no retry', async () => {
+      const rpc = await confirmed({ readRetries: 2 })
+      answering(status)
+      expect(RpcError.is(await failure(rpc.getBestBlockHash()))).toBe(true)
+      expect(node.requests).toHaveLength(1)
+    })
+  })
+
+  describe.each([[502], [503], [504], [501], [505], [599], [302], [401], [403], [405], [408], [429]])(
+    'at %i, a status qbitd does not use for one',
+    status => {
+      it.each([[false], [true]])('is an unknown outcome for a side-effecting call, directNode %s', async directNode => {
+        const rpc = await confirmed({ directNode })
+        answering(status)
+        const error = await failure(rpc.sendRawTransaction(TX_HEX))
+        expect(RpcUnknownOutcomeError.is(error)).toBe(true)
+        expect(error).toMatchObject({ method: 'sendrawtransaction', txid: TXID })
+        expect((error as Error).cause).toMatchObject({ reason: 'http_status', status })
+        expect(node.requests).toHaveLength(1)
+      })
+
+      it('is the HTTP error for a read, retried only as that status is', async () => {
+        const rpc = await confirmed({ readRetries: 1 })
+        answering(status)
+        const error = await failure(rpc.getBestBlockHash())
+        expect(RpcTransportError.is(error)).toBe(true)
+        expect(error).toMatchObject({ reason: 'http_status', status, method: 'getbestblockhash' })
+        expect(node.requests).toHaveLength(status >= 500 ? 2 : 1)
+      })
+    }
+  )
+
+  it('leaves a 4xx whose body names another request as a rejection, not an unknown outcome', async () => {
+    const rpc = await confirmed()
+    answering(429, () => 999)
+    const error = await failure(rpc.sendRawTransaction(TX_HEX))
+    expect(RpcTransportError.is(error)).toBe(true)
+    expect(error).toMatchObject({ reason: 'http_status', status: 429 })
   })
 })
 

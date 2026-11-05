@@ -151,6 +151,108 @@ Added, and not breaking: `AddressType`; the API reports, `pnpm api:check` (part
 of `pnpm verify`) and `pnpm api:update`, with API Extractor 7.59.4 as a
 development dependency.
 
+### Breaking: options and replies are read from own properties only
+
+A polluted `Object.prototype`, as an application's JSON merge of attacker input
+makes one, supplies no value to a request and no field to a result:
+`@qbit-oss/rpc` reads the caller's options and the node's replies from their own
+properties only. The API report is unchanged.
+
+- Every options or arguments object (`args`, `inputs` and `outputs` entries,
+  `options`, `proof`), the call options (every client method, `call()`,
+  `batch()`, `confirmChain()`), the `QbitRpcClient` options and their `auth`,
+  and each `batch()` entry's `method`, `params` and `parse` are read from a
+  copy of their own enumerable properties, each read once. A key the method
+  takes that the object holds any other way is a `TypeError` naming it, which
+  says to pass a plain object: an inherited key (from a prototype, a class or a
+  polluted `Object.prototype`), a class getter or method, a non-enumerable
+  property, or a key a Proxy leaves out of its own keys. So a polluted
+  `capabilities`, `wallet`, `directNode`, `chainCheckMaxAgeMs` or `password`
+  refuses the constructor instead of configuring the client, and a batch entry
+  that is a class instance with a `parse` method is refused; copy its fields
+  into a plain object. A getter on the object itself runs once, into the copy:
+  the builders no longer keep the caller's object so that a getter keeps its
+  receiver. An options object left out reads as empty. Unknown keys are refused
+  with the same messages as before, and one only on `Object.prototype` is still
+  skipped, as it is never read.
+- The `QbitRpcClient` options and `auth` are strict like every other options
+  object: an unknown key is a `TypeError` naming it, with the key it most likely
+  meant (`timeout` → `timeoutMs`, `cookie_file` → `cookieFile`) or the known
+  keys. So `walletName` refuses the constructor, where it built a client without
+  a wallet path, whose wallet calls went to whichever wallet the node had loaded.
+- `capabilities: null` is a `TypeError` (`capabilities must be an array`), and
+  so is `parseQbt(text, null)` (`options must be an object`).
+- A `batch()` entry's `method` must be a non-empty primitive string, a
+  `TypeError` otherwise: a `String` object or an object with `toJSON` could pass
+  the capability check as one method and be sent as another. An empty method is
+  a `TypeError`, not `RpcCapabilityError` `unknown_method`. A batch over 1,000
+  entries is refused from its length before its entries are read.
+- An HTTP error body that holds a node error and also a non-null `result`
+  contradicts itself: it is not a definite `RpcError` but the HTTP error it came
+  with, an unknown outcome for a side-effecting call, as such a body is at HTTP
+  200.
+- A JSON-RPC error body naming the request's id is a definite `RpcError` only
+  under HTTP 400, 404 and 500, the statuses `qbitd` itself puts on one, as it
+  is under 200. Under any other it was one too, so a JSON-RPC-aware gateway or
+  load balancer that timed out after forwarding a `sendRawTransaction` and
+  answered 502, 503 or 504 read as a definite failure, and a caller could pay
+  twice. Now it is the HTTP error it came with: `RpcTransportError`
+  `http_status` for a read, retried as usual, and an `RpcUnknownOutcomeError`
+  for a side-effecting call, at 3xx and 4xx too, with or without `directNode`.
+- Arrays (`outputs`, `inputs`, `subtractFeeFromOutputs`, `addresses`,
+  `rawTxs`, the outputs of `lockUnspent` and `unlockUnspent`, `call()`'s
+  params, the `capabilities` option and `batch()`'s entries) are read by their
+  own elements: a hole is a `TypeError` naming its index, and no element is
+  read from `Array.prototype`.
+- Parameters are serialized from own data: an object's own enumerable keys and
+  an array's own elements, where a hole at any depth is a `TypeError`. A
+  `toJSON` applies when the object or its class defines it (`JsonNumber`,
+  `Date`), never one on `Object.prototype` or `Array.prototype`, and a `bigint`
+  is an integer literal even with `BigInt.prototype.toJSON` set. A request body
+  nests at most 512 arrays and objects, as deep as qbit Core v1.0.0 parses, its
+  envelope included: the request object is one level, so `call()`'s params, the
+  params array included, nest at most 511, and a batch's array is one more, so a
+  `batch()` entry's nest at most 510. Deeper parameters are a `TypeError` before
+  anything is sent, where the node answered HTTP 500 `Parse error` (for a
+  side-effecting call, an unknown outcome): `requests.raw()` refuses more than
+  511, and `batch()` refuses more than 510 with `batch() entry <index>: ` before
+  the message. Every `TypeError` from serializing an entry names it the same way.
+- `requests.raw()`, which `call()` uses, serializes its params once, when it
+  builds the request, and the request's `params` are those as sent, parsed
+  back without loss: every number a `JsonNumber`, every object without a
+  prototype. A `toJSON` or a getter in them runs once, so the check for options
+  qbit Core ignores sees what is sent. A hole, `NaN`, a cycle or too deep a
+  nesting anywhere in them throws from `requests.raw()`, so `call()` rejects.
+- Results are null-prototype objects: every object in a typed result, in
+  `call()`'s result and in the reply a batch entry's `parse` gets. An absent
+  field, such as `blockHash` on an unconfirmed transaction or `address` on an
+  OP_RETURN output, reads as `undefined` even if `Object.prototype` is polluted
+  after the reply arrives. The contents are unchanged. `toStrictEqual` and
+  `assert.deepStrictEqual` against a plain object literal fail, a result object
+  has no `hasOwnProperty` or `toString`, and `String()` or a template string
+  throws on one; spread a result into `{}` for a plain object. Request objects
+  from `requests` have no prototype either.
+- A reply's `jsonrpc`, `id`, `result` and `error`, and an error's `code` and
+  `message`, are read as own properties only. With `Object.prototype.error`
+  set, a successful reply stays a success, and a broadcast the node accepted
+  resolves with its txid; it rejected as a definite failure. A node error
+  without its own `message` is a malformed reply (`RpcResponseError`, `reason:
+  'protocol'`), and so is an `error` that is not an object (an array, a number,
+  a string): for a side-effecting call, an unknown outcome. With `code` and
+  `message` on a polluted `Object.prototype`, a reply with `"error":[]`, at HTTP
+  200 or 5xx, was a definite `RpcError`. An HTTP error body that is an array or
+  a number is no JSON-RPC answer either.
+- The error classes take `cause`, `status`, `code` and the chain guard's
+  details from their arguments' own properties only, so none of their
+  properties or messages takes a value from `Object.prototype`. Every error has
+  its own `cause`, `undefined` when none was given, not enumerable, writable
+  and configurable as `Error` makes one: `'cause' in error` is always true, and
+  `util.inspect` shows `[cause]: undefined`.
+- `parseQbt(text, options)` reads `allowNegative` as an own property: options
+  left out read as empty, and an inherited `allowNegative` is a `TypeError`. A
+  reply amount that cannot be negative is refused when negative, whatever
+  `Object.prototype.allowNegative` holds.
+
 ### @qbit-oss/rpc
 
 - `QbitRpcClient` for qbit Core v1.0.0 JSON-RPC over HTTP(S), with `/wallet/<name>`

@@ -40,6 +40,18 @@ const info = await rpc.getBlockchainInfo()
 | `maxConcurrentRequests` | 8 | Most requests this client has open at once, on pooled and fresh connections alike (1 to 1,024); it also sizes the keep-alive pool. Further attempts wait in FIFO order under their deadline. See [the work queue](#the-work-queue). |
 | `directNode` | `false` | Set when `url` reaches `qbitd` itself. `qbitd`'s HTTP 503 `Work queue depth exceeded` is then a definite failure, not an unknown outcome. Opt-in, because a proxy in between can answer 503 after forwarding the request. See [the work queue](#the-work-queue). |
 
+The options and `auth` are read once each, from their own enumerable
+properties. An option held any other way (inherited, a class getter, not
+enumerable, or on a polluted `Object.prototype`) is a `TypeError` that names it
+and says to pass a plain object, and so is a hole in `capabilities`: none of
+them can enable a capability, pick a wallet or fill in a password the
+application left out. They are strict too: any other key is a `TypeError` that
+names it, with the key it most likely meant (`timeout` → `timeoutMs`) or the
+known keys, so `walletName` cannot silently leave out the wallet. A key that is
+no near miss and either is not a short identifier or sits in an array entry is
+refused as "an unknown key (not shown)", so messages never quote configuration
+or request data.
+
 ## Call options
 
 Every method, `call()`, `batch()` and `confirmChain()` included, takes its call
@@ -178,7 +190,14 @@ client at one node.
 
 Results are validated field by field (hashes, hex, integer ranges, enums,
 amounts) and returned with camelCase names; fields the node adds beyond these
-are dropped (use `call()` for the raw reply). A result that does not validate
+are dropped (use `call()` for the raw reply). Every object in a result, typed or
+from `call()`, has a null prototype: an absent field must read as `undefined`
+even if `Object.prototype` is polluted after the reply arrives, such as a
+missing `blockHash` on an unconfirmed transaction. The client reads the reply
+itself by its own properties too. So `toStrictEqual` and `assert.deepStrictEqual`
+against a plain object literal fail (use `toEqual`), a result object has no
+`hasOwnProperty` (use `Object.hasOwn`), and `String()` throws on one; spread a
+result into `{}` for a plain object. A result that does not validate
 throws `RpcResponseError` with `reason: 'validation'` and the `path` of the
 offending value. After a side-effecting call the node has acted, so that error
 is the `cause` of an `RpcUnknownOutcomeError`. Each method also takes
@@ -434,9 +453,15 @@ only the keys documented for it. Any other key rejects with
 a `TypeError` that names it and, for the node's spelling or a near miss, the key
 to use (`subtract_fee_from_outputs` → `subtractFeeFromOutputs`, `fee_rate` →
 `feeRateBitsPerKvB`, `minconf` → `minConf`), and the unit when it differs
-(`fee_rate` is bits/vB, `feeRateBitsPerKvB` bits per 1,000 vbytes). Inherited
-keys count as the object's own, except keys on `Object.prototype` itself, which
-no caller set. Where an outpoint is expected (`lockUnspent` outputs,
+(`fee_rate` is bits/vB, `feeRateBitsPerKvB` bits per 1,000 vbytes). Each object
+is read from its own enumerable properties only, each once, so a getter on the
+object itself runs once. A key it takes that the object holds any other way
+(inherited, a class getter, not enumerable, or on a polluted `Object.prototype`)
+rejects with a `TypeError` that names it and says to pass a plain object: copy
+a class instance's values into one. An unknown key only on `Object.prototype` is
+skipped, as its value is never read, and an object left out reads as empty
+whatever `Object.prototype` holds. Arrays are read by their own elements: a hole
+rejects with a `TypeError` naming its index. Where an outpoint is expected (`lockUnspent` outputs,
 `walletCreateFundedPsbt` inputs), the other fields of a typed result that is
 also an outpoint (a `listUnspent()`, `listSinceBlock()` or `listTransactions()`
 entry, or a decoded transaction input) are allowed and ignored. Only `txid`,
@@ -445,7 +470,20 @@ entry, or a decoded transaction input) are allowed and ignored. Only `txid`,
 unknown keys only in object literals, not in spread objects or options read from
 configuration.
 
-`call()` passes its parameters through unchecked, with one exception: it
+`call()` passes its parameters through unchecked, serialized once, from their
+own data, when the request is built: an array hole rejects with a `TypeError`, a
+`toJSON` on `Object.prototype` or `Array.prototype` never applies, and a
+`bigint` is always an integer literal. A `requests.raw()` request holds its
+`params` as they are sent, parsed back without loss (every number a
+`JsonNumber`, every object without a prototype), so a `toJSON` or a getter in
+them runs once. A request body nests at most 512 arrays and objects, as deep as
+qbit Core v1.0.0 parses, its envelope included: the request object is one level,
+so `call()`'s params, the params array included, nest at most 511, and a batch's
+array is one more, so a `batch()` entry's nest at most 510. Deeper parameters are
+a `TypeError` before anything is sent, where the node would answer HTTP 500
+`Parse error`: `requests.raw()` refuses more than 511, and `batch()` more than
+510, naming the entry.
+There is one exception: it
 refuses `walletcreatefundedpsbt` options, as they are serialized, that qbit
 Core v1.0.0 accepts and then ignores, so far `subtract_fee_from_outputs` (the node reads
 `subtractFeeFromOutputs`; with the other name the wallet pays the fee).
@@ -483,7 +521,8 @@ bits; the 210,000,000 QBT cap is 2.1e16 bits, above 2^53). Fee rates are
   oversized values are refused before sending.
 - `parseQbt(text)` and `formatQbt(bits)` convert at your boundaries. `parseQbt`
   reads `-0` and `-0.00000000` as `0n`, without `allowNegative`: zero is not
-  negative.
+  negative. It reads `allowNegative` as its options' own property: left out, the
+  options read as empty, and an inherited one is a `TypeError`.
 - `call()` returns every JSON number as a `JsonNumber`: use `toBits()`,
   `toBigInt()`, `toSafeInteger()` or `toNumber()`. Arithmetic on it throws.
   Pass amounts to `call()` as `formatQbt(bits)` strings, which qbit Core
@@ -497,7 +536,10 @@ also works across the CommonJS and ESM builds. A side-effecting method is
 method gets the error that happened; a side-effecting one gets it only where the
 last column says it was definitely not run, and otherwise an
 `RpcUnknownOutcomeError` with that error as `cause`. `method` is always the call
-you made, or in `cause` the request that failed.
+you made, or in `cause` the request that failed. Every error has its own
+`cause`, `undefined` when there is none, with the attributes `Error` gives one
+(not enumerable), so it never reads `Object.prototype`; `util.inspect` shows
+`[cause]: undefined` for these.
 
 | Error | Value | Meaning | If the call has side effects | What to do |
 | --- | --- | --- | --- | --- |
@@ -509,9 +551,9 @@ you made, or in `cause` the request that failed.
 | `RpcChainGuardError` | `reason: 'mismatch'` | A chain check (yours, or the automatic re-check) found another chain, genesis block or signet challenge; `differs` says which. | Not sent | Check the URL, or set `expectedGenesisHash` or `expectedSignetChallenge` for a node with other chain parameters or a custom signet, then call `confirmChain()`. |
 | `RpcChainGuardError` | `reason: 'stale'` | Every chain check the call ran was overtaken by a connection error, an HTTP 401 or another check. | Not sent | Try again later. |
 | `RpcChainGuardError` | `reason: 'check_failed'` | The chain re-check before the call failed; `cause` is the failure. | Not sent | Safe to call again; `cause` tells whether soon is any use. |
-| `RpcError` | | The node answered with an error: `rpcCode` and `message` are the node's. | The node's answer: not an unknown outcome | Handle by `rpcCode`, for example -26 rejected, -25 missing inputs, -27 already confirmed, -14 wrong passphrase, -28 node warming up. |
+| `RpcError` | | The node answered with an error, under HTTP 200, 400, 404 or 500: `rpcCode` and `message` are the node's. | The node's answer: not an unknown outcome | Handle by `rpcCode`, for example -26 rejected, -25 missing inputs, -27 already confirmed, -14 wrong passphrase, -28 node warming up. |
 | `RpcTransportError` | `reason: 'network'` | The connection failed; `code` is the system's, such as `ECONNREFUSED`. | Not sent when no connection was made (refused, DNS, TLS); once one exists, an unknown outcome | Retry reads later. |
-| `RpcTransportError` | `reason: 'http_status'` | An HTTP status without a JSON-RPC reply, `status`: 401 credentials; 403 `rpcallowip`, or an `-rpcwhitelist` that does not allow a method sent (the chain check needs `getblockhash` too). | Not run for 3xx and 4xx, and for `Work queue depth exceeded` with `directNode`; any other 5xx is an unknown outcome | Retry reads later; fix configuration for 401 and 403. |
+| `RpcTransportError` | `reason: 'http_status'` | An HTTP status without the node's JSON-RPC reply, `status`: 401 credentials; 403 `rpcallowip`, or an `-rpcwhitelist` that does not allow a method sent (the chain check needs `getblockhash` too); 502, 503 or 504 from a gateway, even with a JSON-RPC error body ([which statuses are the node's](#which-statuses-are-the-nodes)). | Not run for 3xx and 4xx, and for `Work queue depth exceeded` with `directNode`; any other 5xx, and a JSON-RPC error body under a status the node does not use for one, is an unknown outcome | Retry reads later; fix configuration for 401 and 403. |
 | `RpcTransportError` | `reason: 'credentials'` | The cookie file could not be read; `code` says why, such as `ENOENT`, or `EMALFORMED`, `ETOOBIG` or `EREAD` from this package. | Not sent | Check the cookie file. |
 | `RpcTimeoutError` | | The operation's deadline (`timeoutMs`) expired. | Not sent when it expired waiting for a slot, reading the cookie or before a connection was made; during the re-check it is the `cause` of `check_failed`; after that, an unknown outcome | Retry reads if appropriate. |
 | `RpcAbortedError` | | Your `AbortSignal` fired; `cause` is its reason. | As for `RpcTimeoutError` | Your own decision to stop. |
@@ -539,7 +581,8 @@ node's `RpcError` means it did not run:
   `RpcChainGuardError` `stale`;
 - the connection, before one exists: `RpcTransportError` `network`, or
   `RpcTimeoutError` or `RpcAbortedError`;
-- HTTP 3xx and 4xx, and `Work queue depth exceeded` with `directNode`:
+- HTTP 3xx and 4xx, unless with a JSON-RPC error body under a status other than
+  400 and 404, and `Work queue depth exceeded` with `directNode`:
   `RpcTransportError` `http_status`, rejected without running it.
 
 Retries, deadlines and connections work like this:
@@ -580,6 +623,21 @@ Retries, deadlines and connections work like this:
 - A wallet `RpcError` means the node answered with an error. For
   `walletprocesspsbt`, qbit Core may still have advanced the PQC signature
   counters of keys it tried.
+
+### Which statuses are the node's
+
+`qbitd` puts a JSON-RPC error body on three HTTP error statuses and no others:
+400 for `-32600`, 404 for `-32601` and 500 for any other code. A body naming the
+request's id is the node's answer under those, an `RpcError`, as it is under 200.
+Under any other status something in between read the request and answered for
+itself, as a JSON-RPC-aware gateway or load balancer does with a 502, 503 or 504
+when it times out after forwarding a `sendrawtransaction`. The body is ignored:
+a read fails with `RpcTransportError` `http_status`, and a side-effecting call
+with an `RpcUnknownOutcomeError` whose `cause` that is, at 3xx and 4xx too.
+`directNode` does not widen the three, as `qbitd` sends no such body under another
+status; one there means something does sit in between. The client cannot tell a
+gateway that answers such a body under 200, 400, 404 or 500 from the node: use
+one that leaves those to the node.
 
 ### The work queue
 
@@ -628,7 +686,13 @@ an unknown or repeated id, a malformed reply item, a non-array reply, a
 transport failure, a timeout or an oversized reply rejects the whole batch. `requests.raw(method, params)`
 adds an untyped entry.
 
-An entry is any `RpcRequest`, so you can write your own `parse`. It runs
+An entry is any `RpcRequest`, so you can write your own `parse`. The entries
+are read by their own elements, and each entry's `method`, `params` and `parse`
+once, as its own enumerable properties: a hole, or one of these held any other
+way (a class's `parse` method, a key on a polluted `Object.prototype`), rejects
+with a `TypeError` before anything is sent, and so does a `method` that is not a
+non-empty primitive string (a `String` object, or an object with `toJSON`), so
+the method the capability check sees is the one sent. The `parse` runs
 synchronously and may throw anything: whatever it throws fails that entry with
 `RpcResponseError` (`reason: 'validation'`, `path: 'result'`), with the thrown
 value as `cause`, and the other entries are unaffected. The same holds on every

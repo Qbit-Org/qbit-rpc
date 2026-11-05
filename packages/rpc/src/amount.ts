@@ -1,3 +1,5 @@
+import { NO_OPTIONS, plainOptions } from './own'
+
 /** Bits per QBT: 1 QBT = 100,000,000 bits. */
 export const BITS_PER_QBT = 100_000_000n
 
@@ -11,10 +13,17 @@ const DECIMAL = /^(-?)(0|[1-9][0-9]*)(?:\.([0-9]{1,8}))?$/
  * bits. At most 8 decimals, no exponent, no sign other than a leading `-`
  * when `allowNegative` is set, and at most {@link MAX_MONEY_BITS} in
  * magnitude. Negative zero (`"-0"`, `"-0.00000000"`) is zero: `0n`, with or
- * without `allowNegative`. Throws a `RangeError` otherwise.
+ * without `allowNegative`. Throws a `RangeError` otherwise. `options` is read
+ * by its own properties: an inherited `allowNegative` is a `TypeError`.
  */
-export function parseQbt(text: string, options: { allowNegative?: boolean } = {}): bigint {
+export function parseQbt(text: string, options: { allowNegative?: boolean } = NO_OPTIONS): bigint {
   if (typeof text !== 'string') throw new TypeError('QBT amount must be a decimal string')
+  if (typeof options !== 'object' || options === null) throw new TypeError('options must be an object')
+  return qbtBits(text, plainOptions(options, 'options', ['allowNegative']).allowNegative === true)
+}
+
+/** {@link parseQbt} of a string, for this package's reply readers: no options object to read. */
+export function qbtBits(text: string, allowNegative: boolean): bigint {
   const match = DECIMAL.exec(text)
   if (match === null) {
     throw new RangeError('QBT amount must be a plain decimal with at most 8 decimals')
@@ -23,7 +32,7 @@ export function parseQbt(text: string, options: { allowNegative?: boolean } = {}
   const magnitude = BigInt(whole!) * BITS_PER_QBT + BigInt(fraction.padEnd(8, '0'))
   if (magnitude > MAX_MONEY_BITS) throw new RangeError('QBT amount exceeds 210,000,000 QBT')
   if (magnitude === 0n) return 0n
-  if (sign === '-' && options.allowNegative !== true) {
+  if (sign === '-' && !allowNegative) {
     throw new RangeError('QBT amount must not be negative')
   }
   return sign === '-' ? -magnitude : magnitude

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { QbitRpcClient, requests, type RpcRequest } from '../src'
+import { stringifyRequest } from '../src/json'
 import { chainResults, FakeNode, HASH_A, TX_HEX } from './helpers/fake-node'
 
 // Every options or arguments object is strict: a key no builder reads would
@@ -336,9 +337,11 @@ describe('request builders', () => {
     expect(reads).toBe(1)
   })
 
-  it('read inherited keys, and refuse inherited unknown ones', () => {
+  it('refuse inherited keys, naming a known one, and inherited unknown ones as before', () => {
     const defaults = Object.create({ minConf: 6 }) as { readonly minConf?: number }
-    expect(requests.listUnspent(defaults).params).toEqual([6])
+    expect(() => requests.listUnspent(defaults)).toThrow(
+      /^options\.minConf is not an own enumerable property \(it is inherited, a class getter or on a polluted Object\.prototype\): pass a plain object$/
+    )
     const typo = Object.create({ minconf: 6 }) as never
     expect(() => requests.listUnspent(typo)).toThrow(/options\.minconf is not a known key: use options\.minConf/)
   })
@@ -350,19 +353,21 @@ describe('request builders', () => {
     )
     // The spelling the node reads, and other methods, pass through untouched.
     const read = requests.raw('walletcreatefundedpsbt', [[], [{ rq1a: '0.5' }], 0, { subtractFeeFromOutputs: [0] }])
-    expect(read.params[3]).toEqual({ subtractFeeFromOutputs: [0] })
+    expect(stringifyRequest(read.params[3])).toBe('{"subtractFeeFromOutputs":[0]}')
     expect(requests.raw('walletcreatefundedpsbt', [[], [{ rq1a: '0.5' }]]).params).toHaveLength(2)
     expect(requests.raw('decodepsbt', ['cHNidP8=', { subtract_fee_from_outputs: [0] }]).params).toHaveLength(2)
-    // An undefined value is never sent, so it is not refused.
+    // An undefined value is never sent, so it is not refused. The request holds the options as sent.
     const cleared = { fee_rate: 2.5, subtract_fee_from_outputs: undefined }
-    expect(requests.raw('walletcreatefundedpsbt', [[], [{ rq1a: '0.5' }], 0, cleared]).params[3]).toBe(cleared)
+    const sent = (options: object): string =>
+      stringifyRequest(requests.raw('walletcreatefundedpsbt', [[], [{ rq1a: '0.5' }], 0, options]).params[3])
+    expect(sent(cleared)).toBe('{"fee_rate":2.5}')
     // What is checked is what JSON.stringify sends: toJSON() applies, and function values are left out.
     const disguised = { toJSON: () => ({ subtract_fee_from_outputs: [0] }) }
     expect(() => requests.raw('walletcreatefundedpsbt', [[], [{ rq1a: '0.5' }], 0, disguised])).toThrow(
       /option subtract_fee_from_outputs is accepted and then ignored/
     )
     const dropped = { fee_rate: 2.5, subtract_fee_from_outputs: () => [0] }
-    expect(requests.raw('walletcreatefundedpsbt', [[], [{ rq1a: '0.5' }], 0, dropped]).params[3]).toBe(dropped)
+    expect(sent(dropped)).toBe('{"fee_rate":2.5}')
   })
 })
 
@@ -486,11 +491,16 @@ describe('client methods', () => {
     )
     await expect(rpc.getTxOut(HASH_A, 0, {}, 5 as never)).rejects.toThrow(/^callOptions must be an object$/)
     expect(await rpc.getBlockCount({ timeoutMs: 1000, signal: undefined } as never)).toBe(7)
-    // Each takes keys it inherits, and getters, as the builders and the client read them.
+    // Each reads its own enumerable properties only: a key held any other way is refused, named.
+    const sent = node.requests.length
+    const notOwn = (name: string): RegExp =>
+      new RegExp(
+        `^${name.replace('.', '\\.')} is not an own enumerable property \\(it is inherited, a class getter or on a polluted Object\\.prototype\\): pass a plain object$`
+      )
     const inherited = Object.create({ includeMempool: false }) as { readonly includeMempool?: boolean }
     const callInherited = Object.create({ timeoutMs: 1000 }) as { readonly timeoutMs?: number }
-    expect(await rpc.getTxOut(HASH_A, 0, inherited, callInherited)).toBeNull()
-    expect(node.calls().at(-1)!.params).toEqual([HASH_A, 0, false])
+    await expect(rpc.getTxOut(HASH_A, 0, inherited)).rejects.toThrow(notOwn('options.includeMempool'))
+    await expect(rpc.getTxOut(HASH_A, 0, {}, callInherited)).rejects.toThrow(notOwn('callOptions.timeoutMs'))
     class Options {
       get includeMempool(): boolean {
         return false
@@ -501,20 +511,17 @@ describe('client methods', () => {
         return 1000
       }
     }
-    expect(await rpc.getTxOut(HASH_A, 0, new Options(), new CallOptions())).toBeNull()
-    expect(node.calls().at(-1)!.params).toEqual([HASH_A, 0, false])
+    await expect(rpc.getTxOut(HASH_A, 0, new Options())).rejects.toThrow(notOwn('options.includeMempool'))
+    await expect(rpc.getTxOut(HASH_A, 0, {}, new CallOptions())).rejects.toThrow(notOwn('callOptions.timeoutMs'))
     class Private {
       readonly #mempool = false
       get includeMempool(): boolean {
         return this.#mempool
       }
     }
-    expect(await rpc.getTxOut(HASH_A, 0, new Private())).toBeNull()
-    expect(node.calls().at(-1)!.params).toEqual([HASH_A, 0, false])
+    await expect(rpc.getTxOut(HASH_A, 0, new Private())).rejects.toThrow(notOwn('options.includeMempool'))
     const hidden = Object.defineProperty({}, 'includeMempool', { value: false, enumerable: false })
-    expect(await rpc.getTxOut(HASH_A, 0, hidden)).toBeNull()
-    expect(node.calls().at(-1)!.params).toEqual([HASH_A, 0, false])
-    const sent = node.requests.length
+    await expect(rpc.getTxOut(HASH_A, 0, hidden)).rejects.toThrow(notOwn('options.includeMempool'))
     const stopped = new AbortController()
     stopped.abort()
     class Aborted {
@@ -522,14 +529,17 @@ describe('client methods', () => {
         return stopped.signal
       }
     }
-    await expect(rpc.getTxOut(HASH_A, 0, {}, new Aborted())).rejects.toMatchObject({ name: 'RpcAbortedError' })
-    expect(node.requests).toHaveLength(sent)
+    await expect(rpc.getTxOut(HASH_A, 0, {}, new Aborted())).rejects.toThrow(notOwn('callOptions.signal'))
     // One object as both is refused: each argument holds only its own keys.
     const both = { includeMempool: false, timeoutMs: 1000 }
     await expect(rpc.getTxOut(HASH_A, 0, both as never, both as never)).rejects.toThrow(
       /^options\.timeoutMs is a call option/
     )
     expect(node.requests).toHaveLength(sent)
+    // The getters' values, copied into plain objects, are read as meant.
+    const copied = { includeMempool: new Options().includeMempool }
+    expect(await rpc.getTxOut(HASH_A, 0, copied, { timeoutMs: new CallOptions().timeoutMs })).toBeNull()
+    expect(node.calls().at(-1)!.params).toEqual([HASH_A, 0, false])
     // A polluted Object.prototype does not make every call throw.
     const proto = Object.prototype as Record<string, unknown>
     proto['polluted'] = 1
