@@ -1,7 +1,5 @@
 # @qbit-oss/zmq
 
-> **Unaudited MVP**, not published to npm. See the [repository README](../../README.md).
-
 A Node.js subscriber and strict parser for qbit Core v1.0.0's ZMQ
 notifications. It depends on the native
 [`zeromq`](https://www.npmjs.com/package/zeromq) addon, loaded at a
