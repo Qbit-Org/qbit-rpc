@@ -95,6 +95,14 @@ function parse(bytes: Buffer): string {
   const stripped = witness
     ? Buffer.concat([bytes.subarray(0, 4), bytes.subarray(baseStart, baseEnd), bytes.subarray(locktimeStart)])
     : bytes
-  const first = createHash('sha256').update(stripped).digest()
-  return Buffer.from(createHash('sha256').update(first).digest()).reverse().toString('hex')
+  return displayHash(stripped)
+}
+
+/**
+ * The double SHA-256 of `bytes` in display (reversed) byte order, as qbit Core
+ * prints a txid or a block hash.
+ */
+export function displayHash(bytes: Uint8Array): string {
+  const first = createHash('sha256').update(bytes).digest()
+  return createHash('sha256').update(first).digest().reverse().toString('hex')
 }

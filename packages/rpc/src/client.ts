@@ -40,13 +40,22 @@ import {
 import { assertLosslessJsonSupport, isJsonObject, JsonNumber, parseJsonLossless, stringifyRequest } from './json'
 import { Limiter } from './limiter'
 import {
+  LONG_POLL_MARGIN_MS,
+  isLongPoll,
+  longPollParams,
+  longPollRetryable,
+  refusedBeforeActing,
   requests,
   type AddressInfo,
   type AddressType,
   type AddressValidation,
+  type Block,
   type BlockchainInfo,
   type BlockHeader,
+  type BlockRef,
+  type BlockWithTransactions,
   type BumpedPsbt,
+  type ChainTip,
   type ConfirmationTarget,
   type DataPqcHashProof,
   type DataPqcHashVerification,
@@ -59,8 +68,11 @@ import {
   type ListUnspentOptions,
   type MempoolAcceptance,
   type MempoolEntry,
+  type MempoolInfo,
+  type MempoolSnapshot,
   type NetworkInfo,
   type Outpoint,
+  type PackageSubmission,
   type ProcessedPsbt,
   type PsbtBumpFeeOptions,
   type RpcRequest,
@@ -69,6 +81,7 @@ import {
   type SinceBlockHistory,
   type SmartFeeEstimate,
   type TxOut,
+  type TxSpendingPrevout,
   type UnspentOutput,
   type WalletBalances,
   type WalletCreateFundedPsbtArgs,
@@ -162,8 +175,10 @@ export interface QbitRpcClientOptions {
    * for a request slot and the cookie read). Default 30,000 ms. For
    * `walletpassphrase` and `walletlock` it is at least 120,000 ms (see
    * {@link QbitRpcClient.walletPassphrase}): a shorter client `timeoutMs` does
-   * not shorten it. A call's own `timeoutMs` overrides both. With `connect`, it
-   * also bounds a pooled connection still opening after its read gave up.
+   * not shorten it, nor a long poll's, at least its wait plus 10 s (see
+   * {@link QbitRpcClient.waitForNewBlock}). A call's own `timeoutMs` overrides
+   * all of these. With `connect`, it also bounds a pooled connection still
+   * opening after its read gave up.
    */
   readonly timeoutMs?: number
   /** Largest response body read before the call fails. Default 16 MiB. */
@@ -309,6 +324,8 @@ interface ChainReport {
   readonly signetChallenge: string | undefined
 }
 
+/** Of a long poll's reply margin, what a first attempt's setup may use before its wait is shortened. */
+const LONG_POLL_SLACK_MS = 1000
 const DEFAULT_TIMEOUT_MS = 30_000
 const DEFAULT_MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 const DEFAULT_RETRY_DELAY_MS = 250
@@ -353,8 +370,8 @@ const CLIENT_OPTIONS = keysOf<QbitRpcClientOptions>({
   directNode: true,
   allowUnsupportedNodeVersion: true,
 })
-/** What `batch()` reads of an entry. */
-const BATCH_ENTRY = ['method', 'params', 'parse'] as const
+/** What `batch()` reads of an entry: `waitMs` only to refuse a long poll. */
+const BATCH_ENTRY = ['method', 'params', 'parse', 'waitMs'] as const
 
 /** An attempt's failure, with what is known about whether the node may have acted on it. */
 class Failure {
@@ -621,7 +638,7 @@ export class QbitRpcClient {
   }
 
   /**
-   * Send several read or wallet-read requests in one JSON-RPC batch, matched
+   * Send several read or wallet-read requests, long polls apart, in one JSON-RPC batch, matched
    * to their replies by id. Each entry succeeds or fails on its own, a throwing
    * `parse` included; a transport failure, timeout or oversized reply rejects
    * the whole batch.
@@ -651,6 +668,44 @@ export class QbitRpcClient {
   getBlockHeader(blockHash: string, callOptions?: CallOptions): Promise<BlockHeader> {
     return this.#lazy(() => requests.getBlockHeader(blockHash), callOptions)
   }
+  /** See {@link requests.getBlock}. */
+  getBlock(blockHash: string, callOptions?: CallOptions): Promise<Block> {
+    return this.#lazy(() => requests.getBlock(blockHash), callOptions)
+  }
+  /** See {@link requests.getBlockWithTransactions}. */
+  getBlockWithTransactions(blockHash: string, callOptions?: CallOptions): Promise<BlockWithTransactions> {
+    return this.#lazy(() => requests.getBlockWithTransactions(blockHash), callOptions)
+  }
+  /** See {@link requests.getBlockHex}. */
+  getBlockHex(blockHash: string, callOptions?: CallOptions): Promise<string> {
+    return this.#lazy(() => requests.getBlockHex(blockHash), callOptions)
+  }
+  getChainTips(callOptions?: CallOptions): Promise<ChainTip[]> {
+    return this.#single(requests.getChainTips(), callOptions)
+  }
+  /**
+   * Long-poll for a new tip. The deadline is the call's `timeoutMs`, which must
+   * be at least `waitMs` plus 10 s, else the longer of that and the client's
+   * `timeoutMs`. Without `options.currentTip` it is never retried: a retry
+   * would wait from the tip at that time, past a block found meanwhile. With
+   * it, a retry under `readRetries` asks for no more than the deadline has
+   * left. See {@link requests.waitForNewBlock}.
+   */
+  waitForNewBlock(
+    waitMs: number,
+    options?: { readonly currentTip?: string },
+    callOptions?: CallOptions
+  ): Promise<BlockRef> {
+    return this.#lazy(() => requests.waitForNewBlock(waitMs, options), callOptions)
+  }
+  /**
+   * Long-poll for a height, under the deadline {@link QbitRpcClient.waitForNewBlock}
+   * has. A retry under `readRetries` asks for no more than the deadline has
+   * left. See {@link requests.waitForBlockHeight}.
+   */
+  waitForBlockHeight(height: number, waitMs: number, callOptions?: CallOptions): Promise<BlockRef> {
+    return this.#lazy(() => requests.waitForBlockHeight(height, waitMs), callOptions)
+  }
   /** See {@link requests.getRawTransaction}. */
   getRawTransaction(
     txid: string,
@@ -666,6 +721,24 @@ export class QbitRpcClient {
     callOptions?: CallOptions
   ): Promise<DecodedTransaction> {
     return this.#lazy(() => requests.getRawTransactionVerbose(txid, options), callOptions)
+  }
+  getMempoolInfo(callOptions?: CallOptions): Promise<MempoolInfo> {
+    return this.#single(requests.getMempoolInfo(), callOptions)
+  }
+  getRawMempool(callOptions?: CallOptions): Promise<string[]> {
+    return this.#single(requests.getRawMempool(), callOptions)
+  }
+  /** See {@link requests.getRawMempoolVerbose}. */
+  getRawMempoolVerbose(callOptions?: CallOptions): Promise<Record<string, MempoolEntry>> {
+    return this.#single(requests.getRawMempoolVerbose(), callOptions)
+  }
+  /** See {@link requests.getRawMempoolSequence}. */
+  getRawMempoolSequence(callOptions?: CallOptions): Promise<MempoolSnapshot> {
+    return this.#single(requests.getRawMempoolSequence(), callOptions)
+  }
+  /** See {@link requests.getTxSpendingPrevout}. */
+  getTxSpendingPrevout(outputs: readonly Outpoint[], callOptions?: CallOptions): Promise<TxSpendingPrevout[]> {
+    return this.#lazy(() => requests.getTxSpendingPrevout(outputs), callOptions)
   }
   getMempoolEntry(txid: string, callOptions?: CallOptions): Promise<MempoolEntry> {
     return this.#lazy(() => requests.getMempoolEntry(txid), callOptions)
@@ -720,6 +793,14 @@ export class QbitRpcClient {
     callOptions?: CallOptions
   ): Promise<string> {
     return this.#lazy(() => requests.sendRawTransaction(hex, options), callOptions)
+  }
+  /** See {@link requests.submitPackage}. */
+  submitPackage(
+    rawTxs: readonly string[],
+    options?: { readonly maxFeeRateBitsPerKvB?: bigint; readonly maxBurnAmountBits?: bigint },
+    callOptions?: CallOptions
+  ): Promise<PackageSubmission> {
+    return this.#lazy(() => requests.submitPackage(rawTxs, options), callOptions)
   }
   getWalletInfo(callOptions?: CallOptions): Promise<WalletInfo> {
     return this.#single(requests.getWalletInfo(), callOptions)
@@ -1198,7 +1279,12 @@ export class QbitRpcClient {
     const policy = methodPolicy(method) ?? this.#extraMethods.get(method)
     if (policy === undefined) throw new RpcCapabilityError(method, 'unknown_method')
     // A batch is sent as a read: on a pooled connection, retried, never an unknown outcome.
-    if (inBatch && (policy.sideEffects || (policy.capability !== 'read' && policy.capability !== 'wallet-read'))) {
+    if (
+      inBatch &&
+      (policy.sideEffects ||
+        policy.longPoll === true ||
+        (policy.capability !== 'read' && policy.capability !== 'wallet-read'))
+    ) {
       throw new RpcCapabilityError(method, 'not_batchable')
     }
     if (policy.capability !== 'read' && !this.#capabilities.has(policy.capability)) {
@@ -1217,9 +1303,14 @@ export class QbitRpcClient {
     refusePollution(method)
     const policy = this.#authorize(method, false)
     const id = this.#nextId++
-    const body = stringifyRequest({ jsonrpc: '2.0', id, method, params: request.params })
-    const settings = this.#callSettings(callOptions, ownValue(policy, 'timeoutMs'))
-    return this.#operation(method, settings, policy.sideEffects, async attempt => {
+    const { waitMs } = request
+    // A long poll's deadline is at least its wait plus the margin, checked before anything is sent.
+    const settings = this.#callSettings(callOptions, ownValue(policy, 'timeoutMs'), waitMs)
+    // Sent at most once: a call with side effects, and a long poll a retry would not repeat.
+    const once = policy.sideEffects || (waitMs !== undefined && !longPollRetryable(request))
+    let attempts = 0
+    return this.#operation(method, settings, once, async attempt => {
+      const retry = attempts++ > 0
       try {
         // One cookie read per attempt: the chain check and the call are sent
         // with that header, and a new cookie (qbitd restarted) means a check.
@@ -1241,16 +1332,34 @@ export class QbitRpcClient {
             throw this.#guardFailure(method, error, exempt)
           }
         }
+        let params = request.params
+        if (waitMs !== undefined) {
+          // Each attempt runs under what is left of the deadline: it asks the node
+          // to wait no longer than that, less the margin for the reply, and with
+          // nothing left it is not sent. A first attempt keeps its wait unless a
+          // wait for a request slot, the cookie read or a chain re-check took
+          // more than LONG_POLL_SLACK_MS of that margin.
+          const margin = LONG_POLL_MARGIN_MS - (retry ? 0 : LONG_POLL_SLACK_MS)
+          const left = Math.floor(attempt.deadline - performance.now()) - margin
+          if (left < 1) throw new Failure(new RpcTimeoutError(method, attempt.timeoutMs), false, false)
+          if (left < waitMs) params = longPollParams(request, left)
+        }
+        const body = stringifyRequest({ jsonrpc: '2.0', id, method, params })
         const text = await this.#exchange(method, body, attempt.signal, policy.sideEffects, id, authorization.header)
         const reply = this.#envelope(method, parseOrProtocolError(method, text), id, 'response')
         if (!reply.ok) {
-          throw new Failure(reply.error, false, !policy.sideEffects && reply.error.rpcCode === RPC_IN_WARMUP)
+          const unknown = nodeErrorUnknown(method, policy.sideEffects, reply.error)
+          throw new Failure(reply.error, unknown, !policy.sideEffects && reply.error.rpcCode === RPC_IN_WARMUP)
         }
         return validated(method, request, reply.result)
       } catch (error) {
         const failure = asFailure(method, error, attempt)
         if (policy.sideEffects && failure.unknown) {
-          throw new Failure(new RpcUnknownOutcomeError(method, failure.error, request.txid), false, false)
+          throw new Failure(
+            new RpcUnknownOutcomeError(method, failure.error, request.txid, request.txids),
+            false,
+            false
+          )
         }
         throw failure
       }
@@ -1284,7 +1393,13 @@ export class QbitRpcClient {
       }
       return own as RpcRequest<unknown>
     })
-    for (const entry of list) this.#authorize(entry.method, true)
+    for (const entry of list) {
+      this.#authorize(entry.method, true)
+      // A long poll opened through extraMethods (waitforblock) waits as well, a hand-built entry included.
+      if (entry.waitMs !== undefined || isLongPoll(entry.method)) {
+        throw new RpcCapabilityError(entry.method, 'not_batchable')
+      }
+    }
     if (list.length === 0) return []
     const ids = list.map(() => this.#nextId++)
     const label = `batch(${list.length})`
@@ -1330,16 +1445,18 @@ export class QbitRpcClient {
    * `readRetries`. Apart from these, a stale pooled socket gets one more attempt
    * at once, even with side effects when the failure is definite: then only the
    * chain re-check was sent, as the request itself uses a fresh connection. The
-   * deadline timer, the caller's abort listener and any backoff sleep are
-   * released on every exit path.
+   * deadline is `settings.timeoutMs`, see `#callSettings`. A call sent at most
+   * once (`once`: one with side effects, or a long poll a retry would not
+   * repeat) is not retried. The deadline timer, the caller's abort listener and
+   * any backoff sleep are released on every exit path.
    */
   async #operation<T>(
     label: string,
     settings: CallSettings,
-    sideEffects: boolean,
+    once: boolean,
     attempt: (context: AttemptContext) => Promise<T>
   ): Promise<T> {
-    const retries = sideEffects ? 0 : this.#readRetries
+    const retries = once ? 0 : this.#readRetries
     const { timeoutMs, signal: callerSignal } = settings
     if (callerSignal?.aborted) throw new RpcAbortedError(label, callerSignal.reason)
     const deadline = performance.now() + timeoutMs
@@ -1360,7 +1477,7 @@ export class QbitRpcClient {
               // The whole attempt runs again at once, in the same slot: a new
               // cookie read, and a guarded call re-checks the chain, which the
               // reset has made stale.
-              const stale = error instanceof Failure && error.staleSocket && (!sideEffects || !error.unknown)
+              const stale = error instanceof Failure && error.staleSocket && (!once || !error.unknown)
               if (!stale || staleSocketTried) throw error
               staleSocketTried = true
               if (slotted.signal.aborted) throw new Failure(stopError(label, slotted), false, false)
@@ -1390,16 +1507,23 @@ export class QbitRpcClient {
    * key is never read from Object.prototype) and checked: an operation takes
    * only these, so they are read and checked once. The deadline is the call's
    * `timeoutMs`; else, for a method with its own default (`methodTimeoutMs`),
-   * the longer of that and the client's; else the client's, else 30 s.
+   * the longer of that and the client's; else the client's, else 30 s. A long
+   * poll's (`waitMs`) defaults to at least its wait plus LONG_POLL_MARGIN_MS,
+   * and must be at least that, or a call that sees no block could only end as
+   * a timeout: a `RangeError`, unsent.
    */
-  #callSettings(callOptions: unknown, methodTimeoutMs?: number): CallSettings {
+  #callSettings(callOptions: unknown, methodTimeoutMs?: number, waitMs?: number): CallSettings {
     const own = argOptions(callOptions, 'callOptions', CALL_OPTIONS)
     // A method's own default is a floor: a short client timeout must not cut a call qbit Core is known to need longer for.
+    const floor = waitMs === undefined ? methodTimeoutMs : Math.max(methodTimeoutMs ?? 0, waitMs + LONG_POLL_MARGIN_MS)
     const fallback =
-      methodTimeoutMs === undefined
-        ? (this.#timeoutMs ?? DEFAULT_TIMEOUT_MS)
-        : Math.max(methodTimeoutMs, this.#timeoutMs ?? 0)
+      floor === undefined ? (this.#timeoutMs ?? DEFAULT_TIMEOUT_MS) : Math.max(floor, this.#timeoutMs ?? 0)
     const timeoutMs = checkInteger(own['timeoutMs'], 'callOptions.timeoutMs', 1, 3_600_000, fallback)
+    if (waitMs !== undefined && timeoutMs < waitMs + LONG_POLL_MARGIN_MS) {
+      throw new RangeError(
+        `callOptions.timeoutMs must be at least waitMs (${waitMs}) plus ${LONG_POLL_MARGIN_MS} ms, for the wait for a request slot and the reply`
+      )
+    }
     const signal = own['signal']
     if (signal !== undefined && !(signal instanceof AbortSignal))
       throw new TypeError('callOptions.signal must be an AbortSignal')
@@ -1470,7 +1594,9 @@ export class QbitRpcClient {
     // status's error, and an unknown outcome for side-effecting calls. So is
     // anything else under a 5xx, which may come from a proxy after the node acted.
     const legacy = id === undefined ? undefined : legacyError(method, reply.body, id)
-    if (legacy !== undefined && NODE_ERROR_STATUSES.has(reply.status)) throw new Failure(legacy, false, false)
+    if (legacy !== undefined && NODE_ERROR_STATUSES.has(reply.status)) {
+      throw new Failure(legacy, nodeErrorUnknown(method, sideEffects, legacy), false)
+    }
     const transportError = new RpcTransportError(method, 'http_status', { status: reply.status })
     // With the endpoint declared to be qbitd itself, this exact reply is its
     // refusal to queue the request, which it sends without running anything.
@@ -1559,6 +1685,15 @@ export class QbitRpcClient {
  */
 function guarded(policy: MethodPolicy): boolean {
   return policy.capability === 'wallet-write' || policy.capability === 'broadcast' || policy.capability === 'node-admin'
+}
+
+/**
+ * Whether the node's error, under HTTP 200 or a legacy status, leaves a call
+ * with side effects of unknown outcome: submitpackage can fail after accepting
+ * part of the package.
+ */
+function nodeErrorUnknown(method: string, sideEffects: boolean, error: RpcError): boolean {
+  return sideEffects && !refusedBeforeActing(method, error.rpcCode, error.message)
 }
 
 function legacyError(method: string, body: string, id: number): RpcError | undefined {

@@ -34,8 +34,8 @@ const info = await rpc.getBlockchainInfo()
 | `expectedSignetChallenge` | `51` on signet | The `signet_challenge` every chain check expects: non-empty hex of whole bytes (the challenge script), either case (compared in lowercase). Only with `expectedChain: 'signet'`. |
 | `capabilities` | `[]` | Any of `wallet-read`, `wallet-write`, `broadcast`, `node-admin`. |
 | `extraMethods` | none | Methods to allow beyond the allowlist, untyped, each `{ capability, sideEffects }`. See [opening another method](#opening-another-method-extramethods). |
-| `timeoutMs` | 30,000; at least 120,000 for `walletPassphrase` and `walletLock` | One deadline per operation: any wait for a request slot, cookie read, every attempt and every backoff. A shorter value does not shorten their 120 s. Override per call. See [unlocking a wallet](#unlocking-an-encrypted-wallet). With `connect`, it also bounds a pooled connection still opening after its read gave up (see [Proxies](#proxies-connect)). |
-| `maxResponseBytes` | 16 MiB | Larger replies fail with `RpcResponseTooLargeError` (or an unknown outcome for side-effecting calls). Leave a few KiB at least: the chain check's batched reply (`getblockchaininfo`, `getblockhash 0` and `getnetworkinfo`, about 2 KiB from a v1.0.0 node without peers) must fit, or every check fails. |
+| `timeoutMs` | 30,000; at least 120,000 for `walletPassphrase` and `walletLock`; at least the wait plus 10 s for a long poll | One deadline per operation: any wait for a request slot, cookie read, every attempt and every backoff. A shorter value does not shorten their 120 s, or a [long poll](#long-polls)'s. Override per call. See [unlocking a wallet](#unlocking-an-encrypted-wallet). With `connect`, it also bounds a pooled connection still opening after its read gave up (see [Proxies](#proxies-connect)). |
+| `maxResponseBytes` | 16 MiB | Larger replies fail with `RpcResponseTooLargeError` (or an unknown outcome for side-effecting calls). A full block can pass the default: see [large replies](#large-replies). Leave a few KiB at least: the chain check's batched reply (`getblockchaininfo`, `getblockhash 0` and `getnetworkinfo`, about 2 KiB from a v1.0.0 node without peers) must fit, or every check fails. |
 | `readRetries` | 0 | Opt-in retries for methods without side effects (see below). |
 | `retryDelayMs` | 250 | First backoff; doubles per retry, capped at 10 s, never past the deadline. |
 | `chainCheckMaxAgeMs` | 10,000 | How long a chain confirmation stays fresh before a wallet-write or broadcast call re-checks it. 0 re-checks before every such call. |
@@ -75,8 +75,8 @@ await rpc.sendRawTransaction(hex, undefined, { signal }) // none of its own opti
 ```
 
 `timeoutMs` (1 to 3,600,000) overrides the client's for this operation, and
-the own default of `walletPassphrase` and `walletLock` (see [unlocking a wallet](#unlocking-an-encrypted-wallet)),
-and `signal` aborts it (see the [failure model](#failure-model)). A method's own
+the own default of `walletPassphrase` and `walletLock` (see [unlocking a wallet](#unlocking-an-encrypted-wallet))
+and a [long poll](#long-polls)'s, and `signal` aborts it (see the [failure model](#failure-model)). A method's own
 options never hold call options, and the call options hold nothing else: a key
 in the wrong one is a `TypeError` that says where it belongs. So a method can
 gain an option named like neither without breaking a caller.
@@ -358,10 +358,10 @@ documentation, and a test keeps the two equal.
 
 | Capability | Methods |
 | --- | --- |
-| none (read) | `getblockchaininfo`, `getnetworkinfo`, `getbestblockhash`, `getblockcount`, `getblockhash`, `getblockheader`, `getrawtransaction`, `getmempoolentry`, `gettxout`, `getconfirmationtarget`, `estimatesmartfee`, `validateaddress`, `verifydatapqchash`; untyped: `getblock`, `getchaintips`, `getmempoolinfo`, `getrawmempool`, `decoderawtransaction`, `decodepsbt`, `analyzepsbt`, `getorphanmetrics`, `getarchivepeers`, `getindexinfo`, `getzmqnotifications`, `uptime` |
+| none (read) | `getblockchaininfo`, `getnetworkinfo`, `getbestblockhash`, `getblockcount`, `getblockhash`, `getblockheader`, `getrawtransaction`, `getmempoolentry`, `gettxout`, `getconfirmationtarget`, `estimatesmartfee`, `validateaddress`, `verifydatapqchash`, `getblock`, `getchaintips`, `getmempoolinfo`, `getrawmempool`, `gettxspendingprevout`, `waitfornewblock`, `waitforblockheight`; untyped: `decoderawtransaction`, `decodepsbt`, `analyzepsbt`, `getorphanmetrics`, `getarchivepeers`, `getindexinfo`, `getzmqnotifications`, `uptime` |
 | `wallet-read` | `getwalletinfo`, `gettransaction`, `listunspent`, `getaddressinfo`, `listlockunspent`, `listsinceblock`, `listtransactions`, `getbalances`; untyped: `listwallets` |
 | `wallet-write` | `walletcreatefundedpsbt`, `walletprocesspsbt`, `finalizepsbt`, `psbtbumpfee`, `walletpassphrase`, `walletlock`, `getrawchangeaddress`, `lockunspent`, `getnewaddress` |
-| `broadcast` | `testmempoolaccept`, `sendrawtransaction` |
+| `broadcast` | `testmempoolaccept`, `sendrawtransaction`, `submitpackage` |
 | `node-admin` | none built in: node administration opens only through [extraMethods](#node-administration-node-admin) |
 
 `sendmany`, `sendtoaddress`, `send`, `sendall` and `bumpfee` are not
@@ -736,8 +736,18 @@ is the `cause` of an `RpcUnknownOutcomeError`. Each method also takes
 | `getBestBlockHash()`, `getBlockHash(height)` | block hash |
 | `getBlockCount()` | the tip's height |
 | `getBlockHeader(hash)` | `BlockHeader`; checks the hash, `versionHex` and genesis linkage |
+| `getBlock(hash)` | `Block` (verbosity 1): the header's fields, `strippedSize`, `size`, `weight` and `tx`, the txids; checks the hash and `nTx`; `RpcError` -5 for an unknown block, -1 for a pruned one |
+| `getBlockWithTransactions(hash)` | `BlockWithTransactions` (verbosity 2): `tx` decoded as in `getRawTransactionVerbose`, with `feeBits` where undo data allows; see [large replies](#large-replies) |
+| `getBlockHex(hash)` | the block as stored, as hex (verbosity 0), its header checked to hash to `hash` |
+| `getChainTips()` | `ChainTip[]` (`height`, `hash`, `branchLen`, `status`); checks there is one `active` tip, the only one with `branchLen` 0 |
+| `waitForNewBlock(waitMs, { currentTip? })`, `waitForBlockHeight(height, waitMs)` | `BlockRef` (`hash`, `height`), the tip; see [long polls](#long-polls) |
 | `getRawTransaction(txid, { blockHash? })` | hex, checked to hash to `txid` |
 | `getRawTransactionVerbose(txid, { blockHash? })` | `DecodedTransaction`, output values as `valueBits` |
+| `getMempoolInfo()` | `MempoolInfo`; the fee floor is `mempoolMinFeeBitsPerKvB` |
+| `getRawMempool()` | the txids in the mempool |
+| `getRawMempoolVerbose()` | `Record<txid, MempoolEntry>`; see [large replies](#large-replies) |
+| `getRawMempoolSequence()` | `MempoolSnapshot`: `txids` and `mempoolSequence`, a `bigint` as in the ZMQ `sequence` topic |
+| `getTxSpendingPrevout(outputs)` | `TxSpendingPrevout[]`, one per output in order, checked against them: `spendingTxid` names the mempool transaction spending it, absent otherwise. An output spent in a block looks unspent |
 | `getMempoolEntry(txid)` | `MempoolEntry`: sizes, `depends`, `spentBy`, fees as `baseBits` and so on; `RpcError` -5 when not in the mempool |
 | `getTxOut(txid, vout, { includeMempool? })` | `TxOut` with `valueBits` and `coinbase`, or `null` when spent or unknown; `vout` 0 to 4,294,967,295 |
 | `getConfirmationTarget(valueBits, { securityLevel?, mergeMiningPct?, btcHashrate? })` | `ConfirmationTarget` (the node's float `value_qbt` echo is dropped) |
@@ -746,6 +756,7 @@ is the `cause` of an `RpcUnknownOutcomeError`. Each method also takes
 | `verifyDataPqcHash(proof)` | `DataPqcHashVerification` |
 | `testMempoolAccept(rawTxs, { maxFeeRateBitsPerKvB? })` | one `MempoolAcceptance` per transaction, checked against each hex's txid; see [fee-rate caps](#fee-rate-caps) |
 | `sendRawTransaction(hex, { maxFeeRateBitsPerKvB?, maxBurnAmountBits? })` | txid, checked against the hex; see [fee-rate caps](#fee-rate-caps) |
+| `submitPackage(rawTxs, { maxFeeRateBitsPerKvB?, maxBurnAmountBits? })` | `PackageSubmission`; see [submitting a package](#submitting-a-package-cpfp) |
 | `getWalletInfo()` | `WalletInfo`, including `pqcKeyValidation` |
 | `getTransaction(txid)` | `WalletTransaction`; signed `amountBits` and `feeBits` |
 | `listUnspent(options?)` | `UnspentOutput[]` |
@@ -947,7 +958,7 @@ wallet's `-addresstype` or `-changetype` applies.
 
 ### Fee-rate caps
 
-`testMempoolAccept` and `sendRawTransaction` take `maxFeeRateBitsPerKvB`, the
+`testMempoolAccept`, `sendRawTransaction` and `submitPackage` take `maxFeeRateBitsPerKvB`, the
 highest fee rate to accept, in bits per 1,000 vbytes: `1n` to `99_999_999n`
 (qbit Core refuses 1 QBT/kvB or more). Left out, qbit Core's default cap
 applies: 0.10 QBT/kvB, `10_000_000n` (10,000 bits/vB; `DEFAULT_MAX_RAW_TX_FEE_RATE`
@@ -955,6 +966,137 @@ in v1.0.0, and `help sendrawtransaction` shows it). `0n` is refused before
 sending: qbit Core reads a cap of 0 as no cap at all, the opposite of what a cap
 of zero says. To send without any cap, use
 `call('sendrawtransaction', [hex, 0])`.
+
+### Submitting a package (CPFP)
+
+`submitPackage(rawTxs)` submits 1 to 25 signed transactions together, parents
+first and the child last, so that the child's fee can pay for its parents. It
+needs `broadcast`, waits for the chain guard, and is never retried. Unlike
+`sendRawTransaction`, a refusal is a result, and it can be partial:
+
+```ts
+const { packageMsg, txResults } = await rpc.submitPackage([parentHex, childHex])
+// 'success': every transaction was accepted or was in the mempool already.
+// Anything else: the node's text. Read each entry of txResults, by wtxid:
+// { txid, vsize?, fees?, otherWtxid?, error? }
+```
+
+- With `packageMsg` other than `success`, the parent can be in the mempool while
+  the child was refused, and transactions can have no entry, when the package
+  failed before each was evaluated. Check `getMempoolEntry` for what matters.
+- The node's error is a definite `RpcError` only when qbit Core v1.0.0 raises
+  it before handing any transaction to the mempool (`src/rpc/mempool.cpp`):
+  -28 (starting), -3 (a parameter of the wrong type, or a cap that is not an
+  amount), -8 (no transaction or more than 25, or a fee-rate cap of 1 QBT/kvB
+  or more), -22 (a transaction that does not decode), and -25 with one of two
+  texts, `Unspendable output exceeds maximum configured by user (maxburnamount)`
+  (`maxBurnAmountBits`) and `package topology disallowed. not child-with-parents
+  or parents depend on each other.` (a child that is not last); and the
+  JSON-RPC layer's -32700, -32600, -32601 and -32602, raised before any method
+  runs. Any other error can come after part of the package was accepted: a failed relay (`transaction
+  broadcast failed: ... (N transactions were broadcast successfully)`, as -25,
+  -26 or -27), a mempool error (-25), or a failed internal check (-1). Each is
+  an `RpcUnknownOutcomeError` whose `cause` is the node's `RpcError`, with
+  `txids`.
+- On qbit Core v1.0.0 a child cannot rescue a parent below the relay floor
+  (`minRelayTxFeeBitsPerKvB`, 250 bits/kvB by default): that parent's `error` is
+  `min relay fee not met`. What a child can pay for is a parent above that floor
+  and below a mempool floor raised by a full mempool. In the source, version 3
+  (TRUC) parents are the one exception; this package's tests do not cover them.
+- A lost reply is an `RpcUnknownOutcomeError` too. Its `txids` hold one entry
+  per transaction, in package order, typed or through `call()`: the txid
+  computed from its hex, or `null` where this package cannot parse the hex,
+  which is sent all the same, as `sendRawTransaction` sends it (the node
+  decides). `txid` stays unset, even for one transaction. Any of them may have
+  been accepted. Submitting the same hex again is harmless: a transaction in the
+  mempool already counts as success.
+
+`maxFeeRateBitsPerKvB` is checked for each transaction, and `maxBurnAmountBits`
+(default `0n`) for each output of each, as for `sendRawTransaction`.
+
+### Large replies
+
+qbit Core v1.0.0's largest block is 2,000,000 bytes, and its verbose JSON is many
+times that: a transaction's hex, and its witness again, print at twice their
+size, and each output prints its script three ways and its address. A 3.8 kB
+P2MR spend prints about 16 kB, and a 1.92 MB regtest block of 8,800-output
+transactions printed 21.1 MB at verbosity 2 (1.3 kB at verbosity 1, 3.8 MB at
+verbosity 0), past the default `maxResponseBytes` of 16 MiB. A reply over the cap
+stops at the cap as `RpcResponseTooLargeError`, which for a read changes nothing
+on the node: it is not retried, and the same call will fail the same way.
+
+A client that reads whole blocks should set `maxResponseBytes` above what it
+expects, such as `64 * 1024 * 1024` (the most is 256 MiB), knowing that it holds
+each reply in memory as it parses it. The limit is per client, so a scanner can
+have its own. Alternatively read `getBlock` for the txids, and each transaction
+with `getRawTransactionVerbose(txid, { blockHash })`. That block took 0.2 s to
+answer on loopback; a slow link needs a longer `timeoutMs`, which bounds the
+whole read.
+
+`getRawMempoolVerbose()` has the same bound: an entry prints about 450 bytes, so
+a mempool of some 37,000 transactions passes 16 MiB, which the default 300 MB
+mempool can hold. `getRawMempool()` prints about 67 bytes per transaction.
+
+### Long polls
+
+`waitForNewBlock` and `waitForBlockHeight` are a fallback where
+[`@qbit-oss/zmq`](../zmq/README.md) is not available. The node holds the request
+until a block arrives or `waitMs` has passed, then answers with the tip, which is
+not an error when the wait ran out:
+
+```ts
+let tip = await rpc.getBestBlockHash()
+for (;;) {
+  const next = await rpc.waitForNewBlock(60_000, { currentTip: tip })
+  if (next.hash === tip) continue // the wait ran out
+  tip = next.hash
+}
+// Below the height asked for: the wait ran out.
+const { height } = await rpc.waitForBlockHeight(target, 60_000)
+```
+
+Pass `currentTip`: without it the node waits for a change from the tip when it
+runs the call, and a block found between two calls is missed. For the same
+reason, `waitForNewBlock` without `currentTip` is never retried, whatever
+`readRetries`: a retry would wait from the tip at the retry, past a block found
+since the first attempt. With `currentTip` it is safe to retry, as
+`waitForBlockHeight` is.
+
+**`waitMs` and the deadline.** `waitMs` is the node's own timeout, from 1 to
+3,590,000 ms. qbit Core reads 0 as no timeout, so it is refused. The deadline
+must outlast it by 10 s, for the wait for a request slot and the reply, or a
+call that sees no block could only end as a timeout, so the client's
+`timeoutMs` does not cut it short: unless the call gives its own, the deadline
+is the longer of `waitMs` plus 10 s and the client's `timeoutMs`. A call's own
+`timeoutMs` below `waitMs` plus 10 s is a `RangeError`, unsent. A 34 s wait,
+longer than `qbitd`'s `-rpcservertimeout` of 30 s, answered in 34.007 s on
+regtest. Each attempt asks the node to wait no longer than the deadline has
+left, less those 10 s (of which a first attempt's own setup may use 1 s):
+after a long wait for a request slot, or on a retry under `readRetries`, that
+is less than `waitMs`, so the call answers with the tip rather than time out,
+and with nothing left it ends as an `RpcTimeoutError` without sending. A long
+poll is never in a batch, however its request was built. As a read, that is safe to call again.
+
+**Other calls.** A long poll holds a [request slot](#the-work-queue) and a
+`qbitd` worker for its whole wait. One leaves the other seven slots of the
+default `maxConcurrentRequests` free, but `maxConcurrentRequests` long polls stop
+that client's other calls, which wait behind them and can time out unsent, so give
+long polls their own client, or count them in the limit. Across all clients, keep
+long polls well below `-rpcthreads` (default 16): with all workers holding one,
+every other request to the node waits, which is not refused.
+
+**Giving up.** `qbitd` does not notice a client that left. A long poll aborted or
+past its deadline frees its slot at once, but holds its worker until its wait ends
+or a block arrives: with 16 abandoned 20 s waits on regtest, a plain read took 19 s.
+Keep `waitMs` to what you would wait for anyway.
+
+A long poll is refused in a batch (`not_batchable`), typed or raw: the batch's
+other calls would wait behind it, under one deadline. Through `call()` and
+`requests.raw()` the same rules apply, the wait read from the method's timeout
+parameter (`waitfornewblock`'s first, `waitforblockheight`'s second): it must
+be 1 to 3,590,000 ms, and absent or 0, which the node reads as a wait with no
+end, it is a `RangeError` that says to pass a timeout. `waitforblock`, which
+`extraMethods` can open, is bounded the same way by its second parameter.
 
 ### Bumping a stuck payment
 
@@ -1208,7 +1350,7 @@ you made, or in `cause` the request that failed. Every error has its own
 | `QbitRpcError` | | The base class of the others, never thrown itself. | | Recognize any of them with `QbitRpcError.is(error)`. |
 | `RpcCapabilityError` | `reason: 'not_enabled'` | The method's capability (`required`) is not enabled. | Not sent | A configuration error. |
 | `RpcCapabilityError` | `reason: 'unknown_method'` | The method is not on the allowlist or in `extraMethods`. | Not sent | A programming error. |
-| `RpcCapabilityError` | `reason: 'not_batchable'` | A method other than a read in `batch()`. | Not sent | A programming error. |
+| `RpcCapabilityError` | `reason: 'not_batchable'` | A method other than a read in `batch()`, or a [long poll](#long-polls). | Not sent | A programming error. |
 | `RpcChainGuardError` | `reason: 'unconfirmed'` | A wallet-write or broadcast call before `confirmChain()` succeeded. | Not sent | Call `confirmChain()`. |
 | `RpcChainGuardError` | `reason: 'mismatch'` | A chain check (yours, or the automatic re-check) found another chain, genesis block or signet challenge; `differs` says which. | Not sent | Check the URL, or set `expectedGenesisHash` or `expectedSignetChallenge` for a node with other chain parameters or a custom signet, then call `confirmChain()`. |
 | `RpcChainGuardError` | `reason: 'unsupported_version'` | A chain check found a qbit Core version outside 1.0.x releases; `nodeVersion` says which. | Not sent | Run a supported qbit Core, or a release of this package that supports the node's, then call `confirmChain()`; or accept the risk with `allowUnsupportedNodeVersion`. |
@@ -1226,7 +1368,7 @@ you made, or in `cause` the request that failed. Every error has its own
 | `RpcResponseTooLargeError` | | The reply passed `maxResponseBytes`, `limitBytes`. | Unknown outcome | Treat the node or proxy as misbehaving; do not guess the value. |
 | `RpcResponseError` | `reason: 'protocol'` | The reply was not valid JSON-RPC; `path` says where. | Unknown outcome | Treat the node or proxy as misbehaving; do not guess the value. |
 | `RpcResponseError` | `reason: 'validation'` | A result failed validation; `path` says where. For a [custom `parse`](#batches) that threw, `path` is `result` and `cause` is what it threw. | Unknown outcome | Treat the node or proxy as misbehaving; do not guess the value. |
-| `RpcUnknownOutcomeError` | | The call may have been executed, but no valid reply arrived; `cause` is the failure and, for `sendrawtransaction` (typed or through `call()`), `txid` the computed txid. Never retried. | Unknown outcome | Reconcile before acting again: look up `txid` for a broadcast, re-read wallet state for a signing call, read `getWalletInfo().unlockedUntil` after `walletPassphrase` ([unlocking a wallet](#unlocking-an-encrypted-wallet)). |
+| `RpcUnknownOutcomeError` | | The call may have been executed, but no valid reply arrived; `cause` is the failure; for `sendrawtransaction` (typed or through `call()`), `txid` is the computed txid, and for `submitpackage` (likewise), `txids` holds one entry per transaction in package order, its txid or `null` where its hex does not parse here, with `txid` unset; for `submitpackage` it is also a node error that can follow the acceptance of part of the package (see [submitting a package](#submitting-a-package-cpfp)), with that `RpcError` as `cause`. Never retried. | Unknown outcome | Reconcile before acting again: look up `txid` or each of `txids` for a broadcast, re-read wallet state for a signing call, read `getWalletInfo().unlockedUntil` after `walletPassphrase` ([unlocking a wallet](#unlocking-an-encrypted-wallet)). |
 
 A bad argument or option is a `TypeError` or `RangeError`, and nothing is sent.
 
@@ -1363,8 +1505,9 @@ transport failure, a timeout or an oversized reply rejects the whole batch. `req
 adds an untyped entry.
 
 An entry is any `RpcRequest`, so you can write your own `parse`. The entries
-are read by their own elements, and each entry's `method`, `params` and `parse`
-once, as its own enumerable properties: a hole, or one of these held any other
+are read by their own elements, and each entry's `method`, `params`, `parse`
+and `waitMs` (a long poll's, which a batch refuses) once, as its own
+enumerable properties: a hole, or one of these held any other
 way (a class's `parse` method, a key on a polluted `Object.prototype`), rejects
 with a `TypeError` before anything is sent, and so does a `method` that is not a
 non-empty primitive string (a `String` object, or an object with `toJSON`), so

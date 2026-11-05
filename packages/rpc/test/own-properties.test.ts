@@ -95,8 +95,19 @@ const CASES: { readonly [K in keyof Builders]: readonly (() => Parameters<Builde
   getBlockCount: [() => []],
   getBlockHash: [() => [1]],
   getBlockHeader: [() => [HASH_A]],
+  getBlock: [() => [HASH_A]],
+  getBlockWithTransactions: [() => [HASH_A]],
+  getBlockHex: [() => [HASH_A]],
+  getChainTips: [() => []],
+  waitForNewBlock: [() => [1000], () => [1000, {}], () => [1000, { currentTip: HASH_A }]],
+  waitForBlockHeight: [() => [1, 1000]],
   getRawTransaction: [() => [HASH_A], () => [HASH_A, {}]],
   getRawTransactionVerbose: [() => [HASH_A], () => [HASH_A, {}]],
+  getMempoolInfo: [() => []],
+  getRawMempool: [() => []],
+  getRawMempoolVerbose: [() => []],
+  getRawMempoolSequence: [() => []],
+  getTxSpendingPrevout: [() => [[{ txid: HASH_A, vout: 0 }]]],
   getMempoolEntry: [() => [HASH_A]],
   getTxOut: [() => [HASH_A, 0], () => [HASH_A, 0, {}]],
   getConfirmationTarget: [() => [1n], () => [1n, {}]],
@@ -105,6 +116,7 @@ const CASES: { readonly [K in keyof Builders]: readonly (() => Parameters<Builde
   verifyDataPqcHash: [() => [{ ...PROOF }]],
   testMempoolAccept: [() => [[TX_HEX]], () => [[TX_HEX], {}]],
   sendRawTransaction: [() => [TX_HEX], () => [TX_HEX, {}]],
+  submitPackage: [() => [[TX_HEX]], () => [[TX_HEX], {}]],
   getWalletInfo: [() => []],
   getTransaction: [() => [HASH_A]],
   listUnspent: [() => [], () => [{}]],
@@ -141,6 +153,7 @@ const aborted = (): AbortSignal => {
  */
 const SAMPLES: Readonly<Record<string, unknown>> = {
   blockHash: HASH_B,
+  currentTip: HASH_B,
   includeMempool: false,
   securityLevel: 'maximum',
   mergeMiningPct: 0.5,
@@ -420,7 +433,11 @@ describe('nested objects and arrays', () => {
   })
 })
 
-/** A FakeNode reply after `ms`: the chain check as regtest, any other call a node error, so every call is sent. */
+/**
+ * A FakeNode reply after `ms`: the chain check as regtest, any other call a
+ * node error, so every call is sent. The error is -8, which qbit Core raises
+ * before a method acts, so even submitpackage's is the node's definite answer.
+ */
 function slowNode(node: FakeNode, ms: number): void {
   const chain = chainResults('regtest')
   node.handler = (request, response) => {
@@ -428,7 +445,7 @@ function slowNode(node: FakeNode, ms: number): void {
     const reply = (call: { id: unknown; method: string }): string =>
       Object.hasOwn(chain, call.method)
         ? `{"jsonrpc":"2.0","result":${chain[call.method]!},"id":${JSON.stringify(call.id)}}`
-        : `{"jsonrpc":"2.0","error":{"code":-1,"message":"no"},"id":${JSON.stringify(call.id)}}`
+        : `{"jsonrpc":"2.0","error":{"code":-8,"message":"no"},"id":${JSON.stringify(call.id)}}`
     setTimeout(() => {
       response.setHeader('content-type', 'application/json')
       response.end(Array.isArray(parsed) ? `[${parsed.map(reply).join(',')}]` : reply(parsed))

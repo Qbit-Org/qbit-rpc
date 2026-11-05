@@ -1,14 +1,15 @@
 import { assertBits, BITS_PER_QBT, formatBitsPerVbyte, formatQbt } from './amount'
 import { IGNORED_OPTIONS, QBIT_CHAINS, type QbitChain } from './capabilities'
-import { parseJsonLossless, rawDecimal, stringifyRequest } from './json'
+import { JsonNumber, parseJsonLossless, rawDecimal, stringifyRequest } from './json'
 import { argArray, argOptions, keysOf, NO_OPTIONS, ownElements } from './own'
-import { rawTransactionTxid } from './raw-tx'
+import { displayHash, rawTransactionTxid } from './raw-tx'
 import { readNodeVersion } from './version'
 import {
   amount,
   anyInteger,
   array,
   base64,
+  bigUnsigned,
   bitsInteger,
   boolean,
   compact,
@@ -52,13 +53,25 @@ export interface RpcRequest<T> {
   readonly parse: (result: unknown) => T
   /** For `sendrawtransaction`: the txid computed from the hex, when it parses. */
   readonly txid?: string
+  /**
+   * For `submitpackage`: one txid per transaction, in package order, computed
+   * from its hex, or `null` where the hex does not parse here (the node is the
+   * judge of that, as for `sendrawtransaction`, so it is sent all the same).
+   */
+  readonly txids?: readonly (string | null)[]
+  /**
+   * For a long poll (`waitfornewblock`, `waitforblockheight`, `waitforblock`):
+   * how long the node holds the request before it answers, in milliseconds.
+   * The client's deadline must be at least this plus `LONG_POLL_MARGIN_MS`.
+   */
+  readonly waitMs?: number
 }
 
 function request<T>(
   method: string,
   params: readonly unknown[],
   parse: (result: unknown) => T,
-  txid?: string
+  extras: Pick<RpcRequest<T>, 'txid' | 'txids' | 'waitMs'> = {}
 ): RpcRequest<T> {
   // Trailing omitted arguments are dropped; omitted ones in between become
   // null, which qbit Core reads as "use the default".
@@ -66,7 +79,7 @@ function request<T>(
   while (trimmed.length > 0 && trimmed[trimmed.length - 1] === undefined) trimmed.pop()
   const positional = trimmed.map(value => (value === undefined ? null : value))
   // Without a prototype, like every object a result holds: a txid left out reads as undefined.
-  return Object.freeze(compact<RpcRequest<T>>({ method, params: positional, parse, txid }))
+  return Object.freeze(compact<RpcRequest<T>>({ method, params: positional, parse, ...extras }))
 }
 
 // ---------------------------------------------------------------------------
@@ -382,36 +395,38 @@ export interface BlockHeader {
   readonly nextBlockHash?: string
 }
 
-function parseBlockHeader(requestedHash: string): (value: unknown) => BlockHeader {
-  return value => {
-    const o = object(value, R)
-    const header = compact<BlockHeader>({
-      hash: field(o, 'hash', R, hash),
-      confirmations: field(o, 'confirmations', R, integer(-1, Number.MAX_SAFE_INTEGER)),
-      height: field(o, 'height', R, nonNegativeInteger),
-      version: field(o, 'version', R, int32),
-      versionHex: field(o, 'versionHex', R, hex(4)),
-      merkleRoot: field(o, 'merkleroot', R, hash),
-      time: field(o, 'time', R, uint32),
-      medianTime: field(o, 'mediantime', R, nonNegativeInteger),
-      nonce: field(o, 'nonce', R, uint32),
-      bits: field(o, 'bits', R, hex(4)),
-      target: field(o, 'target', R, hex(32)),
-      difficulty: field(o, 'difficulty', R, finite(0)),
-      chainwork: field(o, 'chainwork', R, hex(32)),
-      nTx: field(o, 'nTx', R, nonNegativeInteger),
-      previousBlockHash: optional(o, 'previousblockhash', R, hash),
-      nextBlockHash: optional(o, 'nextblockhash', R, hash),
-    })
-    if (header.hash !== requestedHash) throw new ResultIssue(`${R}.hash`, 'the requested block hash')
-    if ((header.version >>> 0).toString(16).padStart(8, '0') !== header.versionHex) {
-      throw new ResultIssue(`${R}.versionHex`, 'the hex form of version')
-    }
-    if ((header.height === 0) !== (header.previousBlockHash === undefined)) {
-      throw new ResultIssue(`${R}.previousblockhash`, 'a previous block hash exactly when height is above 0')
-    }
-    return header
+/** The header's fields, as `getblockheader` and `getblock` both print them, checked against the requested hash. */
+function blockHeaderFields(o: JsonObject, requestedHash: string): BlockHeader {
+  const header = compact<BlockHeader>({
+    hash: field(o, 'hash', R, hash),
+    confirmations: field(o, 'confirmations', R, integer(-1, Number.MAX_SAFE_INTEGER)),
+    height: field(o, 'height', R, nonNegativeInteger),
+    version: field(o, 'version', R, int32),
+    versionHex: field(o, 'versionHex', R, hex(4)),
+    merkleRoot: field(o, 'merkleroot', R, hash),
+    time: field(o, 'time', R, uint32),
+    medianTime: field(o, 'mediantime', R, nonNegativeInteger),
+    nonce: field(o, 'nonce', R, uint32),
+    bits: field(o, 'bits', R, hex(4)),
+    target: field(o, 'target', R, hex(32)),
+    difficulty: field(o, 'difficulty', R, finite(0)),
+    chainwork: field(o, 'chainwork', R, hex(32)),
+    nTx: field(o, 'nTx', R, nonNegativeInteger),
+    previousBlockHash: optional(o, 'previousblockhash', R, hash),
+    nextBlockHash: optional(o, 'nextblockhash', R, hash),
+  })
+  if (header.hash !== requestedHash) throw new ResultIssue(`${R}.hash`, 'the requested block hash')
+  if ((header.version >>> 0).toString(16).padStart(8, '0') !== header.versionHex) {
+    throw new ResultIssue(`${R}.versionHex`, 'the hex form of version')
   }
+  if ((header.height === 0) !== (header.previousBlockHash === undefined)) {
+    throw new ResultIssue(`${R}.previousblockhash`, 'a previous block hash exactly when height is above 0')
+  }
+  return header
+}
+
+function parseBlockHeader(requestedHash: string): (value: unknown) => BlockHeader {
+  return value => blockHeaderFields(object(value, R), requestedHash)
 }
 
 /** A decoded transaction, as `getrawtransaction` with verbosity 1 returns it. */
@@ -505,20 +520,31 @@ function parseOutput(value: unknown, path: string): TransactionOutput {
   })
 }
 
+/** The fields qbit Core's `TxToUniv` prints for `getrawtransaction` and for each of `getblock`'s transactions. */
+function transactionFields(o: JsonObject, path: string): BlockTransaction {
+  const tx = {
+    txid: field(o, 'txid', path, hash),
+    hash: field(o, 'hash', path, hash),
+    version: field(o, 'version', path, uint32),
+    size: field(o, 'size', path, nonNegativeInteger),
+    vsize: field(o, 'vsize', path, nonNegativeInteger),
+    weight: field(o, 'weight', path, nonNegativeInteger),
+    locktime: field(o, 'locktime', path, uint32),
+    vin: field(o, 'vin', path, (v, p) => array(v, p, parseInput)),
+    vout: field(o, 'vout', path, (v, p) => array(v, p, parseOutput)),
+    hex: field(o, 'hex', path, hex()),
+  }
+  tx.vout.forEach((output, index) => {
+    if (output.n !== index) throw new ResultIssue(`${path}.vout[${index}].n`, `${index}`)
+  })
+  return tx
+}
+
 function parseDecodedTransaction(requestedTxid: string): (value: unknown) => DecodedTransaction {
   return value => {
     const o = object(value, R)
     const tx = compact<DecodedTransaction>({
-      txid: field(o, 'txid', R, hash),
-      hash: field(o, 'hash', R, hash),
-      version: field(o, 'version', R, uint32),
-      size: field(o, 'size', R, nonNegativeInteger),
-      vsize: field(o, 'vsize', R, nonNegativeInteger),
-      weight: field(o, 'weight', R, nonNegativeInteger),
-      locktime: field(o, 'locktime', R, uint32),
-      vin: field(o, 'vin', R, (v, p) => array(v, p, parseInput)),
-      vout: field(o, 'vout', R, (v, p) => array(v, p, parseOutput)),
-      hex: field(o, 'hex', R, hex()),
+      ...transactionFields(o, R),
       blockHash: optional(o, 'blockhash', R, hash),
       confirmations: optional(o, 'confirmations', R, nonNegativeInteger),
       blockTime: optional(o, 'blocktime', R, nonNegativeInteger),
@@ -526,11 +552,171 @@ function parseDecodedTransaction(requestedTxid: string): (value: unknown) => Dec
       inActiveChain: optional(o, 'in_active_chain', R, boolean),
     })
     if (tx.txid !== requestedTxid) throw new ResultIssue(`${R}.txid`, 'the requested txid')
-    tx.vout.forEach((output, index) => {
-      if (output.n !== index) throw new ResultIssue(`${R}.vout[${index}].n`, `${index}`)
-    })
     return tx
   }
+}
+
+/** One transaction of {@link BlockWithTransactions}: `getrawtransaction`'s fields, without those about its block. */
+export interface BlockTransaction extends Omit<
+  DecodedTransaction,
+  'blockHash' | 'confirmations' | 'blockTime' | 'time' | 'inActiveChain'
+> {
+  /** Absent for a coinbase transaction, and when the block's undo data is not available (pruned). */
+  readonly feeBits?: bigint
+}
+
+/** `getblock` with verbosity 1: the header's fields, the block's sizes and its txids. */
+export interface Block extends BlockHeader {
+  readonly strippedSize: number
+  readonly size: number
+  readonly weight: number
+  /** The block's txids, the coinbase first. */
+  readonly tx: readonly string[]
+}
+
+/** `getblock` with verbosity 2: as {@link Block}, with each transaction decoded. */
+export interface BlockWithTransactions extends Omit<Block, 'tx'> {
+  readonly tx: readonly BlockTransaction[]
+}
+
+function parseBlock<T>(
+  requestedHash: string,
+  item: (value: unknown, path: string) => T
+): (value: unknown) => Omit<Block, 'tx'> & { readonly tx: readonly T[] } {
+  return value => {
+    const o = object(value, R)
+    const block = compact<Omit<Block, 'tx'> & { readonly tx: readonly T[] }>({
+      ...blockHeaderFields(o, requestedHash),
+      strippedSize: field(o, 'strippedsize', R, nonNegativeInteger),
+      size: field(o, 'size', R, nonNegativeInteger),
+      weight: field(o, 'weight', R, nonNegativeInteger),
+      tx: field(o, 'tx', R, (v, p) => array(v, p, item)),
+    })
+    if (block.tx.length !== block.nTx) throw new ResultIssue(`${R}.tx`, `nTx (${block.nTx}) entries`)
+    return block
+  }
+}
+
+function parseBlockTransaction(value: unknown, path: string): BlockTransaction {
+  const o = object(value, path)
+  return compact<BlockTransaction>({
+    ...transactionFields(o, path),
+    feeBits: optional(o, 'fee', path, amount),
+  })
+}
+
+/** A serialized block's header. Its hash is what `getblock` looks the block up by; an AuxPoW proof follows it. */
+const BLOCK_HEADER_BYTES = 80
+
+/** The hash of a serialized block's header, in display byte order, or undefined when the hex is too short to hold one. */
+function serializedBlockHash(blockHex: string): string | undefined {
+  if (blockHex.length < BLOCK_HEADER_BYTES * 2) return undefined
+  return displayHash(Buffer.from(blockHex.slice(0, BLOCK_HEADER_BYTES * 2), 'hex'))
+}
+
+/**
+ * `getchaintips`'s status (src/rpc/blockchain.cpp): `unknown` is what qbit Core
+ * prints when it has no other. Open: a later qbit Core may add one, and the
+ * entry keeps its meaning.
+ */
+export type ChainTipStatus = 'invalid' | 'headers-only' | 'valid-headers' | 'valid-fork' | 'active' | 'unknown'
+const CHAIN_TIP_STATUSES: readonly ChainTipStatus[] = [
+  'invalid',
+  'headers-only',
+  'valid-headers',
+  'valid-fork',
+  'active',
+  'unknown',
+]
+
+/** One `getchaintips` entry. */
+export interface ChainTip {
+  readonly height: number
+  readonly hash: string
+  /** 0 for the active chain's tip; otherwise how many blocks connect this tip to the active chain. */
+  readonly branchLen: number
+  readonly status: ChainTipStatus | (string & {})
+}
+
+/** qbit Core always reports the active tip, once: a reply without it says nothing about the chain. */
+function parseChainTips(value: unknown): ChainTip[] {
+  const tips = array(value, R, (entry, path): ChainTip => {
+    const o = object(entry, path)
+    return compact<ChainTip>({
+      height: field(o, 'height', path, nonNegativeInteger),
+      hash: field(o, 'hash', path, hash),
+      branchLen: field(o, 'branchlen', path, nonNegativeInteger),
+      status: field(o, 'status', path, openOneOf(CHAIN_TIP_STATUSES)),
+    })
+  })
+  const active = tips.flatMap((tip, index) => (tip.status === 'active' ? [index] : []))
+  if (active.length !== 1) throw new ResultIssue(R, "exactly one entry with status 'active'")
+  tips.forEach((tip, index) => {
+    if ((tip.branchLen === 0) !== (index === active[0])) {
+      throw new ResultIssue(`${R}[${index}].branchlen`, "0 exactly for the entry with status 'active'")
+    }
+  })
+  return tips
+}
+
+/** A block by its hash and height: what `waitfornewblock` and `waitforblockheight` return. */
+export interface BlockRef {
+  readonly hash: string
+  readonly height: number
+}
+
+function parseBlockRef(value: unknown): BlockRef {
+  const o = object(value, R)
+  return compact<BlockRef>({ hash: field(o, 'hash', R, hash), height: field(o, 'height', R, nonNegativeInteger) })
+}
+
+/**
+ * How much longer than a long poll's own wait its deadline must run, for the
+ * wait for a request slot, the cookie read and the round trip. A 34 s wait on
+ * regtest answered in 34.007 s.
+ */
+export const LONG_POLL_MARGIN_MS = 10_000
+/** The longest long poll: with the margin, the longest deadline a call can have. */
+const MAX_LONG_POLL_WAIT_MS = 3_600_000 - LONG_POLL_MARGIN_MS
+
+/**
+ * The long polls qbit Core v1.0.0 has, and where each takes its wait in ms
+ * among its positional params (src/rpc/blockchain.cpp). Typed or through
+ * `call()`, the client bounds them by that wait.
+ */
+const LONG_POLL_WAIT_PARAM: Readonly<Record<string, number>> = Object.freeze({
+  waitfornewblock: 0,
+  waitforblockheight: 1,
+  waitforblock: 1,
+})
+
+/** Whether `method` is one of qbit Core v1.0.0's long polls, however its request was built. */
+export function isLongPoll(method: string): boolean {
+  return Object.hasOwn(LONG_POLL_WAIT_PARAM, method)
+}
+
+/** qbit Core reads 0 or no timeout as a wait with no end, which outlives any deadline and holds a node worker meanwhile. */
+function argWaitMs(value: unknown, name = 'waitMs'): number {
+  return argInteger(value, name, 1, MAX_LONG_POLL_WAIT_MS)
+}
+
+/**
+ * The long poll's params with its wait set to `waitMs`: what the client sends
+ * when its deadline has less time left than the request's own wait.
+ */
+export function longPollParams(request: RpcRequest<unknown>, waitMs: number): unknown[] {
+  const params = [...request.params]
+  params[LONG_POLL_WAIT_PARAM[request.method]!] = waitMs
+  return params
+}
+
+/**
+ * Whether a long poll asks the same again when sent again. `waitfornewblock`
+ * without a tip waits from the tip when the node runs it, so a retry would
+ * wait past a block found since the first attempt: it is not retried.
+ */
+export function longPollRetryable(request: RpcRequest<unknown>): boolean {
+  return request.method !== 'waitfornewblock' || (request.params[1] !== undefined && request.params[1] !== null)
 }
 
 /** `getmempoolentry`. Sizes are in vbytes; qbit Core does not discount witness data. */
@@ -564,33 +750,133 @@ export interface MempoolEntry {
   readonly unbroadcast: boolean
 }
 
-function parseMempoolEntry(value: unknown): MempoolEntry {
-  const o = object(value, R)
-  const f = field(o, 'fees', R, object)
-  const fp = `${R}.fees`
+function parseMempoolEntry(value: unknown, path = R): MempoolEntry {
+  const o = object(value, path)
+  const f = field(o, 'fees', path, object)
+  const fp = `${path}.fees`
   const count = integer(1, Number.MAX_SAFE_INTEGER)
   const txids = (v: unknown, p: string): string[] => array(v, p, hash)
   return compact<MempoolEntry>({
-    vsize: field(o, 'vsize', R, nonNegativeInteger),
-    weight: field(o, 'weight', R, nonNegativeInteger),
-    time: field(o, 'time', R, nonNegativeInteger),
-    height: field(o, 'height', R, nonNegativeInteger),
-    descendantCount: field(o, 'descendantcount', R, count),
-    descendantSize: field(o, 'descendantsize', R, nonNegativeInteger),
-    ancestorCount: field(o, 'ancestorcount', R, count),
-    ancestorSize: field(o, 'ancestorsize', R, nonNegativeInteger),
-    wtxid: field(o, 'wtxid', R, hash),
+    vsize: field(o, 'vsize', path, nonNegativeInteger),
+    weight: field(o, 'weight', path, nonNegativeInteger),
+    time: field(o, 'time', path, nonNegativeInteger),
+    height: field(o, 'height', path, nonNegativeInteger),
+    descendantCount: field(o, 'descendantcount', path, count),
+    descendantSize: field(o, 'descendantsize', path, nonNegativeInteger),
+    ancestorCount: field(o, 'ancestorcount', path, count),
+    ancestorSize: field(o, 'ancestorsize', path, nonNegativeInteger),
+    wtxid: field(o, 'wtxid', path, hash),
     fees: compact<MempoolEntry['fees']>({
       baseBits: field(f, 'base', fp, amount),
       modifiedBits: field(f, 'modified', fp, signedAmount),
       ancestorBits: field(f, 'ancestor', fp, signedAmount),
       descendantBits: field(f, 'descendant', fp, signedAmount),
     }),
-    depends: field(o, 'depends', R, txids),
-    spentBy: field(o, 'spentby', R, txids),
-    bip125Replaceable: optional(o, 'bip125-replaceable', R, boolean),
-    unbroadcast: field(o, 'unbroadcast', R, boolean),
+    depends: field(o, 'depends', path, txids),
+    spentBy: field(o, 'spentby', path, txids),
+    bip125Replaceable: optional(o, 'bip125-replaceable', path, boolean),
+    unbroadcast: field(o, 'unbroadcast', path, boolean),
   })
+}
+
+/** `getmempoolinfo`. Fee rates are in bits per 1,000 vbytes. */
+export interface MempoolInfo {
+  /** True once the attempt to load the saved mempool has finished. */
+  readonly loaded: boolean
+  /** Transactions in the mempool. */
+  readonly size: number
+  /** Their total vsize. */
+  readonly bytes: number
+  /** The memory the mempool uses. */
+  readonly usage: number
+  readonly totalFeeBits: bigint
+  /** The most memory it may use. */
+  readonly maxMempool: number
+  /** The fee floor: the higher of the mempool's current minimum and `minRelayTxFeeBitsPerKvB`. */
+  readonly mempoolMinFeeBitsPerKvB: bigint
+  readonly minRelayTxFeeBitsPerKvB: bigint
+  readonly incrementalRelayFeeBitsPerKvB: bigint
+  readonly unbroadcastCount: number
+  /** Deprecated by qbit Core, which still reports it in v1.0.0. */
+  readonly fullRbf?: boolean
+  readonly permitBareMultisig: boolean
+  readonly maxDataCarrierSize: number
+}
+
+function parseMempoolInfo(value: unknown): MempoolInfo {
+  const o = object(value, R)
+  return compact<MempoolInfo>({
+    loaded: field(o, 'loaded', R, boolean),
+    size: field(o, 'size', R, nonNegativeInteger),
+    bytes: field(o, 'bytes', R, nonNegativeInteger),
+    usage: field(o, 'usage', R, nonNegativeInteger),
+    totalFeeBits: field(o, 'total_fee', R, amount),
+    maxMempool: field(o, 'maxmempool', R, nonNegativeInteger),
+    mempoolMinFeeBitsPerKvB: field(o, 'mempoolminfee', R, amount),
+    minRelayTxFeeBitsPerKvB: field(o, 'minrelaytxfee', R, amount),
+    incrementalRelayFeeBitsPerKvB: field(o, 'incrementalrelayfee', R, amount),
+    unbroadcastCount: field(o, 'unbroadcastcount', R, nonNegativeInteger),
+    fullRbf: optional(o, 'fullrbf', R, boolean),
+    permitBareMultisig: field(o, 'permitbaremultisig', R, boolean),
+    maxDataCarrierSize: field(o, 'maxdatacarriersize', R, nonNegativeInteger),
+  })
+}
+
+/** `getrawmempool` with `mempool_sequence`. */
+export interface MempoolSnapshot {
+  readonly txids: readonly string[]
+  /** An unsigned 64-bit counter, as in the ZMQ `sequence` topic's mempool events. */
+  readonly mempoolSequence: bigint
+}
+
+function parseMempoolSnapshot(value: unknown): MempoolSnapshot {
+  const o = object(value, R)
+  return compact<MempoolSnapshot>({
+    txids: field(o, 'txids', R, (v, p) => array(v, p, hash)),
+    mempoolSequence: field(o, 'mempool_sequence', R, bigUnsigned(0xffff_ffff_ffff_ffffn)),
+  })
+}
+
+/**
+ * An object keyed by hashes, each value parsed, without a prototype like every
+ * object a result holds. Only a hash can be a key, so none reaches
+ * `Object.prototype`.
+ */
+function hashKeyed<T>(value: unknown, path: string, parse: (value: unknown, path: string) => T): Record<string, T> {
+  const keyed = Object.create(null) as Record<string, T>
+  for (const [key, entry] of Object.entries(object(value, path))) {
+    hash(key, `${path}.${key} (its key)`)
+    keyed[key] = parse(entry, `${path}.${key}`)
+  }
+  return keyed
+}
+
+/** One output `gettxspendingprevout` checked. */
+export interface TxSpendingPrevout {
+  readonly txid: string
+  readonly vout: number
+  /** The mempool transaction spending it; absent when none does, which says nothing about the chain. */
+  readonly spendingTxid?: string
+}
+
+function parseTxSpendingPrevouts(outputs: readonly Outpoint[]): (value: unknown) => TxSpendingPrevout[] {
+  return value => {
+    const entries = array(value, R, (entry, path): TxSpendingPrevout => {
+      const o = object(entry, path)
+      return compact<TxSpendingPrevout>({
+        txid: field(o, 'txid', path, hash),
+        vout: field(o, 'vout', path, uint32),
+        spendingTxid: optional(o, 'spendingtxid', path, hash),
+      })
+    })
+    if (entries.length !== outputs.length) throw new ResultIssue(R, `${outputs.length} entries, one per output`)
+    entries.forEach((entry, index) => {
+      if (entry.txid !== outputs[index]!.txid || entry.vout !== outputs[index]!.vout) {
+        throw new ResultIssue(`${R}[${index}]`, 'the output passed at that position')
+      }
+    })
+    return entries
+  }
 }
 
 /** `gettxout`: an unspent output. */
@@ -854,6 +1140,161 @@ function parseMempoolAcceptance(rawTxs: readonly string[]): (value: unknown) => 
     })
     return entries
   }
+}
+
+/** One transaction's outcome in {@link PackageSubmission}. */
+export interface PackageTransactionResult {
+  readonly txid: string
+  /** The wtxid of a transaction with this txid and another witness in the mempool: the submitted one was ignored. */
+  readonly otherWtxid?: string
+  readonly vsize?: number
+  readonly fees?: {
+    readonly baseBits: bigint
+    /** Absent when the transaction was already in the mempool. */
+    readonly effectiveFeeRateBitsPerKvB?: bigint
+    /** wtxids of the transactions the effective fee rate includes. */
+    readonly effectiveIncludes?: readonly string[]
+  }
+  /** Why the mempool refused this transaction. */
+  readonly error?: string
+}
+
+/**
+ * `submitpackage`. A refusal is a result, not an error, and may be partial:
+ * `packageMsg` other than `success` can come with a parent accepted and its
+ * child refused, so read each transaction's `error`, or the mempool.
+ */
+export interface PackageSubmission {
+  /** `success` when every transaction was accepted or already in the mempool; otherwise the node's text. */
+  readonly packageMsg: string
+  /** By wtxid. Empty, or missing transactions, when the package failed before each was evaluated. */
+  readonly txResults: Readonly<Record<string, PackageTransactionResult>>
+  /** txids of the mempool transactions this package replaced. */
+  readonly replacedTransactions?: readonly string[]
+}
+
+function parsePackageTransaction(value: unknown, path: string): PackageTransactionResult {
+  const o = object(value, path)
+  return compact<PackageTransactionResult>({
+    txid: field(o, 'txid', path, hash),
+    otherWtxid: optional(o, 'other-wtxid', path, hash),
+    vsize: optional(o, 'vsize', path, nonNegativeInteger),
+    fees: optional(o, 'fees', path, (v, fp) => {
+      const f = object(v, fp)
+      return compact<NonNullable<PackageTransactionResult['fees']>>({
+        baseBits: field(f, 'base', fp, amount),
+        effectiveFeeRateBitsPerKvB: optional(f, 'effective-feerate', fp, amount),
+        effectiveIncludes: optional(f, 'effective-includes', fp, (w, wp) => array(w, wp, hash)),
+      })
+    }),
+    error: optional(o, 'error', path, string),
+  })
+}
+
+function parsePackageSubmission(
+  rawTxs: readonly string[],
+  txids: readonly (string | null)[]
+): (value: unknown) => PackageSubmission {
+  return value => {
+    const o = object(value, R)
+    const submission = compact<PackageSubmission>({
+      packageMsg: field(o, 'package_msg', R, string),
+      txResults: field(o, 'tx-results', R, (v, p) => hashKeyed(v, p, parsePackageTransaction)),
+      replacedTransactions: optional(o, 'replaced-transactions', R, (v, p) => array(v, p, hash)),
+    })
+    const results = Object.entries(submission.txResults)
+    // Only when every hex parsed does `txids` name the whole package.
+    if (!txids.includes(null)) {
+      for (const [wtxid, result] of results) {
+        if (!txids.includes(result.txid)) {
+          throw new ResultIssue(`${R}.tx-results.${wtxid}.txid`, 'the txid of a transaction in the package')
+        }
+      }
+    }
+    if (submission.packageMsg === 'success') {
+      if (results.length !== rawTxs.length) {
+        throw new ResultIssue(`${R}.tx-results`, `${rawTxs.length} entries for a package that succeeded`)
+      }
+      for (const [wtxid, result] of results) {
+        if (result.error !== undefined) {
+          throw new ResultIssue(`${R}.tx-results.${wtxid}.error`, 'no error in a package that succeeded')
+        }
+      }
+    }
+    return submission
+  }
+}
+
+/** A package's transactions: the checks `testmempoolaccept` and `submitpackage` share. */
+function packageParam(rawTxs: unknown): string[] {
+  if (!Array.isArray(rawTxs) || rawTxs.length < 1 || rawTxs.length > MAX_PACKAGE_COUNT) {
+    throw new RangeError(`rawTxs must be an array of 1 to ${MAX_PACKAGE_COUNT} transactions`)
+  }
+  return ownElements(rawTxs, 'rawTxs').map((tx, i) => argHex(tx, `rawTxs[${i}]`))
+}
+
+/** The txid computed from each of a package's hex, in package order, or `null` where it does not parse. */
+function packageTxids(rawTxs: readonly unknown[]): (string | null)[] {
+  return rawTxs.map(tx => (typeof tx === 'string' ? (rawTransactionTxid(tx) ?? null) : null))
+}
+
+/**
+ * The errors qbit Core v1.0.0's `submitpackage` raises before it hands any
+ * transaction to the mempool, by code, and for -25 by message
+ * (src/rpc/mempool.cpp at v1.0.0, and the RPC server around it):
+ *
+ * - -28 `RPC_IN_WARMUP`: the server is starting, before any method runs
+ *   (`CRPCTable::execute`, src/rpc/server.cpp:497-502).
+ * - -3 `RPC_TYPE_ERROR`: a parameter of the wrong type (`RPCHelpMan::HandleRequest`,
+ *   src/rpc/util.cpp:770-783; a `UniValue::type_error` from `get_array` or
+ *   `get_str`, src/rpc/server.cpp:525-526), or a `maxfeerate` or
+ *   `maxburnamount` that is not an amount (`AmountFromValue`, src/rpc/util.cpp:191-201,
+ *   from mempool.cpp:994 and 1002).
+ * - -8 `RPC_INVALID_PARAMETER`: no transaction or more than 25
+ *   (mempool.cpp:988-991), or a `maxfeerate` of 1 QBT/kvB or more
+ *   (`ParseFeeRate`, src/rpc/util.cpp:206).
+ * - -22 `RPC_DESERIALIZATION_ERROR`: a transaction that does not decode
+ *   (mempool.cpp:1008-1011).
+ * - -25 `RPC_TRANSACTION_ERROR` with `MAX_BURN_EXCEEDED`'s text, an output
+ *   burning more than `maxburnamount` (mempool.cpp:1013-1017), or the
+ *   package-topology text (mempool.cpp:1022-1024).
+ *
+ * Every other error can come after `ProcessNewPackage` (mempool.cpp:1029) has
+ * accepted part of the package: -25 with `PCKG_MEMPOOL_ERROR`'s reason
+ * (mempool.cpp:1044-1049) or `transaction broadcast failed: ... (N
+ * transactions were broadcast successfully)`, as -25, -26 or -27 by its
+ * `TransactionError` (mempool.cpp:1068-1075), and -1 from a failed
+ * `CHECK_NONFATAL` (mempool.cpp:1038-1040 and 1055), which the RPC server
+ * reports as `RPC_MISC_ERROR` (src/rpc/server.cpp:527-528). -1 also reports a
+ * wrong number of parameters, before the method runs, but it is not told
+ * apart by its text: a typed call never sends one.
+ */
+const SUBMIT_PACKAGE_REFUSALS: readonly { readonly code: number; readonly message?: string }[] = [
+  // The JSON-RPC layer's, before any method runs: a parse error, an invalid
+  // request, a method not found, invalid params.
+  { code: -32700 },
+  { code: -32600 },
+  { code: -32601 },
+  { code: -32602 },
+  { code: -28 },
+  { code: -3 },
+  { code: -8 },
+  { code: -22 },
+  { code: -25, message: 'Unspendable output exceeds maximum configured by user (maxburnamount)' },
+  { code: -25, message: 'package topology disallowed. not child-with-parents or parents depend on each other.' },
+]
+
+/**
+ * Whether the node's error to `method` means it did nothing, so the call's
+ * outcome is definite. `submitpackage` can raise errors after accepting part
+ * of the package: only those of SUBMIT_PACKAGE_REFUSALS come before. For
+ * every other method, an error reply is the node's refusal.
+ */
+export function refusedBeforeActing(method: string, code: number, message: string): boolean {
+  if (method !== 'submitpackage') return true
+  return SUBMIT_PACKAGE_REFUSALS.some(
+    refusal => refusal.code === code && (refusal.message === undefined || refusal.message === message)
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -1867,7 +2308,7 @@ function outputsParam(value: unknown, name: string): Record<string, unknown>[] {
   })
 }
 
-/** `lockunspent`'s outputs: a non-empty array of outpoints, each as `{ txid, vout }`. */
+/** The outputs of `lockunspent` and `gettxspendingprevout`: a non-empty array of outpoints, each as `{ txid, vout }`. */
 function outpointsParam(value: unknown): { txid: string; vout: number }[] {
   if (!Array.isArray(value) || value.length === 0) {
     throw new RangeError('outputs must be a non-empty array of { txid, vout }')
@@ -1891,15 +2332,21 @@ function outpointsParam(value: unknown): { txid: string; vout: number }[] {
 export const requests = {
   /**
    * Any allowlisted method, untyped: the result keeps every number as a
-   * `JsonNumber`. For `sendrawtransaction` the txid is computed from the hex,
-   * as the typed method does, so an unknown outcome still names it.
+   * `JsonNumber`. For `sendrawtransaction` and `submitpackage` the txids are
+   * computed from the hex, as the typed methods do, so an unknown outcome still
+   * names them. For a long poll (`waitfornewblock`, `waitforblockheight`,
+   * `waitforblock`) the wait is read from its timeout parameter, which must be
+   * 1 to 3,590,000 ms: absent or 0, the node would wait with no end, so it is a
+   * `RangeError`. The call's deadline is then at least the wait plus 10 s, as
+   * for the typed long polls.
    *
    * The params are serialized here, once, and the request holds them as they
    * will be sent: parsed back without loss, every number a `JsonNumber` and
    * every object without a prototype. So a `toJSON` or a getter in them runs
-   * once, and cannot pass the check below and then send something else. The
-   * depth limit counts the request envelope they are sent in, as `call()` sends
-   * them; `batch()` refuses an entry its array takes over the limit.
+   * once, and cannot pass the check below and then send something else; the
+   * txids and the wait are read from them too. The depth limit counts the
+   * request envelope they are sent in, as `call()` sends them; `batch()`
+   * refuses an entry its array takes over the limit.
    */
   raw(method: string, params: readonly unknown[] = []): RpcRequest<unknown> {
     argString(method, 'method', { nonEmpty: true })
@@ -1920,7 +2367,32 @@ export const requests = {
     const parse = (result: unknown): unknown => result
     const hexTx = list[0]
     const txid = method === 'sendrawtransaction' && typeof hexTx === 'string' ? rawTransactionTxid(hexTx) : undefined
-    return Object.freeze(compact<RpcRequest<unknown>>({ method, params: list, parse, txid }))
+    const txids =
+      method === 'submitpackage' && Array.isArray(hexTx) && hexTx.length > 0 ? packageTxids(hexTx) : undefined
+    // A long poll is bounded by its own wait, as a typed one is; without one the node waits for ever.
+    const waitParam = Object.hasOwn(LONG_POLL_WAIT_PARAM, method) ? LONG_POLL_WAIT_PARAM[method]! : undefined
+    let waitMs: number | undefined
+    if (waitParam !== undefined) {
+      // As sent: a number is a JsonNumber here, and the snapshot has no holes.
+      const sent = waitParam < list.length ? list[waitParam] : undefined
+      const wait = sent instanceof JsonNumber ? sent.toNumber() : sent
+      if (wait === undefined || wait === null || wait === 0) {
+        throw new RangeError(
+          `${method} without a timeout, or with 0, waits with no end and holds a qbitd worker meanwhile: pass a timeout in ms as params[${waitParam}], from 1 to ${MAX_LONG_POLL_WAIT_MS}`
+        )
+      }
+      waitMs = argWaitMs(wait, `params[${waitParam}] (${method}'s timeout)`)
+    }
+    return Object.freeze(
+      compact<RpcRequest<unknown>>({
+        method,
+        params: list,
+        parse,
+        txid,
+        txids: txids === undefined ? undefined : Object.freeze(txids),
+        waitMs,
+      })
+    )
   },
 
   getBlockchainInfo: (): RpcRequest<BlockchainInfo> => request('getblockchaininfo', [], parseBlockchainInfo),
@@ -1933,6 +2405,71 @@ export const requests = {
   getBlockHeader(blockHash: string): RpcRequest<BlockHeader> {
     const requested = argHash(blockHash, 'blockHash')
     return request('getblockheader', [requested, true], parseBlockHeader(requested))
+  },
+  /**
+   * `getblock` at verbosity 1: the header's fields, sizes and txids, checked
+   * against `blockHash`. `RpcError` -5 for an unknown block; -1 for one pruned,
+   * or whose witness data was pruned.
+   */
+  getBlock(blockHash: string): RpcRequest<Block> {
+    const requested = argHash(blockHash, 'blockHash')
+    return request('getblock', [requested, 1], parseBlock(requested, hash))
+  },
+  /**
+   * `getblock` at verbosity 2: as {@link requests.getBlock}, each transaction
+   * decoded. A full block's reply can pass the client's `maxResponseBytes`; see
+   * the package README.
+   */
+  getBlockWithTransactions(blockHash: string): RpcRequest<BlockWithTransactions> {
+    const requested = argHash(blockHash, 'blockHash')
+    return request('getblock', [requested, 2], parseBlock(requested, parseBlockTransaction))
+  },
+  /**
+   * `getblock` at verbosity 0: the block as stored, as hex, its header checked
+   * to hash to `blockHash`. A block whose witness data was pruned comes without
+   * it.
+   */
+  getBlockHex(blockHash: string): RpcRequest<string> {
+    const requested = argHash(blockHash, 'blockHash')
+    return request('getblock', [requested, 0], v => {
+      const returned = hex()(v, R)
+      if (serializedBlockHash(returned) !== requested) throw new ResultIssue(R, 'the requested block')
+      return returned
+    })
+  },
+  /** Every block tip the node knows: the active chain's, once, and those of other branches. */
+  getChainTips: (): RpcRequest<ChainTip[]> => request('getchaintips', [], parseChainTips),
+  /**
+   * Hold the request until the tip differs from `options.currentTip` (left out,
+   * from the tip when the node runs the call: a block found between two calls
+   * is missed, and the client does not retry it) or `waitMs` (1 to 3,590,000)
+   * has passed, then return the tip. A returned tip equal to the one passed
+   * means the wait ran out. A tip that is not the node's returns at once. See
+   * the package README's long polls.
+   */
+  waitForNewBlock(waitMs: number, options?: { readonly currentTip?: string }): RpcRequest<BlockRef> {
+    const o = methodOptions(options, ['currentTip'])
+    const wait = argWaitMs(waitMs)
+    return request(
+      'waitfornewblock',
+      [wait, opt(o['currentTip'], v => argHash(v, 'options.currentTip'))],
+      parseBlockRef,
+      {
+        waitMs: wait,
+      }
+    )
+  },
+  /**
+   * Hold the request until the tip reaches `height` or `waitMs` (1 to
+   * 3,590,000) has passed, then return the tip. A returned height below
+   * `height` means the wait ran out, so it is not refused. See the package
+   * README's long polls.
+   */
+  waitForBlockHeight(height: number, waitMs: number): RpcRequest<BlockRef> {
+    const wait = argWaitMs(waitMs)
+    return request('waitforblockheight', [argInteger(height, 'height', 0, 0x7fff_ffff), wait], parseBlockRef, {
+      waitMs: wait,
+    })
   },
   /**
    * The serialized transaction as hex, checked to hash to `txid`. Without
@@ -1960,6 +2497,24 @@ export const requests = {
       [requested, 1, opt(o['blockHash'], v => argHash(v, 'options.blockHash'))],
       parseDecodedTransaction(requested)
     )
+  },
+  getMempoolInfo: (): RpcRequest<MempoolInfo> => request('getmempoolinfo', [], parseMempoolInfo),
+  /** The txids in the mempool. */
+  getRawMempool: (): RpcRequest<string[]> => request('getrawmempool', [false], v => array(v, R, hash)),
+  /** Every mempool entry, by txid. A full mempool's reply can pass the client's `maxResponseBytes`. */
+  getRawMempoolVerbose: (): RpcRequest<Record<string, MempoolEntry>> =>
+    request('getrawmempool', [true], v => hashKeyed(v, R, parseMempoolEntry)),
+  /** The txids in the mempool and the mempool sequence they stand at, to line up with the ZMQ `sequence` topic. */
+  getRawMempoolSequence: (): RpcRequest<MempoolSnapshot> =>
+    request('getrawmempool', [false, true], parseMempoolSnapshot),
+  /**
+   * Which mempool transaction spends each output, checked against `outputs`,
+   * one entry per output in order. The mempool only: an output spent in a block
+   * and one never spent look alike.
+   */
+  getTxSpendingPrevout(outputs: readonly Outpoint[]): RpcRequest<TxSpendingPrevout[]> {
+    const checked = outpointsParam(outputs)
+    return request('gettxspendingprevout', [checked], parseTxSpendingPrevouts(checked))
   },
   /** Rejects with `RpcError` code -5 when the transaction is not in the mempool. */
   getMempoolEntry: (txid: string): RpcRequest<MempoolEntry> =>
@@ -2043,10 +2598,7 @@ export const requests = {
     rawTxs: readonly string[],
     options?: { readonly maxFeeRateBitsPerKvB?: bigint }
   ): RpcRequest<MempoolAcceptance[]> {
-    if (!Array.isArray(rawTxs) || rawTxs.length < 1 || rawTxs.length > MAX_PACKAGE_COUNT) {
-      throw new RangeError(`rawTxs must be an array of 1 to ${MAX_PACKAGE_COUNT} transactions`)
-    }
-    const txs = ownElements(rawTxs, 'rawTxs').map((tx, i) => argHex(tx, `rawTxs[${i}]`))
+    const txs = packageParam(rawTxs)
     const o = methodOptions(options, ['maxFeeRateBitsPerKvB'])
     return request(
       'testmempoolaccept',
@@ -2081,7 +2633,34 @@ export const requests = {
         if (txid !== undefined && returned !== txid) throw new ResultIssue(R, 'the txid of the submitted transaction')
         return returned
       },
-      txid
+      txid === undefined ? {} : { txid }
+    )
+  },
+  /**
+   * Submit up to 25 signed transactions as one package, parents first and the
+   * child last, so a child's fee can pay for its parents (CPFP). A refusal is
+   * in the result, and may be partial: see {@link PackageSubmission}. A failure
+   * after the request may have reached the node is an `RpcUnknownOutcomeError`
+   * naming the package in `txids`. `maxFeeRateBitsPerKvB` and
+   * `maxBurnAmountBits` are as for {@link requests.sendRawTransaction}, each
+   * transaction checked: 0n as a fee-rate cap is refused.
+   */
+  submitPackage(
+    rawTxs: readonly string[],
+    options?: { readonly maxFeeRateBitsPerKvB?: bigint; readonly maxBurnAmountBits?: bigint }
+  ): RpcRequest<PackageSubmission> {
+    const txs = packageParam(rawTxs)
+    const o = methodOptions(options, ['maxFeeRateBitsPerKvB', 'maxBurnAmountBits'])
+    const txids = packageTxids(txs)
+    return request(
+      'submitpackage',
+      [
+        txs,
+        opt(o['maxFeeRateBitsPerKvB'], v => maxFeeRateParam(v, 'options.maxFeeRateBitsPerKvB')),
+        opt(o['maxBurnAmountBits'], v => qbtParam(v, 'options.maxBurnAmountBits')),
+      ],
+      parsePackageSubmission(txs, txids),
+      { txids: Object.freeze(txids) }
     )
   },
 

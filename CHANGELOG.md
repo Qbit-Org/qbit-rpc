@@ -818,3 +818,57 @@ properties only. The API report is unchanged.
   it, as for the other options, and an unknown key of an entry is refused with
   the key it most likely meant. `extraMethods` is one of the constructor's
   strict keys.
+
+### Chain scanner, mempool and package methods
+
+- Typed, validated methods for explorers and indexers, all reads: `getBlock`,
+  `getBlockWithTransactions` and `getBlockHex` (`getblock` at verbosity 1, 2 and
+  0, checked against the requested hash; a full block's verbosity-2 reply can
+  pass the default 16 MiB `maxResponseBytes`, as a 1.92 MB regtest block's 21.1
+  MB did), `getChainTips`, `getMempoolInfo`, `getRawMempool`,
+  `getRawMempoolVerbose`, `getRawMempoolSequence` and `getTxSpendingPrevout`
+  (a new allowlist entry, checked against the outputs asked about). `getblock`,
+  `getchaintips`, `getmempoolinfo` and `getrawmempool` are also available
+  untyped through `call()`.
+- `waitForNewBlock` and `waitForBlockHeight`, long polls for where ZMQ is not
+  available, allowlisted as reads. `waitMs` is required, as the node
+  reads 0 as a wait with no end. The deadline runs to at least `waitMs` plus 10 s
+  whatever the client's `timeoutMs`, and a call's own `timeoutMs` below `waitMs`
+  plus 10 s is a `RangeError`. Each holds a request slot and a `qbitd` worker for
+  its wait, even after the client gives up, and is refused in a batch.
+- Through `call()` and `requests.raw()`, `waitfornewblock`, `waitforblockheight`
+  and `waitforblock` take their wait from their timeout parameter, with the same
+  deadline and batch rules; a timeout absent or 0 is a `RangeError` that says to
+  pass one.
+- A retried long poll asks the node for what the deadline has left, less the
+  10 s margin, and is not sent when nothing is left. `waitForNewBlock` without
+  `currentTip` is never retried, as the retry would wait from the tip at the
+  retry and miss a block found meanwhile; with `currentTip` it is safe to retry.
+- `submitPackage`, under `broadcast` with side effects, for CPFP: behind the chain
+  guard, never retried, on a fresh connection, with the caps
+  `sendRawTransaction` takes (a fee-rate cap of `0n` refused). A refusal is in
+  the result, and can be partial. A lost reply is an `RpcUnknownOutcomeError`
+  with the optional `txids`, one per transaction in package order, typed or
+  through `call()`: the txid computed from its hex, or `null` for hex that does
+  not parse here, which is sent all the same; `txid` is `sendrawtransaction`'s.
+- The node's error to `submitpackage` is a definite `RpcError` only when qbit
+  Core v1.0.0 raises it before handing any transaction to the mempool: -28,
+  -3, -8, -22, -25 for a burn over `maxburnamount` or a package of another
+  shape, and the JSON-RPC layer's -32700, -32600, -32601 and -32602, before
+  any method runs. Any other (a failed relay after acceptance, a mempool error, a failed
+  internal check) is an `RpcUnknownOutcomeError` with `txids` and that
+  `RpcError` as `cause`.
+- `extraMethods` refuses `submitpackage`, `gettxspendingprevout`,
+  `waitfornewblock` and `waitforblockheight` under any policy but the
+  allowlist's, as for every allowlisted method: `broadcast` with side effects for
+  the first, `read` without for the others. Restating that policy is accepted.
+- `RpcCapabilityError` `reason: 'not_batchable'` covers long polls too.
+  `batch()` reads an entry's `waitMs` as it reads its `method`, `params` and
+  `parse`, as its own property: one held any other way is a `TypeError`.
+- Every new result object has no prototype, as every other result: the
+  chain tips, `BlockRef`, `MempoolSnapshot`, a block and its transactions,
+  and `PackageSubmission` with its `txResults`. `requests.raw()` reads a long
+  poll's wait and `submitpackage`'s txids from the params as they will be
+  sent, so a `toJSON` or a getter cannot change them after the check, and
+  `RpcUnknownOutcomeError` copies `txids` by its own elements: a hole is a
+  `TypeError`.

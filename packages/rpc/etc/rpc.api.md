@@ -69,6 +69,17 @@ export type BatchResults<T extends readonly RpcRequest<unknown>[]> = {
 export const BITS_PER_QBT = 100000000n;
 
 // @public
+export interface Block extends BlockHeader {
+    // (undocumented)
+    readonly size: number;
+    // (undocumented)
+    readonly strippedSize: number;
+    readonly tx: readonly string[];
+    // (undocumented)
+    readonly weight: number;
+}
+
+// @public
 export interface BlockchainInfo {
     // (undocumented)
     readonly automaticPruning?: boolean;
@@ -163,6 +174,25 @@ export interface BlockHeader {
 }
 
 // @public
+export interface BlockRef {
+    // (undocumented)
+    readonly hash: string;
+    // (undocumented)
+    readonly height: number;
+}
+
+// @public
+export interface BlockTransaction extends Omit<DecodedTransaction, 'blockHash' | 'confirmations' | 'blockTime' | 'time' | 'inActiveChain'> {
+    readonly feeBits?: bigint;
+}
+
+// @public
+export interface BlockWithTransactions extends Omit<Block, 'tx'> {
+    // (undocumented)
+    readonly tx: readonly BlockTransaction[];
+}
+
+// @public
 export interface BumpedPsbt {
     readonly errors: readonly string[];
     readonly feeBits: bigint;
@@ -197,6 +227,20 @@ export interface ChainMismatch {
 
 // @public
 export type ChainStatus = 'unconfirmed' | 'confirmed' | 'stale' | 'mismatch' | 'unsupported_version';
+
+// @public
+export interface ChainTip {
+    readonly branchLen: number;
+    // (undocumented)
+    readonly hash: string;
+    // (undocumented)
+    readonly height: number;
+    // (undocumented)
+    readonly status: ChainTipStatus | (string & {});
+}
+
+// @public
+export type ChainTipStatus = 'invalid' | 'headers-only' | 'valid-headers' | 'valid-fork' | 'active' | 'unknown';
 
 // @public
 export interface ConfirmationTarget {
@@ -458,6 +502,36 @@ export interface MempoolEntry {
 }
 
 // @public
+export interface MempoolInfo {
+    readonly bytes: number;
+    readonly fullRbf?: boolean;
+    // (undocumented)
+    readonly incrementalRelayFeeBitsPerKvB: bigint;
+    readonly loaded: boolean;
+    // (undocumented)
+    readonly maxDataCarrierSize: number;
+    readonly maxMempool: number;
+    readonly mempoolMinFeeBitsPerKvB: bigint;
+    // (undocumented)
+    readonly minRelayTxFeeBitsPerKvB: bigint;
+    // (undocumented)
+    readonly permitBareMultisig: boolean;
+    readonly size: number;
+    // (undocumented)
+    readonly totalFeeBits: bigint;
+    // (undocumented)
+    readonly unbroadcastCount: number;
+    readonly usage: number;
+}
+
+// @public
+export interface MempoolSnapshot {
+    readonly mempoolSequence: bigint;
+    // (undocumented)
+    readonly txids: readonly string[];
+}
+
+// @public
 export interface NetworkInfo {
     // (undocumented)
     readonly connections?: number;
@@ -519,6 +593,29 @@ export interface Outpoint {
     readonly txid: string;
     // (undocumented)
     readonly vout: number;
+}
+
+// @public
+export interface PackageSubmission {
+    readonly packageMsg: string;
+    readonly replacedTransactions?: readonly string[];
+    readonly txResults: Readonly<Record<string, PackageTransactionResult>>;
+}
+
+// @public
+export interface PackageTransactionResult {
+    readonly error?: string;
+    // (undocumented)
+    readonly fees?: {
+        readonly baseBits: bigint;
+        readonly effectiveFeeRateBitsPerKvB?: bigint;
+        readonly effectiveIncludes?: readonly string[];
+    };
+    readonly otherWtxid?: string;
+    // (undocumented)
+    readonly txid: string;
+    // (undocumented)
+    readonly vsize?: number;
 }
 
 // @public
@@ -605,6 +702,7 @@ export class QbitRpcClient {
     getBalances(callOptions?: CallOptions): Promise<WalletBalances>;
     // (undocumented)
     getBestBlockHash(callOptions?: CallOptions): Promise<string>;
+    getBlock(blockHash: string, callOptions?: CallOptions): Promise<Block>;
     // (undocumented)
     getBlockchainInfo(callOptions?: CallOptions): Promise<BlockchainInfo>;
     // (undocumented)
@@ -613,6 +711,10 @@ export class QbitRpcClient {
     getBlockHash(height: number, callOptions?: CallOptions): Promise<string>;
     // (undocumented)
     getBlockHeader(blockHash: string, callOptions?: CallOptions): Promise<BlockHeader>;
+    getBlockHex(blockHash: string, callOptions?: CallOptions): Promise<string>;
+    getBlockWithTransactions(blockHash: string, callOptions?: CallOptions): Promise<BlockWithTransactions>;
+    // (undocumented)
+    getChainTips(callOptions?: CallOptions): Promise<ChainTip[]>;
     getConfirmationTarget(valueBits: bigint, options?: {
         readonly securityLevel?: SecurityLevel;
         readonly mergeMiningPct?: number;
@@ -620,6 +722,8 @@ export class QbitRpcClient {
     }, callOptions?: CallOptions): Promise<ConfirmationTarget>;
     // (undocumented)
     getMempoolEntry(txid: string, callOptions?: CallOptions): Promise<MempoolEntry>;
+    // (undocumented)
+    getMempoolInfo(callOptions?: CallOptions): Promise<MempoolInfo>;
     // (undocumented)
     getNetworkInfo(callOptions?: CallOptions): Promise<NetworkInfo>;
     getNewAddress(options?: {
@@ -629,6 +733,10 @@ export class QbitRpcClient {
     getRawChangeAddress(options?: {
         readonly addressType?: AddressType;
     }, callOptions?: CallOptions): Promise<string>;
+    // (undocumented)
+    getRawMempool(callOptions?: CallOptions): Promise<string[]>;
+    getRawMempoolSequence(callOptions?: CallOptions): Promise<MempoolSnapshot>;
+    getRawMempoolVerbose(callOptions?: CallOptions): Promise<Record<string, MempoolEntry>>;
     getRawTransaction(txid: string, options?: {
         readonly blockHash?: string;
     }, callOptions?: CallOptions): Promise<string>;
@@ -640,6 +748,7 @@ export class QbitRpcClient {
     getTxOut(txid: string, vout: number, options?: {
         readonly includeMempool?: boolean;
     }, callOptions?: CallOptions): Promise<TxOut | null>;
+    getTxSpendingPrevout(outputs: readonly Outpoint[], callOptions?: CallOptions): Promise<TxSpendingPrevout[]>;
     // (undocumented)
     getWalletInfo(callOptions?: CallOptions): Promise<WalletInfo>;
     // (undocumented)
@@ -656,6 +765,10 @@ export class QbitRpcClient {
         readonly maxFeeRateBitsPerKvB?: bigint;
         readonly maxBurnAmountBits?: bigint;
     }, callOptions?: CallOptions): Promise<string>;
+    submitPackage(rawTxs: readonly string[], options?: {
+        readonly maxFeeRateBitsPerKvB?: bigint;
+        readonly maxBurnAmountBits?: bigint;
+    }, callOptions?: CallOptions): Promise<PackageSubmission>;
     testMempoolAccept(rawTxs: readonly string[], options?: {
         readonly maxFeeRateBitsPerKvB?: bigint;
     }, callOptions?: CallOptions): Promise<MempoolAcceptance[]>;
@@ -665,6 +778,10 @@ export class QbitRpcClient {
     validateAddress(address: string, callOptions?: CallOptions): Promise<AddressValidation>;
     // (undocumented)
     verifyDataPqcHash(proof: DataPqcHashProof, callOptions?: CallOptions): Promise<DataPqcHashVerification>;
+    waitForBlockHeight(height: number, waitMs: number, callOptions?: CallOptions): Promise<BlockRef>;
+    waitForNewBlock(waitMs: number, options?: {
+        readonly currentTip?: string;
+    }, callOptions?: CallOptions): Promise<BlockRef>;
     // (undocumented)
     walletCreateFundedPsbt(args: WalletCreateFundedPsbtArgs, callOptions?: CallOptions): Promise<FundedPsbt>;
     walletLock(callOptions?: CallOptions): Promise<void>;
@@ -718,12 +835,25 @@ export const requests: {
     getBlockCount: () => RpcRequest<number>;
     getBlockHash: (height: number) => RpcRequest<string>;
     getBlockHeader(blockHash: string): RpcRequest<BlockHeader>;
+    getBlock(blockHash: string): RpcRequest<Block>;
+    getBlockWithTransactions(blockHash: string): RpcRequest<BlockWithTransactions>;
+    getBlockHex(blockHash: string): RpcRequest<string>;
+    getChainTips: () => RpcRequest<ChainTip[]>;
+    waitForNewBlock(waitMs: number, options?: {
+        readonly currentTip?: string;
+    }): RpcRequest<BlockRef>;
+    waitForBlockHeight(height: number, waitMs: number): RpcRequest<BlockRef>;
     getRawTransaction(txid: string, options?: {
         readonly blockHash?: string;
     }): RpcRequest<string>;
     getRawTransactionVerbose(txid: string, options?: {
         readonly blockHash?: string;
     }): RpcRequest<DecodedTransaction>;
+    getMempoolInfo: () => RpcRequest<MempoolInfo>;
+    getRawMempool: () => RpcRequest<string[]>;
+    getRawMempoolVerbose: () => RpcRequest<Record<string, MempoolEntry>>;
+    getRawMempoolSequence: () => RpcRequest<MempoolSnapshot>;
+    getTxSpendingPrevout(outputs: readonly Outpoint[]): RpcRequest<TxSpendingPrevout[]>;
     getMempoolEntry: (txid: string) => RpcRequest<MempoolEntry>;
     getTxOut(txid: string, vout: number, options?: {
         readonly includeMempool?: boolean;
@@ -745,6 +875,10 @@ export const requests: {
         readonly maxFeeRateBitsPerKvB?: bigint;
         readonly maxBurnAmountBits?: bigint;
     }): RpcRequest<string>;
+    submitPackage(rawTxs: readonly string[], options?: {
+        readonly maxFeeRateBitsPerKvB?: bigint;
+        readonly maxBurnAmountBits?: bigint;
+    }): RpcRequest<PackageSubmission>;
     getWalletInfo: () => RpcRequest<WalletInfo>;
     getTransaction(txid: string): RpcRequest<WalletTransaction>;
     listUnspent(options?: ListUnspentOptions): RpcRequest<UnspentOutput[]>;
@@ -858,6 +992,8 @@ export interface RpcRequest<T> {
     readonly params: readonly unknown[];
     readonly parse: (result: unknown) => T;
     readonly txid?: string;
+    readonly txids?: readonly (string | null)[];
+    readonly waitMs?: number;
 }
 
 // @public
@@ -918,10 +1054,11 @@ export class RpcTransportError extends QbitRpcError {
 
 // @public
 export class RpcUnknownOutcomeError extends QbitRpcError {
-    constructor(method: string, cause: QbitRpcError, txid?: string);
+    constructor(method: string, cause: QbitRpcError, txid?: string, txids?: readonly (string | null)[]);
     // (undocumented)
     static is(value: unknown): value is RpcUnknownOutcomeError;
     readonly txid?: string;
+    readonly txids?: readonly (string | null)[];
 }
 
 // @public
@@ -996,6 +1133,15 @@ export interface TxOut {
     readonly scriptPubKey: ScriptPubKey;
     // (undocumented)
     readonly valueBits: bigint;
+}
+
+// @public
+export interface TxSpendingPrevout {
+    readonly spendingTxid?: string;
+    // (undocumented)
+    readonly txid: string;
+    // (undocumented)
+    readonly vout: number;
 }
 
 // @public

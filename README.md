@@ -197,7 +197,12 @@ for await (const event of zmq) {
 | Keep coins out of coin selection | `rpc.lockUnspent(outputs, { persistent: true })`, `rpc.unlockUnspent(outputs)` |
 | Unlock an encrypted wallet | `rpc.walletPassphrase(passphrase, seconds)`, `rpc.walletLock()`; a new wallet's first unlock is slow, see [its deadline](packages/rpc/README.md#unlocking-an-encrypted-wallet) |
 | Verify a data-hash PQC proof | `rpc.verifyDataPqcHash(proof)` |
-| Any other allowlisted method | `rpc.call('getmempoolinfo')` (numbers come back as `JsonNumber`) |
+| Read a block, by hash | `rpc.getBlock(hash)`, `rpc.getBlockWithTransactions(hash)` (a full block can pass the default `maxResponseBytes`: [large replies](packages/rpc/README.md#large-replies)), `rpc.getBlockHex(hash)` |
+| Detect reorgs | `rpc.getChainTips()` |
+| Fee floor and mempool | `rpc.getMempoolInfo()` → `mempoolMinFeeBitsPerKvB`, `rpc.getRawMempool()`, `rpc.getTxSpendingPrevout(outputs)` |
+| Wait for a block without ZMQ | `rpc.waitForNewBlock(waitMs, { currentTip })`, `rpc.waitForBlockHeight(height, waitMs)`; see [long polls](packages/rpc/README.md#long-polls) |
+| Pay for a parent with its child (CPFP) | `rpc.submitPackage([parentHex, childHex])`; a refusal is in the result, see [submitting a package](packages/rpc/README.md#submitting-a-package-cpfp) |
+| Any other allowlisted method | `rpc.call('getindexinfo')` (numbers come back as `JsonNumber`) |
 | A method the package does not allowlist | open it for one client, `extraMethods: { getchaintxstats: { capability: 'read', sideEffects: false } }`, then `rpc.call('getchaintxstats')`; see [opening another method](packages/rpc/README.md#opening-another-method-extramethods) |
 | Abort a call or give it its own deadline | the last argument: `rpc.getTxOut(txid, vout, { includeMempool: true }, { signal, timeoutMs: 5_000 })` |
 | Convert amounts | `parseQbt('1.5')` → `150000000n`, `formatQbt(1n)` → `'0.00000001'` |
@@ -272,7 +277,7 @@ Each tarball holds exactly `package.json`, `README.md`, `LICENSE` and, in
 map for each and the declarations for each (`index.d.ts`, `index.d.mts`). The
 maps carry every source file in `sourcesContent`, so `src/` is not shipped:
 run Node.js with `--enable-source-maps` to see `src/*.ts` lines in stack traces.
-`@qbit-oss/rpc` is about 1.57 MB unpacked (407 KB packed), most of it the two
+`@qbit-oss/rpc` is about 1.73 MB unpacked (448 KB packed), most of it the two
 maps; `@qbit-oss/zmq` about 224 KB (60 KB packed). `pack:check` fails on any
 other file, on a map that does not carry its sources, and above a ceiling of
 1,815,000 and 280,000 bytes unpacked.
