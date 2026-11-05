@@ -16,6 +16,7 @@ import {
   type ZmqTopic,
 } from '../../src'
 import { ZMQ_TOPICS } from '../../src/parser'
+import { DEFAULT_HEARTBEAT_INTERVAL_MS, DEFAULT_HEARTBEAT_TIMEOUT_MS } from '../../src/subscriber'
 
 // Runs only under scripts/regtest-smoke.sh, which starts a throwaway regtest
 // node on loopback with every -zmqpub<topic> on one address, and passes the
@@ -251,6 +252,94 @@ describe.runIf(enabled)('qbit Core regtest ZMQ', () => {
     }
   })
 
+  it('drops a paused qbitd within the default heartbeat interval and timeout, and reconnects once it resumes', async () => {
+    // SIGSTOP: qbitd answers nothing, but its kernel keeps the connection open.
+    const watched = subscribe({ topics: ['hashblock', 'sequence'] })
+    const unwatched = subscribe({ topics: ['hashblock'], heartbeatIntervalMs: 0 })
+    // Shorter heartbeats, so its replacement meets the stopped qbitd too.
+    const quick = subscribe({ topics: ['hashblock'], heartbeatIntervalMs: 1000, heartbeatTimeoutMs: 2000 })
+    const reconnects = (events: readonly ZmqEvent[]): number => events.filter(e => e.kind === 'reconnect').length
+    const pid = Number(readFileSync(join(datadir, 'regtest', 'qbitd.pid'), 'utf8'))
+    // The stated bound: dropped within 30 s, and not before the 20 s timeout.
+    const limitMs = 30_000
+    const timeoutMs = 20_000
+    let paused = false
+    let resume: NodeJS.Timeout | undefined
+    try {
+      expect(DEFAULT_HEARTBEAT_INTERVAL_MS + DEFAULT_HEARTBEAT_TIMEOUT_MS).toBe(limitMs)
+      expect(DEFAULT_HEARTBEAT_TIMEOUT_MS).toBe(timeoutMs)
+      const address = cli('-rpcwallet=smoke', 'getnewaddress', '', 'p2mr')
+      await until(
+        'a message on both subscribers',
+        () =>
+          watched.messages('sequence').length > 0 &&
+          unwatched.messages('hashblock').length > 0 &&
+          quick.messages('hashblock').length > 0,
+        () => mine(address)
+      )
+      expect(nonMessages(watched.events)).toEqual([])
+      expect(nonMessages(quick.events)).toEqual([])
+
+      process.kill(pid, 'SIGSTOP')
+      paused = true
+      // Whatever happens to the test, qbitd runs again: the cases after this one and the cleanup need it.
+      resume = setTimeout(() => process.kill(pid, 'SIGCONT'), limitMs + 10_000)
+      const pausedAt = performance.now()
+      // The replacement reaches qbitd's kernel, which accepts it, but qbitd never
+      // greets: heartbeats do not run before the handshake, so the handshake
+      // deadline, the same 3 s, gives it up rather than libzmq's 30 s default.
+      await until('a reconnect of the quick subscriber', () => reconnects(quick.events) > 0, undefined, 10_000)
+      const droppedAt = performance.now()
+      await until('its replacement given up', () => reconnects(quick.events) > 1, undefined, 10_000)
+      const givenUpMs = performance.now() - droppedAt
+      expect(givenUpMs).toBeGreaterThanOrEqual(3000 - 500)
+      expect(givenUpMs).toBeLessThanOrEqual(100 + 3000 + 1000)
+      expect(nonMessages(quick.events).slice(0, 2)).toEqual([
+        { kind: 'reconnect', attempt: 1, reason: 'disconnected' },
+        { kind: 'reconnect', attempt: 2, reason: 'failed' },
+      ])
+      await until(
+        'a reconnect',
+        () => watched.events.some(event => event.kind === 'reconnect'),
+        undefined,
+        limitMs + 5000
+      )
+      const detectedMs = performance.now() - pausedAt
+      expect(detectedMs).toBeGreaterThanOrEqual(timeoutMs - 1000)
+      expect(detectedMs).toBeLessThanOrEqual(limitMs + 1000)
+      const after = watched.events.length
+      expect(nonMessages(watched.events)).toEqual([{ kind: 'reconnect', attempt: 1, reason: 'disconnected' }])
+      expect(watched.subscriber.health().status).toBe('unknown')
+      // Without heartbeats the connection still looks open, and health is unchanged until staleAfterMs.
+      expect(nonMessages(unwatched.events)).toEqual([])
+      expect(unwatched.subscriber.health().status).toBe('receiving')
+
+      process.kill(pid, 'SIGCONT')
+      paused = false
+      const quickAfter = quick.events.length
+      await until(
+        'a message on both topics after the pause',
+        () =>
+          watched.messages('hashblock', after).length > 0 &&
+          watched.messages('sequence', after).length > 0 &&
+          quick.messages('hashblock', quickAfter).length > 0,
+        () => mine(address),
+        30_000
+      )
+      expectOneGapPerTopic(watched.events, after, ['hashblock', 'sequence'])
+      expect(nonMessages(watched.events, after).filter(event => event.kind !== 'gap')).toEqual([])
+      expect(watched.subscriber.health()).toMatchObject({ status: 'receiving', gaps: 2, reconnects: 1 })
+      expect(unwatched.subscriber.health()).toMatchObject({ status: 'receiving', reconnects: 0 })
+      expect(quick.subscriber.health().status).toBe('receiving')
+    } finally {
+      clearTimeout(resume)
+      if (paused) process.kill(pid, 'SIGCONT')
+      await watched.close()
+      await unwatched.close()
+      await quick.close()
+    }
+  }, 120_000)
+
   // The timeout is above the sum of the waits' and the start's deadlines (20 +
   // 20 + 60 + 60 + 45 + 30 s), so a step that runs out normally reports itself.
   // A wait that is stuck in a blocked child call can still overrun it.
@@ -280,7 +369,13 @@ describe.runIf(enabled)('qbit Core regtest ZMQ', () => {
       await until('a reconnect', () => events.some(event => event.kind === 'reconnect'))
       await until('qbitd to exit', () => !running(), undefined, 60_000)
       const after = events.length
-      expect(nonMessages(events)).toEqual([{ kind: 'reconnect', attempt: 1, reason: 'disconnected' }])
+      // libzmq does not reconnect by itself: the subscriber retries, and each
+      // attempt qbitd's closed port refuses is a reconnect that failed.
+      const down = nonMessages(events)
+      expect(down[0]).toEqual({ kind: 'reconnect', attempt: 1, reason: 'disconnected' })
+      expect(down).toEqual(
+        down.map((_event, i) => ({ kind: 'reconnect', attempt: i + 1, reason: i === 0 ? 'disconnected' : 'failed' }))
+      )
       expect(subscriber.health().status).toBe('unknown')
 
       // The same command, ports and data directory.
@@ -296,8 +391,16 @@ describe.runIf(enabled)('qbit Core regtest ZMQ', () => {
         30_000
       )
       expectOneGapPerTopic(events, after, ZMQ_TOPICS)
-      expect(nonMessages(events, after).filter(event => event.kind !== 'gap')).toEqual([])
-      expect(subscriber.health()).toMatchObject({ status: 'receiving', gaps: 5, malformed: 0, reconnects: 1 })
+      const retries = nonMessages(events, after).filter(event => event.kind !== 'gap')
+      expect(retries).toEqual(
+        retries.map((_event, i) => ({ kind: 'reconnect', attempt: down.length + i + 1, reason: 'failed' }))
+      )
+      expect(subscriber.health()).toMatchObject({
+        status: 'receiving',
+        gaps: 5,
+        malformed: 0,
+        reconnects: down.length + retries.length,
+      })
     } finally {
       await close()
       // Leave the node as the script made it: qbitd does not load the wallets at startup.

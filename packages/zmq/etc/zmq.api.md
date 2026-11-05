@@ -21,10 +21,17 @@ export class QbitZmqSubscriber implements AsyncIterable<ZmqEvent> {
 
 // @public (undocumented)
 export interface QbitZmqSubscriberOptions {
+    readonly heartbeatIntervalMs?: number;
+    readonly heartbeatTimeoutMs?: number;
+    readonly heartbeatTtlMs?: number;
     readonly maxMessageSize?: number;
     readonly reconnectDelayMs?: number;
     readonly socketFactory?: ZmqSocketFactory;
     readonly staleAfterMs?: number;
+    readonly tcpKeepalive?: boolean;
+    readonly tcpKeepaliveCount?: number;
+    readonly tcpKeepaliveIdleSeconds?: number;
+    readonly tcpKeepaliveIntervalSeconds?: number;
     readonly topics: readonly ZmqTopic[];
     readonly url: string;
 }
@@ -132,7 +139,7 @@ export interface ZmqSocket {
     // (undocumented)
     connect(url: string): void;
     readonly events?: {
-        on(type: 'disconnect', listener: () => void): unknown;
+        on(type: 'disconnect' | 'close' | 'handshake', listener: () => void): unknown;
     };
     // (undocumented)
     receive(): Promise<readonly Uint8Array[]>;
@@ -145,8 +152,16 @@ export type ZmqSocketFactory = (settings: ZmqSocketSettings) => ZmqSocket | Prom
 
 // @public (undocumented)
 export interface ZmqSocketSettings {
+    readonly handshakeIntervalMs?: number;
+    readonly heartbeatIntervalMs?: number;
+    readonly heartbeatTimeoutMs?: number;
+    readonly heartbeatTtlMs?: number;
     readonly ipv6?: boolean;
     readonly maxMessageSize: number;
+    readonly tcpKeepalive?: boolean;
+    readonly tcpKeepaliveCount?: number;
+    readonly tcpKeepaliveIdleSeconds?: number;
+    readonly tcpKeepaliveIntervalSeconds?: number;
 }
 
 // @public
