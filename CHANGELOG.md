@@ -680,3 +680,30 @@ properties only. The API report is unchanged.
   still offers its coins for funding, so check `getAddressInfo` of the inputs
   before signing: each key's state, and its signatures left against the inputs
   it signs.
+
+### Breaking: `zeromq` is an optional peer, and what the packages ship
+
+- `zeromq` is an optional peer dependency of `@qbit-oss/zmq`, `^6.5.0`. npm
+  and pnpm do not install it, so an application that subscribes with the
+  default socket adds it: `npm install zeromq@^6.5.0`. Without it, the parser
+  and a custom `socketFactory` work, and a subscriber's first iteration rejects
+  with `ZmqSetupError` `code: 'module_load'`, whose message says that
+  `zeromq` is an optional peer the application adds and gives the range; an
+  install on a platform without a prebuilt addon does not fail for an
+  application that does not install `zeromq`.
+- The tarballs do not ship `src/`: the source maps carry every source file in
+  `sourcesContent`. Each package is 9 files (the root README gives their
+  sizes). `pack:check` asserts the exact file list, the maps' sources (each
+  file of `src/`, and nothing outside it) and a size ceiling, and fails when a map has no sources or a size or ceiling is missing.
+- Dependabot updates the `zeromq` dev pin only, as it does not read
+  `peerDependencies`: move the peer range's floor by hand in that pull request,
+  which `pack:check` fails until the two agree.
+- Both packages set `"sideEffects": false`, so a bundler can drop a package
+  nothing is imported from.
+- The Vitest configs are `.mts` files, so Vitest does not warn that it loads
+  ESM syntax as CommonJS. The packages still set no `"type"`.
+- Dependabot opens weekly update pull requests for the npm dependencies and
+  the GitHub Actions. The root README states the dependency policy, for
+  `zeromq` and for future `@qbit-oss/*` dependencies.
+- The stray `eslint-disable` comment in `endpoint.ts` is gone: ESLint is not
+  used.

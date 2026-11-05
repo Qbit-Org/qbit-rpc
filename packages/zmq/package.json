@@ -6,9 +6,9 @@
   "main": "lib/index.js",
   "module": "lib/index.mjs",
   "types": "lib/index.d.ts",
+  "sideEffects": false,
   "files": [
     "lib/**/*",
-    "src/**/*",
     "README.md"
   ],
   "exports": {
@@ -30,8 +30,8 @@
   "scripts": {
     "build": "tsup",
     "prepack": "tsup",
-    "test": "vitest run --config vitest.config.ts",
-    "test:regtest": "vitest run --config test/regtest/vitest.config.ts",
+    "test": "vitest run --config vitest.config.mts",
+    "test:regtest": "vitest run --config test/regtest/vitest.config.mts",
     "typecheck": "tsc --noEmit",
     "typecheck:test": "tsc -p test",
     "api:check": "api-extractor run && api-extractor run --config etc/api-extractor.esm.json",
@@ -55,8 +55,13 @@
     "url": "https://github.com/Qbit-Org/qbit-rpc/issues"
   },
   "homepage": "https://github.com/Qbit-Org/qbit-rpc/tree/main/packages/zmq#readme",
-  "dependencies": {
-    "zeromq": "6.5.0"
+  "peerDependencies": {
+    "zeromq": "^6.5.0"
+  },
+  "peerDependenciesMeta": {
+    "zeromq": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@microsoft/api-extractor": "7.59.4",
@@ -64,6 +69,7 @@
     "fast-check": "4.10.2",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
-    "vitest": "^5.0.5"
+    "vitest": "^5.0.5",
+    "zeromq": "6.5.0"
   }
 }

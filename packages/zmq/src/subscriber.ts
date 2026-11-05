@@ -201,6 +201,9 @@ export class ZmqSetupError extends Error {
 const SETUP_ERROR_BRAND = Symbol.for('qbit-zmq.ZmqSetupError')
 Object.defineProperty(ZmqSetupError.prototype, SETUP_ERROR_BRAND, { value: true })
 
+/** The `zeromq` range of package.json's `peerDependencies`, for messages; a test keeps the two equal. */
+const ZEROMQ_RANGE = '^6.5.0'
+
 /**
  * A `zeromq` `Subscriber` with `settings` applied. `zeromq` loads lazily, so
  * the parser works without the native addon; a failure to load it is a
@@ -215,12 +218,15 @@ export async function createZeromqSocket(
   } catch (error) {
     throw new ZmqSetupError(
       'module_load',
-      `Could not load the zeromq module or its native addon (${errorSummary(error)}): install the zeromq dependency with the prebuilt addon for this platform, or build it from source`,
+      `Could not load the zeromq module or its native addon (${errorSummary(error)}): zeromq is an optional peer dependency of @qbit-oss/zmq, which the application adds itself (npm install zeromq@${ZEROMQ_RANGE}), with the prebuilt addon for this platform or one built from source`,
       { cause: error }
     )
   }
   if (typeof zeromq.Subscriber !== 'function') {
-    throw new ZmqSetupError('module_load', 'The zeromq module has no Subscriber export: install zeromq 6')
+    throw new ZmqSetupError(
+      'module_load',
+      `The zeromq module has no Subscriber export: install zeromq@${ZEROMQ_RANGE}, the optional peer dependency's range`
+    )
   }
   const socket = new zeromq.Subscriber()
   socket.maxMessageSize = settings.maxMessageSize

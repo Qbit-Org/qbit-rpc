@@ -1,7 +1,7 @@
 # @qbit-oss/zmq
 
 A Node.js subscriber and strict parser for qbit Core v1.0.0's ZMQ
-notifications. It depends on the native
+notifications. The subscriber's default socket uses the native
 [`zeromq`](https://www.npmjs.com/package/zeromq) addon, loaded at a
 subscriber's first iteration, not when it is constructed, so the parser works
 without it.
@@ -46,6 +46,26 @@ try {
   throw error
 }
 ```
+
+## Installing `zeromq`
+
+`zeromq` is an optional peer dependency, `^6.5.0`: install it beside the
+package when you subscribe with the default socket.
+
+```sh
+npm install /path/to/qbit-oss-zmq-0.0.0.tgz zeromq@^6.5.0   # packed as the repository README shows
+```
+
+npm and pnpm do not install an optional peer, and nothing in the package needs
+it at import: `parseZmqMessage`, the types and a custom `socketFactory` work
+without it. Without it, a subscriber's first iteration rejects with
+`ZmqSetupError` `code: 'module_load'`. It is a peer so that the application
+owns the one copy of the native addon and updates it, and so that an install
+on a platform without a prebuilt addon, where `zeromq`'s install script builds
+libzmq from source, fails only for applications that install `zeromq`. CI
+tests 6.5.0, the floor of the range; newer 6.x releases are in range but
+untested. A bundler must leave `zeromq` external. See [Packaging and
+dependencies](../../README.md#packaging-and-dependencies).
 
 ## Addresses
 
@@ -199,7 +219,7 @@ alike, and a `malformed` event's `error` is a `ZmqFrameError`.
 | `ZmqFrameError` | `code: 'body_length'` | The body has the wrong length for its topic. | As for `frame_count`. |
 | `ZmqFrameError` | `code: 'label'` | A `sequence` body has an unknown label. | As for `frame_count`. |
 | `ZmqFrameError` | `code: 'sequence_length'` | The counter frame is not 4 bytes. | As for `frame_count`. |
-| `ZmqSetupError` | `code: 'module_load'` | `zeromq` or its native addon cannot be loaded, at the first iteration; or a custom `socketFactory` throws `MODULE_NOT_FOUND`, `ERR_MODULE_NOT_FOUND` or `ERR_DLOPEN_FAILED`. | Install `zeromq` with the prebuilt addon for this platform, or build it. |
+| `ZmqSetupError` | `code: 'module_load'` | `zeromq` or its native addon cannot be loaded, at the first iteration; or a custom `socketFactory` throws `MODULE_NOT_FOUND`, `ERR_MODULE_NOT_FOUND` or `ERR_DLOPEN_FAILED`. | Add `zeromq`, an optional peer dependency, to the application in the range `package.json` gives (`npm install zeromq@^6.5.0`), with the prebuilt addon for this platform, or build it. |
 | `ZmqSetupError` | `code: 'invalid_address'` | The socket's `connect()` throws `EINVAL`, or `ENAMETOOLONG` for an `ipc://` path too long for a Unix socket (over 107 bytes on Linux). | Fix the url. |
 | `ZmqSetupError` | `code: 'unsupported_protocol'` | `connect()` throws `EPROTONOSUPPORT`: this libzmq lacks the transport. | Use one it supports, such as `tcp://`. |
 | `reconnect` event | `reason: 'disconnected'` | The connection to the publisher dropped: qbitd stopped or restarted, or sent a message over `maxMessageSize`. No `code`. | Nothing: the socket is replaced. The next message on each topic is a `gap`. |

@@ -1,6 +1,13 @@
+import { readFileSync } from 'node:fs'
+
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { createZeromqSocket, QbitZmqSubscriber, ZmqSetupError } from '../src'
+
+const { peerDependencies } = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
+  peerDependencies: Record<string, string>
+}
+const RANGE = peerDependencies['zeromq']!
 
 // `zeromq` loads at the first iteration, so a missing or broken addon shows up
 // there, as a ZmqSetupError, and not as an endless run of reconnects.
@@ -26,8 +33,10 @@ describe('a zeromq module that cannot be loaded', () => {
     // Vitest may wrap the factory's error; the import failure is the cause either way.
     const cause = (error as ZmqSetupError).cause as Error
     expect(cause === addon || cause.cause === addon).toBe(true)
-    expect((error as Error).message).toMatch(
-      /^Could not load the zeromq module or its native addon \(.+\): install the zeromq dependency/
+    expect((error as Error).message).toMatch(/^Could not load the zeromq module or its native addon \(.+\): /)
+    // An optional peer: the application adds it, in the range package.json gives.
+    expect((error as Error).message).toContain(
+      `zeromq is an optional peer dependency of @qbit-oss/zmq, which the application adds itself (npm install zeromq@${RANGE})`
     )
     expect(await iterator.next()).toEqual({ done: true, value: undefined })
     expect(subscriber.health()).toMatchObject({ status: 'closed', reconnects: 0 })
@@ -39,7 +48,7 @@ describe('a zeromq module that cannot be loaded', () => {
     await expect(createZeromqSocket()).rejects.toMatchObject({
       name: 'ZmqSetupError',
       code: 'module_load',
-      message: 'The zeromq module has no Subscriber export: install zeromq 6',
+      message: `The zeromq module has no Subscriber export: install zeromq@${RANGE}, the optional peer dependency's range`,
     })
   })
 })

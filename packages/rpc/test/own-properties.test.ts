@@ -311,7 +311,6 @@ describe('walletCreateFundedPsbt with changeAddress and subtractFeeFromOutputs p
 
 describe('nested objects and arrays', () => {
   it('refuse a hole in every array a builder reads, naming its index', () => {
-    // eslint-disable-next-line no-sparse-arrays
     const holey = <T>(item: T): T[] => [, item] as T[]
     const cases: [() => unknown, string][] = [
       [() => requests.walletCreateFundedPsbt({ outputs: holey(OUTPUT) }), 'args.outputs[0]'],
@@ -337,12 +336,10 @@ describe('nested objects and arrays', () => {
   })
 
   it('never read an element from Array.prototype', () => {
-    // eslint-disable-next-line no-sparse-arrays
     const outputs = [, OUTPUT] as (typeof OUTPUT)[]
     arrayProto['0'] = { address: 'rq1attacker', amountBits: 100_000_000n }
     try {
       expect(() => requests.walletCreateFundedPsbt({ outputs })).toThrow(/^args\.outputs\[0\] is a hole/)
-      // eslint-disable-next-line no-sparse-arrays
       expect(() => requests.testMempoolAccept([, TX_HEX] as string[])).toThrow(/^rawTxs\[0\] is a hole/)
       // An index past the end is not a hole, and is not read either.
       expect(requests.raw('getblockcount', []).params).toEqual([])
@@ -351,10 +348,9 @@ describe('nested objects and arrays', () => {
       delete arrayProto['0']
     }
     // Nor from Object.prototype, which arrays inherit too.
-    expect(() =>
-      // eslint-disable-next-line no-sparse-arrays
-      polluted({ 0: TX_HEX }, () => requests.testMempoolAccept([, TX_HEX] as string[]))
-    ).toThrow(/^rawTxs\[0\] is a hole/)
+    expect(() => polluted({ 0: TX_HEX }, () => requests.testMempoolAccept([, TX_HEX] as string[]))).toThrow(
+      /^rawTxs\[0\] is a hole/
+    )
   })
 
   it('read a class instance by its own fields, and refuse a class getter', () => {
@@ -996,7 +992,6 @@ describe('client options under a polluted Object.prototype', () => {
       }
     }
     expect(() => new QbitRpcClient(new Settings() as never)).toThrow(notOwn('options.capabilities'))
-    // eslint-disable-next-line no-sparse-arrays
     const capabilities = [, 'wallet-read'] as never
     arrayProto['0'] = 'broadcast'
     try {
@@ -1129,7 +1124,6 @@ describe('batch entries under a polluted Object.prototype', () => {
     let refused: Promise<unknown>
     arrayProto['0'] = requests.getBlockCount()
     try {
-      // eslint-disable-next-line no-sparse-arrays
       refused = rpc.batch([, requests.getBestBlockHash()] as never)
     } finally {
       delete arrayProto['0']
@@ -1299,7 +1293,6 @@ describe('stringifyRequest', () => {
   })
 
   it('refuses an array hole rather than writing what a prototype holds at its index', () => {
-    // eslint-disable-next-line no-sparse-arrays
     const holey = [, 1]
     arrayProto['0'] = 'polluted'
     try {
