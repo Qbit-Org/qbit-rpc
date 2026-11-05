@@ -610,7 +610,8 @@ involved; `ProcessedPsbt` adds `warnings`. `pqcLimitState` is `normal`,
 `warning`, `critical` or `exhausted`, or a state a later qbit Core adds, passed
 through as it is: treat a state you do not know as at least `critical`. A key's
 limit is 2^30 signatures. qbit Core v1.0.0's `getwalletinfo` does not report
-these counts.
+these counts. What each state means and what to do:
+[PQC signature budgets](#pqc-signature-budgets).
 
 `lockUnspent(outputs)` locks outputs against automatic coin selection and
 `unlockUnspent(outputs)` unlocks them, both through qbit Core's `lockunspent`.
@@ -706,6 +707,62 @@ try {
 Calling `walletPassphrase` again is safe too: it waits for one still running,
 then sets a new relock time. `walletLock()` also waits for it, under the same
 default deadline.
+
+### PQC signature budgets
+
+Each P2MR address of a wallet has its own PQC key, and qbit Core v1.0.0 lets a
+key make 2^30 (1,073,741,824) signatures. It counts each signature the key
+makes, one per input it signs, and writes the count to the wallet before
+signing: signing the same unsigned PSBT twice uses two, broadcast or not. The state follows from
+the count (`src/wallet/pqc_usage.h`):
+
+| `pqcLimitState` | Count | The node | What to do |
+| --- | --- | --- | --- |
+| `normal` | below 2^28 | signs | nothing |
+| `warning` | from 2^28 (268,435,456) | signs; a `warnings` line on entering, and again every further 2^24 signatures | plan to move the coins to a new address, and stop reusing this one |
+| `critical` | from 2^30 − 2^24 (1,056,964,608) | signs; a line on entering, and again every further 2^20 signatures | stop using the address and spend its coins to a new one now, while every coin still has a signature (one per input) |
+| `exhausted` | 2^30, none left | signs nothing more with the key | the wallet can no longer spend the address's coins: lock them with `lockUnspent(outputs, { persistent: true })`, so coin selection skips them after a restart too, and lock a coin that arrives there later the same way (`listUnspent` with `addresses` and `minConf: 0` finds it, unconfirmed too); rotate to a new key/address, as the node's warning says |
+
+What to watch, as observed on a v1.0.0 regtest node:
+
+- `walletProcessPsbt` reports only the keys that signed in that call, with the
+  count after signing. The signature that reaches the limit is reported as
+  `exhausted`, `pqcSignaturesRemaining` 0, and the warning `PQC key <pubkey>
+  reached the signature limit (1073741824 of 1073741824 signatures used, 0
+  remaining). Rotate to a new key/address.` The other lines read `PQC key
+  <pubkey> entered warning usage range (…)` or `… remains in critical usage
+  range (…)`. Lines are text for people: act on `pqcLimitState`.
+- An exhausted key is not an error. `walletProcessPsbt` resolves with
+  `complete: false`, leaves that key's inputs unsigned, and says nothing about
+  it: a PSBT only that key would sign comes back with no PQC fields and no
+  warning, and beside other keys only they are reported, so
+  `pqcOverallLimitState` can be `normal`. With two inputs and one signature
+  left, the first input is signed and the second is not.
+- The wallet still lists an exhausted key's coins as spendable, counts them in
+  its balance, and `walletCreateFundedPsbt` picks them.
+- So read the state of the keys you are about to use: `getAddressInfo` of each
+  input's address before signing (the addresses `decodepsbt` gives for the
+  funded PSBT's inputs, which can include the wallet's unconfirmed change; the
+  root README's quick start reads them in one `batch`), and of the change
+  address before you reuse it. `getAddressInfo` reports any state, `exhausted`
+  too, without warnings. Refuse to sign on `exhausted` or a state you do not
+  know, or when a key has fewer signatures left (`pqcKeyStates`) than the
+  inputs it would sign; `critical` is when to sign the spend that moves the
+  coins on. An
+  incomplete PSBT whose inputs are all the wallet's own may mean an exhausted
+  key.
+- The count is the wallet's own. A wallet restored from a backup counts from
+  the backup's count, and one the descriptor is imported into counts from 0
+  (`test/functional/wallet_pqc_usage.py`), so neither knows the signatures the
+  key made since, or elsewhere.
+
+How this was checked: qbit Core v1.0.0 has no option to lower the limit, so the
+regtest smoke test writes a key's count into the wallet file below each
+threshold, reloads the wallet and signs; it asserts each state, both reminder
+lines, the limit, and the exhausted key's incomplete PSBT. The reasoning for
+the advice in the last column is ours, not the node's; that the worst key sets
+`pqcOverallLimitState` when several keys differ is read from the source only;
+and no key has reached these counts by signing.
 
 ### Address types
 
