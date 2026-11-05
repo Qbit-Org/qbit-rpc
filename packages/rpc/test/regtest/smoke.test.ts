@@ -96,6 +96,21 @@ describe.runIf(enabled)('qbit Core v1.0.0 regtest', () => {
     expect(other.chainStatus).toBe('mismatch')
   })
 
+  it('reads the node’s qbit Core version with every chain check, and supports it', async () => {
+    const rpc = client({ wallet: 'locked', capabilities: ['wallet-write'], chainCheckMaxAgeMs: 0 })
+    expect(rpc.nodeVersion).toBeUndefined()
+    await rpc.confirmChain()
+    const { version, subversion } = await rpc.getNetworkInfo()
+    expect(subversion).toMatch(/^\/qbit:1\.0\.[0-9]+\//)
+    const parts = { major: Math.trunc(version / 10000), minor: Math.trunc(version / 100) % 100, patch: version % 100 }
+    expect(subversion.startsWith(`/qbit:${parts.major}.${parts.minor}.${parts.patch}`)).toBe(true)
+    expect(rpc.nodeVersion).toEqual({ version, subversion, ...parts, supported: true })
+    expect(rpc.toJSON()).toMatchObject({ chainStatus: 'stale', nodeVersion: { version, supported: true } })
+    // The re-check before a guarded call reads it again, and lets the call through.
+    await rpc.walletLock()
+    expect(rpc.nodeVersion).toEqual({ version, subversion, ...parts, supported: true })
+  })
+
   // qbitd serves plain HTTP; a remote node sits behind a TLS terminator. This
   // one, on loopback, requires a client certificate and relays each TLS
   // connection to the node's RPC port, so the cookie goes over it as Basic

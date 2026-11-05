@@ -122,6 +122,73 @@ Added, and not breaking:
   `connect`, `localhost` and a polluted `Object.prototype`; its failure model
   lists `tls`, `not_loopback` and `prototype_polluted`.
 
+### Supported qbit Core versions, and values a later one may add
+
+The packages support **qbit Core 1.0.x releases**. The range is defined once
+(`packages/rpc/src/version.ts`) and widened only after the regtest smoke test
+passes against a new minor version, and `@qbit-oss/rpc` checks the node's
+version. A value a later qbit Core may add passes through where the rest of the
+result keeps its meaning, and fails validation where it does not.
+
+- Every chain check, `confirmChain()`'s and the re-check before a wallet-write
+  or broadcast call, also sends `getnetworkinfo` in its batch, and exposes the
+  version as `rpc.nodeVersion` (`version`, `subversion`, `major`, `minor`,
+  `patch`, `supported`; frozen and without a prototype, as results are). A node outside qbit Core 1.0.x releases (`1.1.0`,
+  `1.0.1-rc1`, another client's user agent) refuses wallet-write and broadcast
+  calls, unsent, with `RpcChainGuardError` `reason: 'unsupported_version'`
+  (`nodeVersion` says which), until a `confirmChain()` finds a supported one;
+  `confirmChain()` throws it, and `chainStatus` is `unsupported_version`.
+  `allowUnsupportedNodeVersion: true` accepts the risk of another version, so a
+  node on a new qbit Core minor (1.1 or later) needs a release of this package
+  that supports it, or that flag.
+
+  ```ts
+  if (RpcChainGuardError.is(error) && error.reason === 'unsupported_version') {
+    // nothing was sent; error.nodeVersion?.subversion is the node's, such as '/qbit:1.1.0/'
+  }
+  ```
+
+- Where `-rpcwhitelist` applies, the RPC user also needs `getnetworkinfo`:
+  qbitd answers a batch holding a method the user may not call with HTTP 403,
+  so every check fails without it (`confirmChain()` with `RpcTransportError`
+  `http_status` 403, a guarded call with `check_failed`). The check's reply is
+  about 2 KiB.
+- A `getnetworkinfo` reply whose `version` or `subversion` does not parse, or
+  whose two disagree, fails the check: `RpcResponseError` about
+  `getnetworkinfo` from `confirmChain()`, `check_failed` with it as `cause` for
+  a guarded call, whatever `allowUnsupportedNodeVersion` says. It is never
+  taken for a supported version. `getNetworkInfo()` reads the two with the
+  same reader, so it fails on the same reply, at the same path: its `version`
+  is an integer from 0 to 2,147,483,647, and its `subversion` a user agent of
+  that form.
+- A recorded `mismatch` stands over an unsupported version until a
+  `confirmChain()` begun after it reads a whole chain report (valid
+  `getblockchaininfo` and `getblockhash 0` replies) that matches: a check whose
+  report failed keeps the mismatch, and `confirmChain()` throws it.
+- Open enums take a value a later qbit Core adds, as any non-empty string:
+  `BlockchainInfo.chain` (`QbitChain | (string & {})`; in a chain check an
+  unknown name is a `mismatch`), `ConfirmationTarget.model.hashrateSource`,
+  `WalletInfo.pqcKeyValidation.status` and `PqcLimitState`. A `switch` over one
+  needs a `default`, and a copy of the known values, such as a `CoreRpc`
+  interface's `PqcLimitState`, needs `(string & {})` for `QbitRpcClient` to
+  satisfy it. Treat a PQC state you do not know as at least `critical`:
+
+  ```ts
+  type PqcLimitState = 'normal' | 'warning' | 'critical' | 'exhausted' | (string & {})
+  if (state !== 'normal' && state !== 'warning') rotate() // an unknown state too
+  ```
+
+- `WalletInfo.payTxFeeBitsPerKvB` is optional, as Bitcoin Core has deprecated
+  `paytxfee`; absent means no fee rate is set.
+- Closed, failing validation on another value: `WalletTxCategory` (the sign and
+  fee checks depend on it), `bip125Replaceable` and `SecurityLevel`.
+
+New with this: `QbitRpcClient.nodeVersion`, the `NodeVersion` type, the
+`allowUnsupportedNodeVersion` option, `nodeVersion` in `toJSON()` and on
+`RpcChainGuardError`, the supported versions in both READMEs, and the
+`@qbit-oss/rpc` README's "Versions and compatibility", which lists every enum's
+rule.
+
 ### Breaking: the error API
 
 Settled before `0.1.0`: a property name has one type across both packages' error

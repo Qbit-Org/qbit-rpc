@@ -39,7 +39,23 @@ npm install /path/to/qbit-oss-rpc-0.0.0.tgz /path/to/qbit-oss-zmq-0.0.0.tgz
 ```
 
 Both packages ship CommonJS and ESM builds with type declarations. For the
-Node.js versions and platforms they run on, see below.
+qbit Core versions, Node.js versions and platforms they support, see below.
+
+## Supported qbit Core versions
+
+**qbit Core 1.0.x releases**: 1.0.0 and any later 1.0 patch release, but no
+pre-release such as `1.0.1-rc1` or `0.1.2-testnet4`. Both packages are tested
+against v1.0.0, the release `scripts/qbit-core-release.mjs` names, by CI's
+`regtest smoke` job. A new minor version is supported only once that job passes
+against it, in a release of these packages that says so.
+
+`@qbit-oss/rpc` checks the node's version with every chain check and exposes it
+as `rpc.nodeVersion`. On another version it refuses wallet-write and broadcast
+calls with `RpcChainGuardError` `reason: 'unsupported_version'`, unless the
+client sets `allowUnsupportedNodeVersion`; reads go on, and every reply is
+still validated. Which values a later qbit Core may add pass through, and which
+fail validation, is in its README:
+[Versions and compatibility](packages/rpc/README.md#versions-and-compatibility).
 
 ## Node.js and platforms
 
@@ -104,8 +120,9 @@ const funded = await rpc.walletCreateFundedPsbt({
 })
 const signed = await rpc.walletProcessPsbt(funded.psbt)
 if (!signed.complete || signed.hex === undefined) throw new Error('not fully signed')
-if (signed.pqcOverallLimitState === 'critical' || signed.pqcOverallLimitState === 'exhausted') {
-  // rotate keys before the signature budget runs out
+const budget = signed.pqcOverallLimitState
+if (budget !== undefined && budget !== 'normal' && budget !== 'warning') {
+  // critical, exhausted, or a state a later qbit Core adds: rotate keys before the budget runs out
 }
 const [preflight] = await rpc.testMempoolAccept([signed.hex])
 if (preflight?.allowed !== true) throw new Error(`rejected: ${preflight?.rejectReason}`)
@@ -277,7 +294,10 @@ restored one again before use.
 
 The release under test is named in one place, `scripts/qbit-core-release.mjs`;
 the tag, asset names and cache key follow from it, and the smoke script
-refuses a `QBIT_BIN_DIR` of another version. A release signed under a newer
+refuses a `QBIT_BIN_DIR` of another version. The versions `@qbit-oss/rpc`
+supports are defined in one place too, `packages/rpc/src/version.ts`; widen
+them only after the smoke test passes against the new release, and say so in
+[CHANGELOG.md](CHANGELOG.md). A release signed under a newer
 key policy also needs `scripts/qbit-release-keys/` updated, as its `README.md`
 describes.
 

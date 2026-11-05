@@ -1,5 +1,6 @@
 import type { Capability, QbitChain } from './capabilities'
 import { ownValue } from './own'
+import { SUPPORTED_NODE_VERSIONS, type NodeVersion } from './version'
 
 // Every error class carries a brand, `Symbol.for('qbit-rpc.<ClassName>')`, on
 // its prototype. `Symbol.for` keys are shared across realms and across the
@@ -115,7 +116,14 @@ function mismatchText(expected: QbitChain, actual: string | undefined, mismatch:
 }
 
 /** Why {@link RpcChainGuardError} refused a call. */
-export type RpcChainGuardReason = 'unconfirmed' | 'mismatch' | 'stale' | 'check_failed'
+export type RpcChainGuardReason = 'unconfirmed' | 'mismatch' | 'unsupported_version' | 'stale' | 'check_failed'
+
+/** A node's version for a message: its user agent, cut short when long, and its number. */
+function versionText(version: NodeVersion | undefined): string {
+  if (version === undefined) return 'an unknown version'
+  const { subversion } = version
+  return `${subversion.length <= 100 ? subversion : `${subversion.slice(0, 100)}...`} (version ${version.version})`
+}
 
 /** The failure's own message, for quoting in another error's. */
 function causeText(cause: unknown): string {
@@ -126,13 +134,15 @@ function causeText(cause: unknown): string {
  * A wallet-write or broadcast call was refused, and nothing of it was sent,
  * because the node's chain has not been confirmed (`reason: 'unconfirmed'`), or
  * {@link QbitRpcClient.confirmChain} found a different chain, genesis block or
- * signet challenge (`reason: 'mismatch'`, see `differs`), or every chain check
- * it ran was overtaken by a connection error, an HTTP 401 or another check,
- * which cast doubt on its answer (`reason: 'stale'`), or the chain re-check it
- * ran first could not finish (`reason: 'check_failed'`). The check's failure is
- * the `cause` of `check_failed`, and `method` is always the refused call's. As
- * nothing was sent, `stale` and `check_failed` are worth trying again;
- * `cause` tells whether soon is any use.
+ * signet challenge (`reason: 'mismatch'`, see `differs`), or a qbit Core
+ * version this package does not support (`reason: 'unsupported_version'`, see
+ * `nodeVersion` and the client option `allowUnsupportedNodeVersion`), or every
+ * chain check it ran was overtaken by a connection error, an HTTP 401 or
+ * another check, which cast doubt on its answer (`reason: 'stale'`), or the
+ * chain re-check it ran first could not finish (`reason: 'check_failed'`). The
+ * check's failure is the `cause` of `check_failed`, and `method` is always the
+ * refused call's. As nothing was sent, `stale` and `check_failed` are worth
+ * trying again; `cause` tells whether soon is any use.
  */
 export class RpcChainGuardError extends QbitRpcError {
   readonly reason: RpcChainGuardReason
@@ -158,30 +168,41 @@ export class RpcChainGuardError extends QbitRpcError {
   readonly expectedSignetChallenge?: string
   /** The signet challenge the node reported, for `mismatch`; absent when it reported none (only a signet does). */
   readonly actualSignetChallenge?: string
+  /** The version the node reported, for `unsupported_version`. */
+  readonly nodeVersion?: NodeVersion
 
   constructor(
     method: string,
     reason: RpcChainGuardReason,
     expectedChain: QbitChain,
-    details: { readonly actualChain?: string; readonly mismatch?: ChainMismatch; readonly cause?: unknown } = {}
+    details: {
+      readonly actualChain?: string
+      readonly mismatch?: ChainMismatch
+      readonly nodeVersion?: NodeVersion
+      readonly cause?: unknown
+    } = {}
   ) {
     const actualChain = ownValue(details, 'actualChain')
     const mismatch = ownValue(details, 'mismatch')
+    const nodeVersion = ownValue(details, 'nodeVersion')
     const hasCause = Object.hasOwn(details, 'cause')
     super(
       reason === 'unconfirmed'
         ? `RPC method ${method} refused: call confirmChain() first to check the node is on ${expectedChain}`
         : reason === 'mismatch'
           ? `RPC method ${method} refused: the node reports ${mismatchText(expectedChain, actualChain, mismatch)}`
-          : reason === 'stale'
-            ? `RPC method ${method} refused: its chain checks kept being overtaken by connection errors, HTTP 401s or other checks; try again`
-            : `RPC method ${method} refused: its chain re-check failed${hasCause ? ` (${causeText(details.cause)})` : ''}`,
+          : reason === 'unsupported_version'
+            ? `RPC method ${method} refused: the node runs ${versionText(nodeVersion)}, and this client supports ${SUPPORTED_NODE_VERSIONS} only (see allowUnsupportedNodeVersion)`
+            : reason === 'stale'
+              ? `RPC method ${method} refused: its chain checks kept being overtaken by connection errors, HTTP 401s or other checks; try again`
+              : `RPC method ${method} refused: its chain re-check failed${hasCause ? ` (${causeText(details.cause)})` : ''}`,
       method,
       hasCause ? { cause: details.cause } : undefined
     )
     this.reason = reason
     this.expectedChain = expectedChain
     if (actualChain !== undefined) this.actualChain = actualChain
+    if (nodeVersion !== undefined) this.nodeVersion = nodeVersion
     if (mismatch !== undefined) {
       this.differs = Object.freeze([...mismatch.differs])
       this.expectedGenesisHash = mismatch.expectedGenesisHash

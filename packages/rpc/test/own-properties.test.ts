@@ -849,6 +849,7 @@ describe('error properties under a polluted Object.prototype', () => {
       expectedSignetChallenge: 'polluted',
       actualSignetChallenge: 'polluted',
       actualChain: 'polluted',
+      nodeVersion: 'polluted',
     }
     const errors = polluted(keys, () => [
       new RpcTransportError('getblockcount', 'network'),
@@ -858,6 +859,7 @@ describe('error properties under a polluted Object.prototype', () => {
         actualChain: 'main',
         mismatch: { differs: ['chain', 'genesis_hash', 'signet_challenge'], expectedGenesisHash: HASH_A },
       }),
+      new RpcChainGuardError('sendrawtransaction', 'unsupported_version', 'regtest'),
       new RpcResponseError('getblockcount', 'validation', 'result', 'a number', {}),
     ])
     for (const error of errors) {
@@ -934,6 +936,7 @@ const CLIENT_SAMPLES: Readonly<Record<string, unknown>> = {
   chainCheckMaxAgeMs: 86_400_000,
   maxConcurrentRequests: 1,
   directNode: true,
+  allowUnsupportedNodeVersion: true,
   username: 'attacker',
   password: 'attacker',
   cookieFile: '/dev/null',
@@ -1009,7 +1012,8 @@ describe('client options under a polluted Object.prototype', () => {
 describe('client options are strict', () => {
   const OPTIONS =
     'url, wallet, auth, tls, connect, expectedChain, expectedGenesisHash, expectedSignetChallenge, capabilities, ' +
-    'timeoutMs, maxResponseBytes, readRetries, retryDelayMs, chainCheckMaxAgeMs, maxConcurrentRequests, directNode'
+    'timeoutMs, maxResponseBytes, readRetries, retryDelayMs, chainCheckMaxAgeMs, maxConcurrentRequests, directNode, ' +
+    'allowUnsupportedNodeVersion'
   const TLS = 'ca, cert, key, passphrase, servername, pinSha256'
 
   it.each([
@@ -1018,6 +1022,11 @@ describe('client options are strict', () => {
     [{ capabilites: ['broadcast'] }, `options.capabilites is not a known key; the known keys are ${OPTIONS}`],
     [{ timeout: 5_000 }, 'options.timeout is not a known key: use options.timeoutMs, in milliseconds'],
     [{ max_response_bytes: 1024 }, 'options.max_response_bytes is not a known key: use options.maxResponseBytes'],
+    // Left out, a guarded call to an unsupported version would still be refused.
+    [
+      { allow_unsupported_node_version: true },
+      'options.allow_unsupported_node_version is not a known key: use options.allowUnsupportedNodeVersion',
+    ],
     // Left out, the client would trust the system's CAs, or connect directly.
     [{ TLS: {} }, 'options.TLS is not a known key: use options.tls'],
     [{ Connect: 'tunnel' }, 'options.Connect is not a known key: use options.connect'],

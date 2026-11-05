@@ -28,6 +28,7 @@ import {
   GENESIS,
   HASH_A,
   HASH_B,
+  networkInfoJson,
   TX_HEX,
   type RpcCall,
 } from './helpers/fake-node'
@@ -46,6 +47,9 @@ let chain: string
 let genesis: string
 /** The signet_challenge a signet node reports; null for none. */
 let challenge: string | null
+/** The user agent and version the node reports in getnetworkinfo. */
+let subversion: string
+let version: number
 /** getbestblockhash requests to leave unanswered, their connection destroyed. */
 let dropReads: number
 let hangChainCheck: boolean
@@ -62,6 +66,8 @@ beforeEach(async () => {
   chain = 'regtest'
   genesis = GENESIS['regtest']!
   challenge = '51'
+  subversion = '/qbit:1.0.0/'
+  version = 10000
   dropReads = 0
   hangChainCheck = false
   holdChainChecks = false
@@ -90,11 +96,13 @@ beforeEach(async () => {
         ? blockchainInfoJson(chain, chain === 'signet' ? challenge : null)
         : call.method === 'getblockhash'
           ? JSON.stringify(genesis)
-          : call.method === 'getbestblockhash'
-            ? JSON.stringify(HASH_A)
-            : call.method === 'sendrawtransaction'
+          : call.method === 'getnetworkinfo'
+            ? networkInfoJson(subversion, version)
+            : call.method === 'getbestblockhash'
               ? JSON.stringify(HASH_A)
-              : 'null'
+              : call.method === 'sendrawtransaction'
+                ? JSON.stringify(HASH_A)
+                : 'null'
     const replies = calls.map(call => `{"jsonrpc":"2.0","result":${result(call)},"id":${JSON.stringify(call.id)}}`)
     const answer = (): void => {
       executed.push(...calls.map(call => call.method))
@@ -882,8 +890,9 @@ describe('chain identity: genesis block and signet challenge', () => {
     expect(sent.map(call => [call.method, call.params])).toEqual([
       ['getblockchaininfo', []],
       ['getblockhash', [0]],
+      ['getnetworkinfo', []],
     ])
-    expect(new Set(sent.map(call => call.id)).size).toBe(2)
+    expect(new Set(sent.map(call => call.id)).size).toBe(3)
   })
 
   it('refuses a node of another chain that reports the expected name, on confirmChain', async () => {
@@ -1164,66 +1173,67 @@ describe('chain identity: genesis block and signet challenge', () => {
       `{"jsonrpc":"2.0","result":${result},"id":${JSON.stringify(id)}}`
     const info = blockchainInfoJson('regtest')
     const hash = JSON.stringify(GENESIS['regtest'])
+    const net = networkInfoJson()
 
-    /** Answer chain checks with `body(info call, genesis call)`; other requests as before. */
-    function answerChecksWith(body: (infoCall: RpcCall, genesisCall: RpcCall) => string): void {
+    /** Answer chain checks with `body(info call, genesis call, version call)`; other requests as before. */
+    function answerChecksWith(body: (infoCall: RpcCall, genesisCall: RpcCall, versionCall: RpcCall) => string): void {
       const handler = node.handler
       node.handler = (request, response) => {
         const parsed = JSON.parse(request.body) as RpcCall | RpcCall[]
         if (!Array.isArray(parsed)) return handler(request, response)
-        return void response.end(body(parsed[0]!, parsed[1]!))
+        return void response.end(body(parsed[0]!, parsed[1]!, parsed[2]!))
       }
     }
 
     const cases: [
       name: string,
-      body: (infoCall: RpcCall, genesisCall: RpcCall) => string,
+      body: (infoCall: RpcCall, genesisCall: RpcCall, versionCall: RpcCall) => string,
       expected: { is(value: unknown): boolean },
       fields: Record<string, unknown>,
     ][] = [
       [
         'an uppercase genesis hash',
-        (i, g) => `[${ok(i.id, info)},${ok(g.id, hash.toUpperCase())}]`,
+        (i, g, v) => `[${ok(i.id, info)},${ok(g.id, hash.toUpperCase())},${ok(v.id, net)}]`,
         RpcResponseError,
         { method: 'getblockhash', reason: 'validation', path: 'result' },
       ],
       [
         'a 63-character genesis hash',
-        (i, g) => `[${ok(i.id, info)},${ok(g.id, JSON.stringify(GENESIS['regtest']!.slice(1)))}]`,
+        (i, g, v) => `[${ok(i.id, info)},${ok(g.id, JSON.stringify(GENESIS['regtest']!.slice(1)))},${ok(v.id, net)}]`,
         RpcResponseError,
         { method: 'getblockhash', reason: 'validation' },
       ],
       [
         'a number for the genesis hash',
-        (i, g) => `[${ok(i.id, info)},${ok(g.id, '0')}]`,
+        (i, g, v) => `[${ok(i.id, info)},${ok(g.id, '0')},${ok(v.id, net)}]`,
         RpcResponseError,
         { method: 'getblockhash', reason: 'validation' },
       ],
       [
         'a null genesis hash',
-        (i, g) => `[${ok(i.id, info)},${ok(g.id, 'null')}]`,
+        (i, g, v) => `[${ok(i.id, info)},${ok(g.id, 'null')},${ok(v.id, net)}]`,
         RpcResponseError,
         { method: 'getblockhash', reason: 'validation' },
       ],
       [
         'an error for getblockhash',
-        (i, g) =>
-          `[${ok(i.id, info)},{"jsonrpc":"2.0","error":{"code":-8,"message":"Block height out of range"},"id":${g.id}}]`,
+        (i, g, v) =>
+          `[${ok(i.id, info)},{"jsonrpc":"2.0","error":{"code":-8,"message":"Block height out of range"},"id":${g.id}},${ok(v.id, net)}]`,
         RpcError,
         { method: 'getblockhash', rpcCode: -8 },
       ],
       [
         'no reply for getblockhash',
-        i => `[${ok(i.id, info)}]`,
+        (i, _g, v) => `[${ok(i.id, info)},${ok(v.id, net)}]`,
         RpcResponseError,
         { method: 'getblockhash', reason: 'protocol' },
       ],
       ['an empty array', () => '[]', RpcResponseError, { method: 'getblockchaininfo', reason: 'protocol' }],
       [
         'a reply with an id not sent',
-        (i, g) => `[${ok(i.id, info)},${ok(g.id, hash)},${ok(999_999, hash)}]`,
+        (i, g, v) => `[${ok(i.id, info)},${ok(g.id, hash)},${ok(v.id, net)},${ok(999_999, hash)}]`,
         RpcResponseError,
-        { method: 'getblockchaininfo', reason: 'protocol', path: 'response[2].id' },
+        { method: 'getblockchaininfo', reason: 'protocol', path: 'response[3].id' },
       ],
       [
         'one id answered twice',
@@ -1233,7 +1243,7 @@ describe('chain identity: genesis block and signet challenge', () => {
       ],
       [
         'the replies swapped between the ids',
-        (i, g) => `[${ok(i.id, hash)},${ok(g.id, info)}]`,
+        (i, g, v) => `[${ok(i.id, hash)},${ok(g.id, info)},${ok(v.id, net)}]`,
         RpcResponseError,
         { method: 'getblockchaininfo', reason: 'validation' },
       ],
@@ -1245,7 +1255,8 @@ describe('chain identity: genesis block and signet challenge', () => {
       ],
       [
         'a signet challenge that is not hex',
-        (i, g) => `[${ok(i.id, blockchainInfoJson('signet', 'zz'))},${ok(g.id, JSON.stringify(GENESIS['signet']))}]`,
+        (i, g, v) =>
+          `[${ok(i.id, blockchainInfoJson('signet', 'zz'))},${ok(g.id, JSON.stringify(GENESIS['signet']))},${ok(v.id, net)}]`,
         RpcResponseError,
         { method: 'getblockchaininfo', reason: 'validation', path: 'result.signet_challenge' },
       ],
@@ -1315,10 +1326,10 @@ describe('chain identity: genesis block and signet challenge', () => {
 
     it('records a mismatch from another signet challenge though getblockhash fails', async () => {
       let first = true
-      answerChecksWith((i, g) => {
-        if (!first) return `[${ok(i.id, blockchainInfoJson('signet', OTHER_CHALLENGE))}]`
+      answerChecksWith((i, g, v) => {
+        if (!first) return `[${ok(i.id, blockchainInfoJson('signet', OTHER_CHALLENGE))},${ok(v.id, net)}]`
         first = false
-        return `[${ok(i.id, blockchainInfoJson('signet'))},${ok(g.id, JSON.stringify(GENESIS['signet']))}]`
+        return `[${ok(i.id, blockchainInfoJson('signet'))},${ok(g.id, JSON.stringify(GENESIS['signet']))},${ok(v.id, net)}]`
       })
       const rpc = client({ expectedChain: 'signet' })
       await rpc.confirmChain()
@@ -1330,11 +1341,11 @@ describe('chain identity: genesis block and signet challenge', () => {
 
     it('retries the check under readRetries when getblockhash answers -28, warming up', async () => {
       let warming = true
-      answerChecksWith((i, g) =>
+      answerChecksWith((i, g, v) =>
         warming
           ? ((warming = false),
-            `[${ok(i.id, info)},{"jsonrpc":"2.0","error":{"code":-28,"message":"Loading block index…"},"id":${g.id}}]`)
-          : `[${ok(i.id, info)},${ok(g.id, hash)}]`
+            `[${ok(i.id, info)},{"jsonrpc":"2.0","error":{"code":-28,"message":"Loading block index…"},"id":${g.id}},${ok(v.id, net)}]`)
+          : `[${ok(i.id, info)},${ok(g.id, hash)},${ok(v.id, net)}]`
       )
       const rpc = client({ readRetries: 1, retryDelayMs: 0 })
       await rpc.confirmChain()

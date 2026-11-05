@@ -592,6 +592,7 @@ describe('client options', () => {
       chainCheckMaxAgeMs: 1,
       maxConcurrentRequests: 1,
       directNode: true,
+      allowUnsupportedNodeVersion: true,
     }
     for (const [key, value] of Object.entries(known)) {
       const create = (): QbitRpcClient => polluted({ [key]: value }, () => new QbitRpcClient({ ...base }))

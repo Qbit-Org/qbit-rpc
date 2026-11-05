@@ -3,6 +3,7 @@ import { IGNORED_OPTIONS, QBIT_CHAINS, type QbitChain } from './capabilities'
 import { parseJsonLossless, rawDecimal, stringifyRequest } from './json'
 import { argArray, argOptions, keysOf, NO_OPTIONS, ownElements } from './own'
 import { rawTransactionTxid } from './raw-tx'
+import { readNodeVersion } from './version'
 import {
   amount,
   anyInteger,
@@ -21,6 +22,7 @@ import {
   nullValue,
   object,
   oneOf,
+  openOneOf,
   optional,
   ResultIssue,
   signedAmount,
@@ -184,7 +186,11 @@ const R = 'result'
 
 /** `getblockchaininfo`. Field names are camelCase; amounts and fee rates are bits. */
 export interface BlockchainInfo {
-  readonly chain: QbitChain
+  /**
+   * A {@link QbitChain}, or a chain name a later qbit Core adds, as it is: the
+   * chain guard compares it with `expectedChain`.
+   */
+  readonly chain: QbitChain | (string & {})
   readonly blocks: number
   readonly headers: number
   readonly bestBlockHash: string
@@ -237,7 +243,7 @@ function parseBlockchainInfo(value: unknown): BlockchainInfo {
   const future = field(o, 'future_block_time', R, object)
   const fp = `${R}.future_block_time`
   return compact<BlockchainInfo>({
-    chain: field(o, 'chain', R, oneOf(QBIT_CHAINS)),
+    chain: field(o, 'chain', R, openOneOf(QBIT_CHAINS)),
     blocks: field(o, 'blocks', R, nonNegativeInteger),
     headers: field(o, 'headers', R, nonNegativeInteger),
     bestBlockHash: field(o, 'bestblockhash', R, hash),
@@ -311,9 +317,11 @@ export interface NetworkInfo {
 
 function parseNetworkInfo(value: unknown): NetworkInfo {
   const o = object(value, R)
+  // The chain check's reader, so this and the version gate agree on every reply.
+  const { version, subversion } = readNodeVersion(o)
   return compact<NetworkInfo>({
-    version: field(o, 'version', R, nonNegativeInteger),
-    subversion: field(o, 'subversion', R, string),
+    version,
+    subversion,
     protocolVersion: field(o, 'protocolversion', R, nonNegativeInteger),
     localServices: optional(o, 'localservices', R, hex(8)),
     localServicesNames: optional(o, 'localservicesnames', R, (v, p) => array(v, p, string)),
@@ -613,7 +621,11 @@ function parseTxOut(value: unknown): TxOut | null {
   return out
 }
 
-/** Security levels `getconfirmationtarget` models: 1, 3, 6 and 60 Bitcoin confirmations. */
+/**
+ * Security levels `getconfirmationtarget` models: 1, 3, 6 and 60 Bitcoin
+ * confirmations. Closed: the reply names the level the caller asked for, so
+ * another one fails validation.
+ */
 export type SecurityLevel = 'low' | 'medium' | 'high' | 'maximum'
 const SECURITY_LEVELS: readonly SecurityLevel[] = ['low', 'medium', 'high', 'maximum']
 
@@ -636,7 +648,9 @@ export interface ConfirmationTarget {
   readonly model: {
     readonly btcTargetConfirmations: number
     readonly blockTimeSeconds: number
-    readonly hashrateSource: 'observed_chainwork' | 'override_merge_mining_pct' | 'fallback_merge_mining_pct'
+    /** Or a source a later qbit Core adds, as it is. */
+    readonly hashrateSource:
+      'observed_chainwork' | 'override_merge_mining_pct' | 'fallback_merge_mining_pct' | (string & {})
     readonly hashrateWindowBlocks: number
     readonly permissionlessBlocksInWindow: number
     readonly auxpowBlocksInWindow: number
@@ -669,7 +683,7 @@ function parseConfirmationTarget(value: unknown): ConfirmationTarget {
         m,
         'hashrate_source',
         mp,
-        oneOf(['observed_chainwork', 'override_merge_mining_pct', 'fallback_merge_mining_pct'] as const)
+        openOneOf(['observed_chainwork', 'override_merge_mining_pct', 'fallback_merge_mining_pct'] as const)
       ),
       hashrateWindowBlocks: field(m, 'hashrate_window_blocks', mp, nonNegativeInteger),
       permissionlessBlocksInWindow: field(m, 'permissionless_blocks_in_window', mp, nonNegativeInteger),
@@ -846,8 +860,12 @@ function parseMempoolAcceptance(rawTxs: readonly string[]): (value: unknown) => 
 // PQC signature budgets
 // ---------------------------------------------------------------------------
 
-export type PqcLimitState = 'normal' | 'warning' | 'critical' | 'exhausted'
-const PQC_LIMIT_STATES: readonly PqcLimitState[] = ['normal', 'warning', 'critical', 'exhausted']
+/**
+ * A PQC key's signature-budget state, or a state a later qbit Core adds, as it
+ * is: treat one you do not know as at least `critical`.
+ */
+export type PqcLimitState = 'normal' | 'warning' | 'critical' | 'exhausted' | (string & {})
+const PQC_LIMIT_STATES = ['normal', 'warning', 'critical', 'exhausted'] as const
 
 /** Signature-budget state of one local PQC key that took part in a response. */
 export interface PqcKeyState {
@@ -876,7 +894,7 @@ export interface PqcUsage {
 
 /** The PQC usage fields of a result object; absent ones stay undefined, for `compact`. */
 function pqcUsage(o: JsonObject): { [K in keyof PqcUsage]: PqcUsage[K] | undefined } {
-  const limitState = oneOf(PQC_LIMIT_STATES)
+  const limitState = openOneOf(PQC_LIMIT_STATES)
   return {
     pqcKeyStates: optional(o, 'pqc_key_states', R, (v, p) =>
       array(v, p, (entry, ep) => {
@@ -912,7 +930,8 @@ export interface WalletInfo {
   readonly keypoolSizeHdInternal?: number
   /** Unix time until which the wallet is unlocked, 0 when locked; absent for unencrypted wallets. */
   readonly unlockedUntil?: number
-  readonly payTxFeeBitsPerKvB: bigint
+  /** Absent from a qbit Core that no longer reports `paytxfee`, which Bitcoin Core has deprecated. */
+  readonly payTxFeeBitsPerKvB?: bigint
   readonly privateKeysEnabled: boolean
   readonly avoidReuse: boolean
   /** False when no rescan is running. */
@@ -920,7 +939,8 @@ export interface WalletInfo {
   readonly descriptors: boolean
   /** Validation state of plaintext PQC key records. */
   readonly pqcKeyValidation: {
-    readonly status: 'not_required' | 'pending' | 'running' | 'complete' | 'failed'
+    /** Or a status a later qbit Core adds, as it is; `signingBlocked` says whether the wallet signs. */
+    readonly status: 'not_required' | 'pending' | 'running' | 'complete' | 'failed' | (string & {})
     readonly progress: number
     readonly plaintextRecords: number
     readonly pendingRecords: number
@@ -961,7 +981,7 @@ function parseWalletInfo(value: unknown): WalletInfo {
     keypoolSize: field(o, 'keypoolsize', R, nonNegativeInteger),
     keypoolSizeHdInternal: optional(o, 'keypoolsize_hd_internal', R, nonNegativeInteger),
     unlockedUntil: optional(o, 'unlocked_until', R, nonNegativeInteger),
-    payTxFeeBitsPerKvB: field(o, 'paytxfee', R, amount),
+    payTxFeeBitsPerKvB: optional(o, 'paytxfee', R, amount),
     privateKeysEnabled: field(o, 'private_keys_enabled', R, boolean),
     avoidReuse: field(o, 'avoid_reuse', R, boolean),
     scanning: field(o, 'scanning', R, (s, sp) => {
@@ -974,7 +994,7 @@ function parseWalletInfo(value: unknown): WalletInfo {
     }),
     descriptors: field(o, 'descriptors', R, boolean),
     pqcKeyValidation: compact<WalletInfo['pqcKeyValidation']>({
-      status: field(v, 'status', vp, oneOf(['not_required', 'pending', 'running', 'complete', 'failed'] as const)),
+      status: field(v, 'status', vp, openOneOf(['not_required', 'pending', 'running', 'complete', 'failed'] as const)),
       progress: field(v, 'progress', vp, finite(0, 1)),
       plaintextRecords: field(v, 'plaintext_records', vp, nonNegativeInteger),
       pendingRecords: field(v, 'pending_records', vp, nonNegativeInteger),
@@ -991,6 +1011,10 @@ function parseWalletInfo(value: unknown): WalletInfo {
   })
 }
 
+/**
+ * Closed: an entry of another category fails validation, as the sign and fee
+ * checks depend on it, and so do the sums of what a wallet received and sent.
+ */
 export type WalletTxCategory = 'send' | 'receive' | 'generate' | 'immature' | 'orphan'
 const WALLET_TX_CATEGORIES: readonly WalletTxCategory[] = ['send', 'receive', 'generate', 'immature', 'orphan']
 

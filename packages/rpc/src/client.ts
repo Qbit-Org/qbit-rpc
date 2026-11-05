@@ -78,6 +78,7 @@ import {
 import { argArray, argOptions, CALL_OPTION_KEYS, keysOf, ownElements, ownValue, plainOptions } from './own'
 import { ExchangeFailure, HttpTransport, prototypePollution } from './transport'
 import { ResultIssue } from './validate'
+import { nodeVersionRequest, type NodeVersion } from './version'
 
 export interface QbitRpcClientOptions {
   /**
@@ -176,6 +177,18 @@ export interface QbitRpcClientOptions {
    * outcome for side-effecting calls. Default false.
    */
   readonly directNode?: boolean
+  /**
+   * Let wallet-write and broadcast calls go to a node of a qbit Core version
+   * this package does not support. Every chain check also reads the node's
+   * version (`getnetworkinfo`); by default one outside qbit Core 1.0.x
+   * releases refuses them, as another chain does, with `RpcChainGuardError`
+   * (`reason: 'unsupported_version'`) until `confirmChain()` finds a supported
+   * one. Set it to accept the risk: such a node may read an argument
+   * differently, or answer in a shape this package does not validate.
+   * `nodeVersion` still shows the version, and a version that does not parse
+   * still fails the check. Default false.
+   */
+  readonly allowUnsupportedNodeVersion?: boolean
 }
 
 /**
@@ -219,8 +232,12 @@ export type BatchResults<T extends readonly RpcRequest<unknown>[]> = {
  * - `mismatch`: the node reported another chain, genesis block or signet
  *   challenge. Wallet-write and broadcast calls are refused until
  *   `confirmChain()` matches again.
+ * - `unsupported_version`: the node reported the expected chain, but a qbit
+ *   Core version this package does not support (see `nodeVersion`), and
+ *   `allowUnsupportedNodeVersion` is not set. Wallet-write and broadcast calls
+ *   are refused until `confirmChain()` finds a supported version.
  */
-export type ChainStatus = 'unconfirmed' | 'confirmed' | 'stale' | 'mismatch'
+export type ChainStatus = 'unconfirmed' | 'confirmed' | 'stale' | 'mismatch' | 'unsupported_version'
 
 type ChainState =
   | { readonly status: 'unconfirmed' }
@@ -234,6 +251,8 @@ type ChainState =
       readonly differs: readonly ChainCheck[]
       readonly doubt: number
     }
+  /** Recorded and lifted as a mismatch is; `doubt` as there. */
+  | { readonly status: 'unsupported_version'; readonly version: NodeVersion; readonly doubt: number }
 
 /**
  * What a chain check found: the node's chain name, genesis block hash and
@@ -288,6 +307,7 @@ const CLIENT_OPTIONS = keysOf<QbitRpcClientOptions>({
   chainCheckMaxAgeMs: true,
   maxConcurrentRequests: true,
   directNode: true,
+  allowUnsupportedNodeVersion: true,
 })
 /** What `batch()` reads of an entry. */
 const BATCH_ENTRY = ['method', 'params', 'parse'] as const
@@ -361,6 +381,7 @@ export class QbitRpcClient {
   readonly #retryDelayMs: number
   readonly #chainCheckMaxAgeMs: number
   readonly #directNode: boolean
+  readonly #allowUnsupportedNodeVersion: boolean
   readonly #limiter: Limiter
   readonly #transport: HttpTransport
   /** What `tls` sets, for `toJSON()`; undefined when it is not given. */
@@ -369,10 +390,14 @@ export class QbitRpcClient {
   #chain: ChainState = { status: 'unconfirmed' }
   /**
    * Counts signs that the node may have changed (a connection error, an HTTP
-   * 401) and chain mismatches. A chain check that saw it change while in
-   * flight cannot record a confirmation.
+   * 401), chain mismatches and unsupported versions. A chain check that saw it
+   * change while in flight cannot record a confirmation.
    */
   #doubts = 0
+  /** Chain checks in the order they were sent, so one answered late cannot roll `#nodeVersion` back. */
+  #chainChecks = 0
+  #nodeVersion: NodeVersion | undefined
+  #nodeVersionCheck = 0
   /** A digest of the newest Authorization header read: another one than a confirmation's means the cookie rotated. */
   #authDigest: string | undefined
   /** Cookie reads in the order they started, so one that finishes late cannot roll `#authDigest` back. */
@@ -444,6 +469,10 @@ export class QbitRpcClient {
       throw new TypeError('directNode must be a boolean')
     }
     this.#directNode = own.directNode ?? false
+    if (own.allowUnsupportedNodeVersion !== undefined && typeof own.allowUnsupportedNodeVersion !== 'boolean') {
+      throw new TypeError('allowUnsupportedNodeVersion must be a boolean')
+    }
+    this.#allowUnsupportedNodeVersion = own.allowUnsupportedNodeVersion ?? false
     this.#limiter = new Limiter(maxConcurrentRequests)
     // The pool follows the limit, so requests queue in the limiter rather than
     // in the agent, and a limit above 8 applies to reads too. The spare socket
@@ -471,37 +500,54 @@ export class QbitRpcClient {
   }
 
   /**
-   * Send `getblockchaininfo` and `getblockhash 0` in one JSON-RPC batch, and
-   * compare the node's `chain` with `expectedChain`, its genesis block hash
-   * with `expectedGenesisHash` and, on signet, its `signet_challenge` with
-   * `expectedSignetChallenge` (a missing one differs). On a match of all
-   * three, wallet-write and broadcast calls are allowed; once the confirmation
-   * goes stale they re-run this check before they are sent. On a mismatch they
-   * stay refused and this throws `RpcChainGuardError`, as it does when any
-   * check finds a mismatch while this call runs (its cookie read, checks,
-   * waits and retries included), unless a `confirmChain()` begun after that
-   * mismatch cleared it first. It returns its own last check's
-   * `getblockchaininfo` answer, which another check may have overtaken: call
-   * `getBlockchainInfo()` for current block data. An answer that a connection error or an
-   * HTTP 401 elsewhere may postdate is checked again, after `retryDelayMs`, up
-   * to three checks per attempt; then this throws `reason: 'stale'` (retried
-   * like a read under `readRetries`) and changes nothing. This is a read and the
-   * check itself, so any other failure of it is thrown as it is (`RpcTimeoutError`,
-   * `RpcTransportError` and so on, about `getblockchaininfo` or `getblockhash`),
-   * never `reason: 'check_failed'`.
+   * The qbit Core version the node reported (`getnetworkinfo`'s `version` and
+   * `subversion`) to the newest chain check sent that read one; undefined
+   * before then. `supported` says whether this package supports it: qbit Core
+   * 1.0.x releases. See `allowUnsupportedNodeVersion`.
+   */
+  get nodeVersion(): NodeVersion | undefined {
+    return this.#nodeVersion
+  }
+
+  /**
+   * Send `getblockchaininfo`, `getblockhash 0` and `getnetworkinfo` in one
+   * JSON-RPC batch, and compare the node's `chain` with `expectedChain`, its
+   * genesis block hash with `expectedGenesisHash` and, on signet, its
+   * `signet_challenge` with `expectedSignetChallenge` (a missing one differs),
+   * and read its version into `nodeVersion`. On a match of all three, on a
+   * supported version (or with `allowUnsupportedNodeVersion`), wallet-write and
+   * broadcast calls are allowed; once the confirmation goes stale they re-run
+   * this check before they are sent. On a mismatch, or an unsupported version,
+   * they stay refused and this throws `RpcChainGuardError` (`mismatch` or
+   * `unsupported_version`), as it does when any check finds one while this
+   * call runs (its cookie read, checks, waits and retries included), unless a
+   * `confirmChain()` begun after that mismatch cleared it first. It returns its
+   * own last check's `getblockchaininfo` answer, which another check may have
+   * overtaken: call `getBlockchainInfo()` for current block data. An
+   * unsupported version is reported even when the node's `getblockchaininfo`
+   * reply does not validate, as it may well be why. An answer that a
+   * connection error or an HTTP 401 elsewhere may postdate is checked again,
+   * after `retryDelayMs`, up to three checks per attempt; then this throws
+   * `reason: 'stale'` (retried like a read under `readRetries`) and changes
+   * nothing. This is a read and the check itself, so any other failure of it
+   * is thrown as it is (`RpcTimeoutError`, `RpcTransportError` and so on, about
+   * `getblockchaininfo`, `getblockhash` or `getnetworkinfo`, a version that does
+   * not parse included), never `reason: 'check_failed'`.
    */
   async confirmChain(callOptions?: CallOptions): Promise<BlockchainInfo> {
     const method = 'getblockchaininfo'
-    // A mismatch recorded after this point is newer than this call: it stands, and this call throws it.
+    // A mismatch or unsupported version recorded after this point is newer
+    // than this call: it stands, and this call throws it.
     const started = this.#doubts
     refusePollution(method)
     return this.#operation(method, this.#callSettings(callOptions), false, async attempt => {
       try {
         const authorization = await this.#authorization(method, attempt.signal)
         let info: BlockchainInfo | undefined
-        for (let checks = 0; info === undefined || this.#chainNeedsCheck(method, authorization, checks, started);) {
+        // A refusal the last check recorded is thrown before any wait; it may have left `info` unset.
+        for (let checks = 0; this.#chainNeedsCheck(method, authorization, checks, started) || info === undefined;) {
           if (checks > 0) await this.#pause(method, attempt)
-          this.#refuseMismatchSince(method, started)
+          this.#refuseRecordedSince(method, started)
           info = await this.#checkChain(attempt, authorization, started)
           checks += 1
         }
@@ -759,6 +805,7 @@ export class QbitRpcClient {
       ...(this.#tlsSummary === undefined ? {} : { tls: structuredClone(this.#tlsSummary) }),
       ...(this.#customConnect ? { connect: 'custom' } : {}),
       chainStatus: this.chainStatus,
+      ...(this.#nodeVersion === undefined ? {} : { nodeVersion: this.#nodeVersion }),
     }
   }
 
@@ -778,26 +825,55 @@ export class QbitRpcClient {
   }
 
   /**
-   * Record what a chain check sent with `digest` reported. `since` is
+   * Record what a chain check sent with `digest` found: `report` from its
+   * `getblockchaininfo` and `getblockhash` replies (absent when the first
+   * failed), `version` from its `getnetworkinfo` reply (absent when that
+   * failed), and whether every reply was valid (`complete`). Returns whether
+   * it recorded a refusal, which stands whatever else failed. `since` is
    * `#doubts` when its request was sent: if something cast doubt on the node
-   * since then, the answer may predate it, so a match changes nothing. A mismatch
-   * answer always stands: only a `confirmChain()` that began after it was
-   * recorded (`clearsBefore`, its starting `#doubts`) can replace it with a
-   * match.
+   * since then, the answer may predate it, so a match changes nothing. A
+   * mismatch answer always stands, and so does an unsupported version: only a
+   * `confirmChain()` that began after it was recorded (`clearsBefore`, its
+   * starting `#doubts`) can replace it with a match. An unsupported version
+   * replaces a mismatch only when such a `confirmChain()` found it with a
+   * chain report that is whole (both replies valid) and matches: without one,
+   * the node may still be on the other chain, which is reported first: that
+   * `confirmChain()` records the mismatch again as it was, so it throws it.
    */
-  #recordChain(report: ChainReport, since: number, digest: string, clearsBefore: number | undefined): void {
+  #recordChain(
+    report: ChainReport | undefined,
+    version: NodeVersion | undefined,
+    complete: boolean,
+    since: number,
+    digest: string,
+    clearsBefore: number | undefined
+  ): boolean {
     const chain = this.#chain
-    const differs = this.#chainDifferences(report)
-    if (differs.length > 0) {
+    const differs = report === undefined ? [] : this.#chainDifferences(report)
+    const lifts =
+      (chain.status !== 'mismatch' && chain.status !== 'unsupported_version') ||
+      (clearsBefore !== undefined && chain.doubt <= clearsBefore)
+    if (report !== undefined && differs.length > 0) {
       this.#doubts += 1
       this.#chain = { status: 'mismatch', report, differs, doubt: this.#doubts }
-    } else if (
-      report.genesisHash !== undefined &&
-      this.#doubts === since &&
-      (chain.status !== 'mismatch' || (clearsBefore !== undefined && chain.doubt <= clearsBefore))
-    ) {
+      return true
+    }
+    if (version !== undefined && !version.supported && !this.#allowUnsupportedNodeVersion) {
+      // differs is empty here, so a report with its genesis hash read is a match.
+      const matched = report !== undefined && report.genesisHash !== undefined
+      if (chain.status !== 'mismatch' || (lifts && matched)) {
+        this.#doubts += 1
+        this.#chain = { status: 'unsupported_version', version, doubt: this.#doubts }
+      } else if (lifts) {
+        this.#doubts += 1
+        this.#chain = { ...chain, doubt: this.#doubts }
+      }
+      return true
+    }
+    if (complete && this.#doubts === since && lifts) {
       this.#chain = { status: 'confirmed', at: performance.now(), digest }
     }
+    return false
   }
 
   /** What `report` has that differs from the expected chain, genesis block and signet challenge. */
@@ -838,11 +914,14 @@ export class QbitRpcClient {
     if (this.#chain.status === 'confirmed') this.#chain = { status: 'invalidated' }
   }
 
-  /** The refusal of a guarded call while the chain is unconfirmed or another one. */
+  /** The refusal of a guarded call while the chain is unconfirmed or another one, or the version unsupported. */
   #chainRefusal(method: string): RpcChainGuardError | undefined {
     const chain = this.#chain
     if (chain.status === 'unconfirmed') return new RpcChainGuardError(method, 'unconfirmed', this.#expectedChain)
     if (chain.status === 'mismatch') return this.#mismatchError(method, chain)
+    if (chain.status === 'unsupported_version') {
+      return new RpcChainGuardError(method, 'unsupported_version', this.#expectedChain, { nodeVersion: chain.version })
+    }
     return undefined
   }
 
@@ -853,7 +932,7 @@ export class QbitRpcClient {
    * old it is. Throws the guard's refusal, and `stale` (retryable) once
    * MAX_CHAIN_CHECKS checks have each been doubted. `confirming` is set for
    * `confirmChain()`, to `#doubts` when it began: it always checks, and is
-   * refused only by a mismatch found since then.
+   * refused only by a mismatch or unsupported version found since then.
    */
   #chainNeedsCheck(method: string, authorization: Authorization, checks: number, confirming?: number): boolean {
     const chain = this.#chain
@@ -861,7 +940,7 @@ export class QbitRpcClient {
       const refusal = this.#chainRefusal(method)
       if (refusal !== undefined) throw new Failure(refusal, false, false)
     } else {
-      this.#refuseMismatchSince(method, confirming)
+      this.#refuseRecordedSince(method, confirming)
     }
     const fresh =
       checks > 0 || (confirming === undefined && chain.status === 'confirmed' && !this.#chainExpired(chain.at))
@@ -872,11 +951,11 @@ export class QbitRpcClient {
     return true
   }
 
-  /** `confirmChain()`'s refusal: a mismatch recorded since it began (`#doubts` was `started`). */
-  #refuseMismatchSince(method: string, started: number): void {
+  /** `confirmChain()`'s refusal: a mismatch or unsupported version recorded since it began (`#doubts` was `started`). */
+  #refuseRecordedSince(method: string, started: number): void {
     const chain = this.#chain
-    if (chain.status === 'mismatch' && chain.doubt > started) {
-      throw new Failure(this.#mismatchError(method, chain), false, false)
+    if ((chain.status === 'mismatch' || chain.status === 'unsupported_version') && chain.doubt > started) {
+      throw new Failure(this.#chainRefusal(method)!, false, false)
     }
   }
 
@@ -885,9 +964,10 @@ export class QbitRpcClient {
    * refusal stands as it is, as does one for a polluted Object.prototype that
    * came after the call began. A failed re-check, or a wait before one that was cut
    * short, becomes `check_failed` about the call itself, with the failure as
-   * `cause`, unless a mismatch was recorded meanwhile, which stands. The failure
-   * keeps its classification: a guarded call without side effects retries it
-   * under `readRetries`, and a stale socket still gets its extra attempt.
+   * `cause`, unless a mismatch or an unsupported version was recorded meanwhile,
+   * which stands. The failure keeps its classification: a guarded call without
+   * side effects retries it under `readRetries`, and a stale socket still gets
+   * its extra attempt.
    */
   #guardFailure(method: string, error: unknown): Failure {
     if (error instanceof Failure && (RpcChainGuardError.is(error.error) || isPollutionRefusal(error.error)))
@@ -926,48 +1006,74 @@ export class QbitRpcClient {
   /**
    * One chain check, sent with `authorization` (the header of the call it
    * guards), and recorded; `clearsBefore` for `confirmChain()`'s, see
-   * `#recordChain`. `getblockchaininfo` and `getblockhash 0` go in one batch:
-   * one exchange under the attempt's signal, answered by one node. Its
-   * failures, an error or a malformed or missing reply for either request
-   * included, are definite failures that record nothing: a guarded request has
-   * not been sent, and `#guardFailure` reports them as the guarded call's.
-   * Whole-exchange failures name `getblockchaininfo`. The one exception: when
-   * only the `getblockhash` reply fails, a chain name or signet challenge that
-   * differs is still recorded as a mismatch.
+   * `#recordChain`. `getblockchaininfo`, `getblockhash 0` and `getnetworkinfo`
+   * go in one batch: one exchange under the attempt's signal, answered by one
+   * node. Its failures, an error or a malformed or missing reply for any
+   * request included, are definite failures that record nothing: a guarded
+   * request has not been sent, and `#guardFailure` reports them as the guarded
+   * call's. Whole-exchange failures name `getblockchaininfo`, and a reply's
+   * failure its request, the first in batch order. Two exceptions, as a
+   * refusal is always safe to record: a chain name or signet challenge that
+   * differs is a mismatch whatever the other replies were, and an unsupported
+   * version is recorded whatever the `getblockchaininfo` and `getblockhash`
+   * replies were. Then this returns the info, when its reply was valid, and
+   * the caller's next guard decision throws the refusal. The version, when
+   * valid, goes to `nodeVersion` unless a check sent later has set it.
    */
   async #checkChain(
     attempt: AttemptContext,
     authorization: Authorization,
     clearsBefore: number | undefined
-  ): Promise<BlockchainInfo> {
+  ): Promise<BlockchainInfo | undefined> {
     const check = requests.getBlockchainInfo()
     const genesis = requests.getBlockHash(0)
-    const ids = [this.#nextId++, this.#nextId++] as const
-    const body = stringifyRequest([
-      { jsonrpc: '2.0', id: ids[0], method: check.method, params: check.params },
-      { jsonrpc: '2.0', id: ids[1], method: genesis.method, params: genesis.params },
-    ])
+    const network = nodeVersionRequest()
+    const ids = [this.#nextId++, this.#nextId++, this.#nextId++] as const
+    const body = stringifyRequest(
+      [check, genesis, network].map((request, index) => ({
+        jsonrpc: '2.0',
+        id: ids[index],
+        method: request.method,
+        params: request.params,
+      }))
+    )
     const since = this.#doubts
-    let info: BlockchainInfo
+    const sent = ++this.#chainChecks
+    const definite = (error: unknown): Failure => {
+      const failure = asFailure(check.method, error, attempt)
+      return new Failure(failure.error, false, failure.retryable, failure.staleSocket)
+    }
+    let info: BlockchainInfo | undefined
     let genesisHash: string | undefined
+    let version: NodeVersion | undefined
+    /** The first reply that failed, thrown unless the check records a refusal. */
+    let failed: { readonly error: unknown } | undefined
     try {
       const text = await this.#exchange(check.method, body, attempt.signal, false, undefined, authorization.header)
       const replies = repliesById(check.method, parseOrProtocolError(check.method, text), ids)
-      info = this.#checkReply(check, replies, ids[0])
-      try {
-        genesisHash = this.#checkReply(genesis, replies, ids[1])
-      } catch (error) {
-        // Another chain name or signet challenge is a mismatch whatever the
-        // genesis reply was, so it is recorded; otherwise the check failed.
-        const shown = { chain: info.chain, genesisHash: undefined, signetChallenge: info.signetChallenge }
-        if (this.#chainDifferences(shown).length === 0) throw error
+      // Each reply on its own, so what one shows counts when another failed.
+      const read = <T>(request: RpcRequest<T>, id: number): T | undefined => {
+        try {
+          return this.#checkReply(request, replies, id)
+        } catch (error) {
+          failed ??= { error }
+          return undefined
+        }
       }
+      info = read(check, ids[0])
+      genesisHash = read(genesis, ids[1])
+      version = read(network, ids[2])
     } catch (error) {
-      const failure = asFailure(check.method, error, attempt)
-      throw new Failure(failure.error, false, failure.retryable, failure.staleSocket)
+      throw definite(error)
     }
-    const report = { chain: info.chain, genesisHash, signetChallenge: info.signetChallenge }
-    this.#recordChain(report, since, authorization.digest, clearsBefore)
+    if (version !== undefined && sent > this.#nodeVersionCheck) {
+      this.#nodeVersion = version
+      this.#nodeVersionCheck = sent
+    }
+    const report =
+      info === undefined ? undefined : { chain: info.chain, genesisHash, signetChallenge: info.signetChallenge }
+    const refused = this.#recordChain(report, version, failed === undefined, since, authorization.digest, clearsBefore)
+    if (failed !== undefined && !refused) throw definite(failed.error)
     return info
   }
 

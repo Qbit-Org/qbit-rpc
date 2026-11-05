@@ -77,8 +77,7 @@ export interface BlockchainInfo {
     readonly bits: string;
     // (undocumented)
     readonly blocks: number;
-    // (undocumented)
-    readonly chain: QbitChain;
+    readonly chain: QbitChain | (string & {});
     // (undocumented)
     readonly chainwork: string;
     // (undocumented)
@@ -197,7 +196,7 @@ export interface ChainMismatch {
 }
 
 // @public
-export type ChainStatus = 'unconfirmed' | 'confirmed' | 'stale' | 'mismatch';
+export type ChainStatus = 'unconfirmed' | 'confirmed' | 'stale' | 'mismatch' | 'unsupported_version';
 
 // @public
 export interface ConfirmationTarget {
@@ -208,7 +207,7 @@ export interface ConfirmationTarget {
     readonly model: {
         readonly btcTargetConfirmations: number;
         readonly blockTimeSeconds: number;
-        readonly hashrateSource: 'observed_chainwork' | 'override_merge_mining_pct' | 'fallback_merge_mining_pct';
+        readonly hashrateSource: 'observed_chainwork' | 'override_merge_mining_pct' | 'fallback_merge_mining_pct' | (string & {});
         readonly hashrateWindowBlocks: number;
         readonly permissionlessBlocksInWindow: number;
         readonly auxpowBlocksInWindow: number;
@@ -496,6 +495,19 @@ export interface NetworkInfo {
 }
 
 // @public
+export interface NodeVersion {
+    // (undocumented)
+    readonly major: number;
+    // (undocumented)
+    readonly minor: number;
+    // (undocumented)
+    readonly patch: number;
+    readonly subversion: string;
+    readonly supported: boolean;
+    readonly version: number;
+}
+
+// @public
 export interface Outpoint {
     // (undocumented)
     readonly txid: string;
@@ -522,8 +534,8 @@ export interface PqcKeyState {
     readonly pubkey: string;
 }
 
-// @public (undocumented)
-export type PqcLimitState = 'normal' | 'warning' | 'critical' | 'exhausted';
+// @public
+export type PqcLimitState = 'normal' | 'warning' | 'critical' | 'exhausted' | (string & {});
 
 // @public
 export interface PqcUsage {
@@ -632,6 +644,7 @@ export class QbitRpcClient {
     lockUnspent(outputs: readonly Outpoint[], options?: {
         readonly persistent?: boolean;
     }, callOptions?: CallOptions): Promise<void>;
+    get nodeVersion(): NodeVersion | undefined;
     psbtBumpFee(txid: string, options?: PsbtBumpFeeOptions, callOptions?: CallOptions): Promise<BumpedPsbt>;
     sendRawTransaction(hex: string, options?: {
         readonly maxFeeRateBitsPerKvB?: bigint;
@@ -660,6 +673,7 @@ export class QbitRpcClient {
 
 // @public (undocumented)
 export interface QbitRpcClientOptions {
+    readonly allowUnsupportedNodeVersion?: boolean;
     // (undocumented)
     readonly auth: RpcAuth;
     readonly capabilities?: readonly Capability[];
@@ -791,6 +805,7 @@ export class RpcChainGuardError extends QbitRpcError {
     constructor(method: string, reason: RpcChainGuardReason, expectedChain: QbitChain, details?: {
         readonly actualChain?: string;
         readonly mismatch?: ChainMismatch;
+        readonly nodeVersion?: NodeVersion;
         readonly cause?: unknown;
     });
     readonly actualChain?: string;
@@ -802,12 +817,13 @@ export class RpcChainGuardError extends QbitRpcError {
     readonly expectedSignetChallenge?: string;
     // (undocumented)
     static is(value: unknown): value is RpcChainGuardError;
+    readonly nodeVersion?: NodeVersion;
     // (undocumented)
     readonly reason: RpcChainGuardReason;
 }
 
 // @public
-export type RpcChainGuardReason = 'unconfirmed' | 'mismatch' | 'stale' | 'check_failed';
+export type RpcChainGuardReason = 'unconfirmed' | 'mismatch' | 'unsupported_version' | 'stale' | 'check_failed';
 
 // @public
 export type RpcConnect = (target: RpcConnectTarget) => Duplex | Promise<Duplex>;
@@ -1118,10 +1134,9 @@ export interface WalletInfo {
     readonly keypoolSizeHdInternal?: number;
     // (undocumented)
     readonly lastProcessedBlock: LastProcessedBlock;
-    // (undocumented)
-    readonly payTxFeeBitsPerKvB: bigint;
+    readonly payTxFeeBitsPerKvB?: bigint;
     readonly pqcKeyValidation: {
-        readonly status: 'not_required' | 'pending' | 'running' | 'complete' | 'failed';
+        readonly status: 'not_required' | 'pending' | 'running' | 'complete' | 'failed' | (string & {});
         readonly progress: number;
         readonly plaintextRecords: number;
         readonly pendingRecords: number;
@@ -1205,7 +1220,7 @@ export interface WalletTransaction {
     readonly wtxid: string;
 }
 
-// @public (undocumented)
+// @public
 export type WalletTxCategory = 'send' | 'receive' | 'generate' | 'immature' | 'orphan';
 
 // (No @packageDocumentation comment for this package)
