@@ -1,7 +1,7 @@
 # Security
 
-These packages are an unaudited MVP. Do not use them with a mainnet wallet
-holding funds you cannot afford to lose.
+`@qbit-oss/rpc` and `@qbit-oss/zmq` have not had a third-party security
+review.
 
 ## Reporting a vulnerability
 

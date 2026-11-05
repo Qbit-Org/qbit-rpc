@@ -1,10 +1,5 @@
 # qbit-rpc
 
-> **Unaudited MVP.** These packages have not had a security review, are not
-> published to npm, and their API may change without notice. Try them on
-> testnet4 or regtest. Do not point them at a mainnet wallet holding funds you
-> cannot afford to lose.
-
 Node.js clients for a qbit Core node you run: JSON-RPC (`@qbit-oss/rpc`) and
 ZMQ notifications (`@qbit-oss/zmq`). They complement the official SDK:
 [`@qbit-oss/api`](https://github.com/Qbit-Org/qbit-js/tree/main/packages/api)
@@ -222,9 +217,8 @@ messages, sequence gaps and socket failures arrive as `malformed`, `gap` and
 `reconnect` events, and `health()` reports `unknown` until a message arrives
 and again as soon as the connection drops.
 
-## What this MVP leaves out
+## Limits
 
-- **Not published, not audited.** No npm release or publish workflow.
 - **Typed methods** cover the list in the [`@qbit-oss/rpc` README](packages/rpc/README.md#typed-methods).
   Other allowlisted methods are untyped through `call()`. `sendmany`,
   `sendtoaddress`, `send`, `sendall` and `bumpfee` are excluded on purpose:
@@ -257,7 +251,7 @@ and again as soon as the connection drops.
   re-check is a separate request from the guarded call.
 - `@qbit-oss/zmq` does not decode `rawblock` or `rawtx` bodies, and does not
   support CURVE authentication (qbitd does not offer it).
-- Browser support, and migrating existing services onto these packages.
+- Neither package runs in a browser: both use Node.js built-in modules.
 
 ## Development
 

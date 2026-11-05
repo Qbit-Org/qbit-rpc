@@ -3,7 +3,7 @@
 Notable changes to `@qbit-oss/rpc` and `@qbit-oss/zmq`. Both packages share one
 version. Nothing has been published yet: both are `0.0.0` and private.
 
-## Unreleased: initial MVP
+## Unreleased
 
 ### Breaking: remote nodes, TLS failures, how `localhost` is trusted, and a polluted `Object.prototype`
 
