@@ -1,6 +1,6 @@
 // An adapted copy of the `CoreRpc` interface the qbit Core wallet adapter in
 // Qbit-Org/qbit-payments takes (packages/payments/src/core-wallet/rpc.ts at
-// 8030b00). It differs from that file in four places: `Outpoint` is copied in
+// 8030b00). It differs from that file in five places: `Outpoint` is copied in
 // from its src/tx.ts instead of imported, the `CoreRpc` comment names
 // `QbitRpcClient` at 8ad6854 where the original names 09eac4a, `rpcErrorCode`
 // and the `CoreRpc` comments read `rpcCode`, the property `RpcError` has had
@@ -9,7 +9,10 @@
 // the call options are a separate last argument instead of merged into a
 // method's options, `lockUnspent(outputs, options)` locks and
 // `unlockUnspent(outputs)` unlocks instead of `lockUnspent(unlock, outputs,
-// options)`, both resolve `void`, and `addressType` is `'p2mr'`, not `string`.
+// options)`, both resolve `void`, and `addressType` is `'p2mr'`, not `string`;
+// and `PqcLimitState` is open to a state a later qbit Core adds (`| (string &
+// {})`), as `@qbit-oss/rpc` passes one through since qbit-rpc issue #16, where
+// the original lists the four v1.0.0 states.
 // test/core-rpc.test.ts proves `QbitRpcClient` satisfies it without a wrapper.
 // The adapter has changed since 8030b00 and this copy has not: a check that
 // catches the drift, in place of the copy, is tracked in qbit-rpc issue #22.
@@ -35,8 +38,8 @@ export interface CoreRpcCallOptions {
   readonly timeoutMs?: number
 }
 
-/** Signature-budget state of a PQC key, as qbit Core reports it. */
-export type PqcLimitState = 'normal' | 'warning' | 'critical' | 'exhausted'
+/** Signature-budget state of a PQC key, as qbit Core reports it, or one a later qbit Core adds. */
+export type PqcLimitState = 'normal' | 'warning' | 'critical' | 'exhausted' | (string & {})
 
 /** One local PQC key's signature budget (`pqc_key_states[]`). */
 export interface CorePqcKeyState {

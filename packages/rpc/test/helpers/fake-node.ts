@@ -236,11 +236,58 @@ export const GENESIS: Readonly<Record<string, string>> = {
 }
 
 /** The calls of one chain check, in the order the client batches them. */
-export const CHECK = ['getblockchaininfo', 'getblockhash'] as const
+export const CHECK = ['getblockchaininfo', 'getblockhash', 'getnetworkinfo'] as const
 
-/** `FakeNode.results()` entries that answer a chain check as a node on `chain` with that chain's genesis block. */
+/**
+ * `FakeNode.results()` entries that answer a chain check as a qbit Core v1.0.0
+ * node on `chain` with that chain's genesis block.
+ */
 export function chainResults(chain: string, genesis = GENESIS[chain]!): Record<string, string> {
-  return { getblockchaininfo: blockchainInfoJson(chain), getblockhash: JSON.stringify(genesis) }
+  return {
+    getblockchaininfo: blockchainInfoJson(chain),
+    getblockhash: JSON.stringify(genesis),
+    getnetworkinfo: networkInfoJson(),
+  }
+}
+
+/**
+ * A getnetworkinfo result as a qbit Core v1.0.0 regtest node without peers
+ * gives it, of `version` and `subversion`, by default v1.0.0's.
+ */
+export function networkInfoJson(subversion = '/qbit:1.0.0/', version = 10000): string {
+  const network = (name: string, reachable: boolean): Record<string, unknown> => ({
+    name,
+    limited: !reachable,
+    reachable,
+    proxy: '',
+    proxy_randomize_credentials: false,
+  })
+  return JSON.stringify({
+    version,
+    subversion,
+    protocolversion: 70016,
+    localservices: '0000000000002c09',
+    localservicesnames: ['NETWORK', 'WITNESS', 'NETWORK_LIMITED', 'P2P_V2', 'ARCHIVE'],
+    localrelay: true,
+    timeoffset: 0,
+    networkactive: true,
+    connections: 0,
+    connections_in: 0,
+    connections_out: 0,
+    networks: [
+      network('ipv4', true),
+      network('ipv6', true),
+      network('onion', false),
+      network('i2p', false),
+      network('cjdns', false),
+    ],
+    relayfee: 0,
+    incrementalfee: 0,
+    localaddresses: [],
+    warnings: [],
+  })
+    .replace('"relayfee":0', '"relayfee":0.00000250')
+    .replace('"incrementalfee":0', '"incrementalfee":0.00000250')
 }
 
 /**

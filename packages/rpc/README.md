@@ -2,8 +2,9 @@
 
 > **Unaudited MVP**, not published to npm. See the [repository README](../../README.md).
 
-A Node.js JSON-RPC client for qbit Core (`qbitd`) v1.0.0. No runtime
-dependencies and no native code.
+A Node.js JSON-RPC client for qbit Core (`qbitd`) 1.0.x releases, checked
+against v1.0.0; see [Versions and compatibility](#versions-and-compatibility).
+No runtime dependencies and no native code.
 
 Node.js `^22.13.0 || ^24.0.0 || >=26.0.0`. CI tests 22.13.0 and the newest
 22.x, 24.x and 26.x on Linux x64; Node.js 27 and later, and other operating
@@ -35,12 +36,13 @@ const info = await rpc.getBlockchainInfo()
 | `expectedSignetChallenge` | `51` on signet | The `signet_challenge` every chain check expects: non-empty hex of whole bytes (the challenge script), either case (compared in lowercase). Only with `expectedChain: 'signet'`. |
 | `capabilities` | `[]` | Any of `wallet-read`, `wallet-write`, `broadcast`. |
 | `timeoutMs` | 30,000; at least 120,000 for `walletPassphrase` and `walletLock` | One deadline per operation: any wait for a request slot, cookie read, every attempt and every backoff. A shorter value does not shorten their 120 s. Override per call. See [unlocking a wallet](#unlocking-an-encrypted-wallet). With `connect`, it also bounds a pooled connection still opening after its read gave up (see [Proxies](#proxies-connect)). |
-| `maxResponseBytes` | 16 MiB | Larger replies fail with `RpcResponseTooLargeError` (or an unknown outcome for side-effecting calls). Leave a few KiB at least: the chain check's batched reply (`getblockchaininfo` and `getblockhash 0`) must fit, or every check fails. |
+| `maxResponseBytes` | 16 MiB | Larger replies fail with `RpcResponseTooLargeError` (or an unknown outcome for side-effecting calls). Leave a few KiB at least: the chain check's batched reply (`getblockchaininfo`, `getblockhash 0` and `getnetworkinfo`, about 2 KiB from a v1.0.0 node without peers) must fit, or every check fails. |
 | `readRetries` | 0 | Opt-in retries for methods without side effects (see below). |
 | `retryDelayMs` | 250 | First backoff; doubles per retry, capped at 10 s, never past the deadline. |
 | `chainCheckMaxAgeMs` | 10,000 | How long a chain confirmation stays fresh before a wallet-write or broadcast call re-checks it. 0 re-checks before every such call. |
 | `maxConcurrentRequests` | 8 | Most requests this client has open at once, on pooled and fresh connections alike (1 to 1,024); it also sizes the keep-alive pool. Further attempts wait in FIFO order under their deadline. See [the work queue](#the-work-queue). |
 | `directNode` | `false` | Set when `url` reaches `qbitd` itself. `qbitd`'s HTTP 503 `Work queue depth exceeded` is then a definite failure, not an unknown outcome. Opt-in, because a proxy in between can answer 503 after forwarding the request. See [the work queue](#the-work-queue). |
+| `allowUnsupportedNodeVersion` | `false` | Let wallet-write and broadcast calls go to a node outside qbit Core 1.0.x releases, which they are refused otherwise (`RpcChainGuardError` `reason: 'unsupported_version'`). `nodeVersion` still shows the version, and one that does not parse still fails the check. See [Versions and compatibility](#versions-and-compatibility). |
 
 The options, and `tls` and `auth` within them, are read once each, when the
 client is constructed, from their own enumerable properties, and the arrays in
@@ -371,13 +373,17 @@ an unsigned PSBT and signs and broadcasts nothing (see
 ### Chain guard
 
 `wallet-write` and `broadcast` calls also need `await rpc.confirmChain()`.
-Each chain check sends `getblockchaininfo` and `getblockhash 0` as one JSON-RPC
-batch, so one node answers both in one round trip, and compares three things:
-`chain` with `expectedChain`, the genesis block hash with `expectedGenesisHash`,
-and on signet `signet_challenge` with `expectedSignetChallenge` (a signet node
-that reports no challenge differs). Until a check has matched all three, or
-after one found any of them different, they throw `RpcChainGuardError`
-(`reason: 'unconfirmed'` or `'mismatch'`) without sending anything. On
+Each chain check sends `getblockchaininfo`, `getblockhash 0` and
+`getnetworkinfo` as one JSON-RPC batch, so one node answers all three in one
+round trip, and compares three things: `chain` with `expectedChain`, the genesis
+block hash with `expectedGenesisHash`, and on signet `signet_challenge` with
+`expectedSignetChallenge` (a signet node that reports no challenge differs). It
+also reads the node's version, which must be a supported one (see
+[Versions and compatibility](#versions-and-compatibility)). Until a check has
+matched all three on a supported version, or after one found any of them
+different, they throw `RpcChainGuardError` (`reason: 'unconfirmed'` or
+`'mismatch'`) without sending anything, and after one found an unsupported
+version, `reason: 'unsupported_version'`. On
 `mismatch`, `differs` lists what differed (`chain`, `genesis_hash`,
 `signet_challenge`), `actualChain`, `actualGenesisHash` and
 `actualSignetChallenge` hold what the node reported, `expectedChain`,
@@ -408,8 +414,10 @@ Core's default signet. What the check still cannot tell apart:
   challenge only its operators can meet.
 - **Two nodes of the same chain behind one URL** (see the end of this section).
 
-Where `-rpcwhitelist` applies, the RPC user needs `getblockhash` as well as
-`getblockchaininfo`, and a proxy in between must pass JSON-RPC batches.
+Where `-rpcwhitelist` applies, the RPC user needs `getblockhash` and
+`getnetworkinfo` as well as `getblockchaininfo` (qbitd answers a batch holding
+a method the user may not call with HTTP 403 for the whole batch), and a proxy
+in between must pass JSON-RPC batches.
 
 A confirmation goes stale after `chainCheckMaxAgeMs` (default 10 s), and at
 once on a connection error (including a reset keep-alive connection whose read
@@ -421,8 +429,8 @@ call is refused without being sent, with `RpcChainGuardError` `reason:
 'check_failed'`, never an unknown outcome. Its `method` is the call's, and its
 `cause` is what failed: an `RpcTimeoutError`, `RpcAbortedError`,
 `RpcTransportError`, `RpcError`, `RpcResponseError` or
-`RpcResponseTooLargeError` about `getblockchaininfo`, or `getblockhash` for an
-error or an invalid reply to that request. Nothing was sent, so calling again
+`RpcResponseTooLargeError` about `getblockchaininfo`, or `getblockhash` or
+`getnetworkinfo` for an error or an invalid reply to that request. Nothing was sent, so calling again
 is safe; `cause` tells whether soon is any use (a timeout, a dropped connection
 or -28 warming up usually pass, an HTTP 403 does not). `check_failed` keeps
 those failures' retry rules: `finalizepsbt` and `testmempoolaccept`, which have
@@ -431,9 +439,11 @@ check: a chain name or challenge that differs is a `mismatch` even when the rest
 of the reply failed, and so is a mismatch another check records while the
 re-check fails. If the check finds another chain, genesis block or signet
 challenge, the call is refused and so is every later one until `confirmChain()`
-matches again. `rpc.chainStatus` is `unconfirmed`, `confirmed`, `stale` or
-`mismatch`. `confirmChain()` is a read and the check itself, so it throws what
-failed as it is, never `check_failed`.
+matches again; an unsupported version is refused the same way, until
+`confirmChain()` finds a supported one. `rpc.chainStatus` is `unconfirmed`,
+`confirmed`, `stale`, `mismatch` or `unsupported_version`. `confirmChain()` is a
+read and the check itself, so it throws what failed as it is, never
+`check_failed`.
 
 The guard decides after a call's last wait, as it hands the request to the
 transport: a mismatch recorded by another check while the call read its
@@ -463,11 +473,86 @@ name that can switch nodes, they can reach different nodes of the same chain
 (or the check can reach the right node and the call another one): point the
 client at one node.
 
+## Versions and compatibility
+
+This package supports **qbit Core 1.0.x releases**: 1.0.0 and any later 1.0
+patch release, and no pre-release. It is tested against v1.0.0, the release
+`scripts/qbit-core-release.mjs` names, by the regtest smoke test (CI's
+`regtest smoke` job). A new minor version is supported only once that test
+passes against it, in a release of this package that says so. The range is
+defined once, in `src/version.ts`.
+
+**The node's version.** Every chain check, `confirmChain()`'s and the re-check
+before a wallet-write or broadcast call, reads `getnetworkinfo` in its batch, so
+the version is checked as often as the chain: a guarded call checks again once
+the confirmation is older than `chainCheckMaxAgeMs`, or after a sign of a qbitd
+restart, as an upgrade is (a connection error, an HTTP 401, a new cookie).
+`rpc.nodeVersion` holds the version from the newest check sent whose
+`getnetworkinfo` reply was valid (undefined before the first), and `toJSON()`
+shows it:
+
+```ts
+rpc.nodeVersion // { version: 10000, subversion: '/qbit:1.0.0/', major: 1, minor: 0, patch: 0, supported: true }
+```
+
+`version` is `getnetworkinfo.version`, 10000 × major + 100 × minor + patch, and
+`subversion` the user agent, with any `-uacomment` in parentheses
+(`/qbit:1.0.0(ours)/`). `supported` is true for the user agent `qbit` at 1.0.x
+with no pre-release suffix: `/qbit:1.0.1/` is supported; `/qbit:1.1.0/`,
+`/qbit:1.0.1-rc1/` and `/qbit:0.1.2-testnet4/` are not.
+
+On a version that is not supported, wallet-write and broadcast calls are
+refused, unsent, with `RpcChainGuardError` `reason: 'unsupported_version'` (its
+`nodeVersion` says which), and `chainStatus` is `unsupported_version`. Like a
+mismatch, it stands until a `confirmChain()` begun after it finds a supported
+version, and `confirmChain()` throws it. It is reported even when the node's
+`getblockchaininfo` reply does not validate, as a newer version may be why; a
+chain that differs is reported first, and a recorded mismatch stays until a
+`confirmChain()` begun after it reads a valid `getblockchaininfo` and
+`getblockhash 0` that match. Reads are not refused: they still
+validate every reply, so one a newer version changed fails as `RpcResponseError`,
+and `nodeVersion` tells you why it may have. Set `allowUnsupportedNodeVersion:
+true` to send guarded calls anyway, taking the risk that the node reads an
+argument differently, which no validation catches. A version that does not
+parse is never taken for a supported one: a `version` that is not an integer
+from 0 to 2,147,483,647, a `subversion` not of the form `/name:major.minor.patch/`
+(with qbit Core's optional `-phase` and `-rcN` suffixes and comments), or one
+that disagrees with `version`, fails the check with `RpcResponseError` about
+`getnetworkinfo`, whatever `allowUnsupportedNodeVersion` says: `confirmChain()`
+throws it, and a guarded call is `check_failed` with it as `cause`.
+`getNetworkInfo()` reads `version` and `subversion` with the same reader, so it
+fails on such a reply too, at the same path.
+
+**Values a later qbit Core may add.** A field this package reads is required
+when qbit Core v1.0.0 prints it, except `paytxfee`
+(`WalletInfo.payTxFeeBitsPerKvB`), which Bitcoin Core has deprecated: it is
+optional, so its removal does not break `getWalletInfo()`. Fields the node adds
+are dropped. An enum is open or closed:
+
+| Value | An unknown value | Why |
+| --- | --- | --- |
+| `BlockchainInfo.chain` | Passed through | The chain guard compares it with `expectedChain` itself, so an unknown name is a `mismatch`. |
+| `ConfirmationTarget.model.hashrateSource` | Passed through | It describes the model; the result means the same whatever it is. |
+| `WalletInfo.pqcKeyValidation.status` | Passed through | `signingBlocked` says whether the wallet signs. |
+| `PqcLimitState`: `pqcLimitState`, `pqcOverallLimitState` and each key's | Passed through | A signature-budget state must reach you, never be dropped or coerced: treat one you do not know as at least `critical`. |
+| `WalletTxCategory`: `category` | Fails validation | The sign and fee checks are per category, and so are the sums of what a wallet received and sent. |
+| `bip125Replaceable` | Fails validation | Its `unknown` already means "cannot tell". |
+| `ConfirmationTarget.securityLevel` | Fails validation | It names the level the call asked for. |
+
+An open value is typed as its known values or `(string & {})`, so the known
+ones still complete in an editor and a `switch` over them needs a `default`. It
+passes through as any non-empty string, as the node sent it; an empty or
+non-string one fails validation. The JSON-RPC envelope stays strict: a reply
+object with a key besides the four JSON-RPC 2.0 defines (`jsonrpc`, `id`,
+`result`, `error`) is an `RpcResponseError` (`reason: 'protocol'`).
+
 ## Typed methods
 
 Results are validated field by field (hashes, hex, integer ranges, enums,
 amounts) and returned with camelCase names; fields the node adds beyond these
-are dropped (use `call()` for the raw reply). Every object in a result, typed or
+are dropped (use `call()` for the raw reply). Which enums take a value a later
+qbit Core adds, and which fields may be absent, is in
+[Versions and compatibility](#versions-and-compatibility). Every object in a result, typed or
 from `call()`, has a null prototype: an absent field must read as `undefined`
 even if `Object.prototype` is polluted after the reply arrives, such as a
 missing `blockHash` on an unconfirmed transaction. The client reads the reply
@@ -522,8 +607,10 @@ They are `pqcKeyStates` (per key: `pubkey`, `pqcSignatureCount`,
 `pqcSignatureLimit`, `pqcSignaturesRemaining`, `pqcLimitState`),
 `pqcOverallLimitState`, and the four single-key fields when exactly one key is
 involved; `ProcessedPsbt` adds `warnings`. `pqcLimitState` is `normal`,
-`warning`, `critical` or `exhausted`. A key's limit is 2^30 signatures. qbit
-Core v1.0.0's `getwalletinfo` does not report these counts.
+`warning`, `critical` or `exhausted`, or a state a later qbit Core adds, passed
+through as it is: treat a state you do not know as at least `critical`. A key's
+limit is 2^30 signatures. qbit Core v1.0.0's `getwalletinfo` does not report
+these counts.
 
 `lockUnspent(outputs)` locks outputs against automatic coin selection and
 `unlockUnspent(outputs)` unlocks them, both through qbit Core's `lockunspent`.
@@ -783,8 +870,9 @@ copy of it). Scope the client to the wallet (`wallet`), enable `wallet-read`,
 over. The adapter must read a node's error code from `rpcCode`, as the copy here
 does: reading `code`, it would take every node error for an unknown outcome. It
 must also take this version's shapes, which the copy has: call options as the
-last argument, and `lockUnspent(outputs, options)` and `unlockUnspent(outputs)`
-resolving nothing (see [CHANGELOG.md](../../CHANGELOG.md)).
+last argument, `lockUnspent(outputs, options)` and `unlockUnspent(outputs)`
+resolving nothing, and a `PqcLimitState` open to a state a later qbit Core adds
+(see [CHANGELOG.md](../../CHANGELOG.md)).
 
 Arguments are checked before sending; invalid ones reject with `TypeError` or
 `RangeError` and nothing is sent. A number argument of `-0` is sent as `0`.
@@ -850,10 +938,11 @@ change, see the [repository README](../../README.md#the-api-report).
 The package exports `QbitRpcClient` with its option and result types,
 `requests`, the error classes, `JsonNumber`, and the amount helpers
 `parseQbt`, `formatQbt`, `BITS_PER_QBT` and `MAX_MONEY_BITS`. The allowlist,
-the lists of capabilities and chains, and the default genesis hashes and signet
-challenge are internal: the `Capability` and `QbitChain` types name the values,
-the tables above list them, the constructor refuses anything else, and
-`toJSON()` shows what a client uses.
+the lists of capabilities and chains, the default genesis hashes and signet
+challenge, and the supported qbit Core versions are internal: the `Capability`
+and `QbitChain` types name the values, the tables and text above list them, the
+constructor refuses anything else, `nodeVersion.supported` applies the version
+range, and `toJSON()` shows what a client uses.
 
 ## Amounts
 
@@ -899,6 +988,7 @@ you made, or in `cause` the request that failed. Every error has its own
 | `RpcCapabilityError` | `reason: 'not_batchable'` | A method other than a read in `batch()`. | Not sent | A programming error. |
 | `RpcChainGuardError` | `reason: 'unconfirmed'` | A wallet-write or broadcast call before `confirmChain()` succeeded. | Not sent | Call `confirmChain()`. |
 | `RpcChainGuardError` | `reason: 'mismatch'` | A chain check (yours, or the automatic re-check) found another chain, genesis block or signet challenge; `differs` says which. | Not sent | Check the URL, or set `expectedGenesisHash` or `expectedSignetChallenge` for a node with other chain parameters or a custom signet, then call `confirmChain()`. |
+| `RpcChainGuardError` | `reason: 'unsupported_version'` | A chain check found a qbit Core version outside 1.0.x releases; `nodeVersion` says which. | Not sent | Run a supported qbit Core, or a release of this package that supports the node's, then call `confirmChain()`; or accept the risk with `allowUnsupportedNodeVersion`. |
 | `RpcChainGuardError` | `reason: 'stale'` | Every chain check the call ran was overtaken by a connection error, an HTTP 401 or another check. | Not sent | Try again later. |
 | `RpcChainGuardError` | `reason: 'check_failed'` | The chain re-check before the call failed; `cause` is the failure. | Not sent | Safe to call again; `cause` tells whether soon is any use. |
 | `RpcError` | | The node answered with an error, under HTTP 200, 400, 404 or 500: `rpcCode` and `message` are the node's. | The node's answer: not an unknown outcome | Handle by `rpcCode`, for example -26 rejected, -25 missing inputs, -27 already confirmed, -14 wrong passphrase, -28 node warming up. |
@@ -906,7 +996,7 @@ you made, or in `cause` the request that failed. Every error has its own
 | `RpcTransportError` | `reason: 'tls'` | The TLS handshake failed or was refused: the node's certificate is not trusted (`code` such as `UNABLE_TO_VERIFY_LEAF_SIGNATURE` or `CERT_HAS_EXPIRED`), names another host (`ERR_TLS_CERT_ALTNAME_INVALID`) or carries a key no `tls.pinSha256` names (`EPINMISMATCH`, this package's); a handshake resumed a TLS session, which the client never offers (`ESESSIONRESUMED`, this package's); or the terminator refused the handshake with an alert, such as for a client certificate missing or not trusted (`ERR_SSL_TLSV13_ALERT_CERTIFICATE_REQUIRED`, `ERR_SSL_SSL/TLS_ALERT_BAD_CERTIFICATE`, `ERR_SSL_TLSV1_ALERT_UNKNOWN_CA`, `EPROTO` before TLS 1.3). See [Remote nodes](#remote-nodes). | Not sent when the handshake failed before the request was written, as it does under TLS 1.2 and for the client's own checks; an alert after that, under TLS 1.3, is the `cause` of an `RpcUnknownOutcomeError` for a side-effecting call | Fix the `tls` settings or the terminator's. Not retried. A key no pin names can be an attack. |
 | `RpcTransportError` | `reason: 'not_loopback'` | `localhost`, in an `http` URL or with cookie authentication, resolved to an address that is not loopback, or to some. See [localhost](#localhost). | Not sent | Fix the hosts file or DNS, or put `127.0.0.1` in the URL. Not retried. |
 | `RpcTransportError` | `reason: 'prototype_polluted'` | `Object.prototype` has enumerable properties of its own, which something in this process put there, such as JSON parsed into a deep merge that followed `__proto__`; the message says how many. Every call fails until they are gone. See [a polluted `Object.prototype`](#a-polluted-objectprototype). | Not sent | Find and remove the pollution, and fix the code that let it in. Not retried. |
-| `RpcTransportError` | `reason: 'http_status'` | An HTTP status without the node's JSON-RPC reply, `status`: 401 credentials; 403 `rpcallowip`, or an `-rpcwhitelist` that does not allow a method sent (the chain check needs `getblockhash` too); 502, 503 or 504 from a gateway, even with a JSON-RPC error body ([which statuses are the node's](#which-statuses-are-the-nodes)). | Not run for 3xx and 4xx, and for `Work queue depth exceeded` with `directNode`; any other 5xx, and a JSON-RPC error body under a status the node does not use for one, is an unknown outcome | Retry reads later; fix configuration for 401 and 403. |
+| `RpcTransportError` | `reason: 'http_status'` | An HTTP status without the node's JSON-RPC reply, `status`: 401 credentials; 403 `rpcallowip`, or an `-rpcwhitelist` that does not allow a method sent (the chain check needs `getblockhash` and `getnetworkinfo` too); 502, 503 or 504 from a gateway, even with a JSON-RPC error body ([which statuses are the node's](#which-statuses-are-the-nodes)). | Not run for 3xx and 4xx, and for `Work queue depth exceeded` with `directNode`; any other 5xx, and a JSON-RPC error body under a status the node does not use for one, is an unknown outcome | Retry reads later; fix configuration for 401 and 403. |
 | `RpcTransportError` | `reason: 'credentials'` | The cookie file could not be read; `code` says why, such as `ENOENT`, or `EMALFORMED`, `ETOOBIG` or `EREAD` from this package. | Not sent | Check the cookie file. |
 | `RpcTimeoutError` | | The operation's deadline (`timeoutMs`) expired. | Not sent when it expired waiting for a slot, reading the cookie or before a connection was made; during the re-check it is the `cause` of `check_failed`; after that, an unknown outcome | Retry reads if appropriate. |
 | `RpcAbortedError` | | Your `AbortSignal` fired; `cause` is its reason. | As for `RpcTimeoutError` | Your own decision to stop. |
@@ -925,7 +1015,7 @@ node's `RpcError` means it did not run:
   `RpcTransportError` `prototype_polluted`;
 - the capability check: `RpcCapabilityError`;
 - the guard's first decision, and its last after any wait: `RpcChainGuardError`
-  `unconfirmed` or `mismatch`;
+  `unconfirmed`, `mismatch` or `unsupported_version`;
 - a signal already aborted: `RpcAbortedError`;
 - the wait for a request slot: `RpcTimeoutError` or `RpcAbortedError`;
 - the cookie read: `RpcTransportError` `credentials`, or `RpcTimeoutError` or
@@ -1066,8 +1156,9 @@ arrives as the `cause` of an `RpcUnknownOutcomeError`, since the node has acted.
 Credentials live in private class fields. `JSON.stringify(client)` and
 `util.inspect(client)` show only the URL, chain, expected genesis hash (and,
 on signet, challenge), capabilities, auth kind and chain status; with `tls`, whether it sets a CA and a client
-certificate, its `servername` and its pins, which are public; and
-`connect: 'custom'` with a `connect` function. `tls.key` and `tls.passphrase`
+certificate, its `servername` and its pins, which are public; with a `connect` function,
+`connect: 'custom'`; and, once a check has read it, the node's version.
+`tls.key` and `tls.passphrase`
 go into Node's TLS context at construction and are not kept, and an error
 about them names the option only. A `connect` function's own errors are not
 kept either. Messages and

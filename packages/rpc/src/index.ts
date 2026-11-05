@@ -18,6 +18,7 @@ export type { ChainCheck, ChainMismatch, RpcCapabilityRefusal, RpcChainGuardReas
 export { BITS_PER_QBT, MAX_MONEY_BITS, formatQbt, parseQbt } from './amount'
 export { JsonNumber } from './json'
 export { requests } from './methods'
+export type { NodeVersion } from './version'
 export type {
   AddressInfo,
   AddressType,

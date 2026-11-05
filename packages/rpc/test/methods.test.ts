@@ -71,7 +71,7 @@ const header = {
 }
 
 describe('chain methods', () => {
-  it('getblockchaininfo maps every field and rejects an unknown chain', async () => {
+  it('getblockchaininfo maps every field, and passes an unknown chain name through', async () => {
     node.results({ getblockchaininfo: blockchainInfoJson('regtest') })
     const info = await rpc.getBlockchainInfo()
     expect(info).toMatchObject({
@@ -84,7 +84,10 @@ describe('chain methods', () => {
       warnings: [],
     })
     expect(info).not.toHaveProperty('pruneHeight')
+    // A chain a later qbit Core adds stays readable; the chain guard compares the name itself.
     node.results({ getblockchaininfo: blockchainInfoJson('bitcoin') })
+    expect((await rpc.getBlockchainInfo()).chain).toBe('bitcoin')
+    node.results({ getblockchaininfo: blockchainInfoJson('') })
     await invalid(rpc.getBlockchainInfo(), 'result.chain')
     node.results({ getblockchaininfo: blockchainInfoJson('main').replace('"blocks":10', '"blocks":10.5') })
     await invalid(rpc.getBlockchainInfo(), 'result.blocks')
@@ -668,7 +671,7 @@ describe('wallet methods', () => {
       pqcLimitState: 'warning',
       pqcKeyStates: [{ pubkey: HASH_A, pqcSignatureLimit: 1073741824, pqcLimitState: 'warning' }],
     })
-    node.results({ walletprocesspsbt: '{"psbt":"cHNidP8=","complete":false,"pqc_limit_state":"depleted"}' })
+    node.results({ walletprocesspsbt: '{"psbt":"cHNidP8=","complete":false,"pqc_limit_state":3}' })
     await invalidAfterSideEffect(rpc.walletProcessPsbt('cHNidP8='), 'result.pqc_limit_state')
     await expect(rpc.walletProcessPsbt('not base64!')).rejects.toThrow(TypeError)
   })
@@ -831,14 +834,14 @@ describe('wallet methods', () => {
       [{ scriptPubKey: 'not hex' }, 'result.scriptPubKey'],
       [{ witness_version: 17 }, 'result.witness_version'],
       [{ labels: [1] }, 'result.labels[0]'],
-      [{ pqc_key_states: [{ ...keyState, pqc_limit_state: 'depleted' }] }, 'result.pqc_key_states[0].pqc_limit_state'],
+      [{ pqc_key_states: [{ ...keyState, pqc_limit_state: '' }] }, 'result.pqc_key_states[0].pqc_limit_state'],
       [{ pqc_key_states: [{ ...keyState, pubkey: 'ab' }] }, 'result.pqc_key_states[0].pubkey'],
       [
         { pqc_key_states: [{ ...keyState, pqc_signatures_remaining: -1 }] },
         'result.pqc_key_states[0].pqc_signatures_remaining',
       ],
       [{ pqc_key_states: {} }, 'result.pqc_key_states'],
-      [{ pqc_overall_limit_state: 'fine' }, 'result.pqc_overall_limit_state'],
+      [{ pqc_overall_limit_state: 3 }, 'result.pqc_overall_limit_state'],
       [{ pqc_signature_count: 4294967296 }, 'result.pqc_signature_count'],
     ]
     for (const [change, path] of malformed) {
