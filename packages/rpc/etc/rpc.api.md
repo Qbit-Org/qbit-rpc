@@ -329,6 +329,13 @@ export interface ChainTip {
 export type ChainTipStatus = 'invalid' | 'headers-only' | 'valid-headers' | 'valid-fork' | 'active' | 'unknown';
 
 // @public
+export type ClientSatisfies<Copy extends object> = {
+    -readonly [K in keyof Copy]-?: K extends keyof QbitRpcClient ? Exclude<Copy[K], undefined> extends (...args: infer Args) => infer Result ? QbitRpcClient[K] extends (...args: infer Params) => infer ClientResult ? ([ClientResult] extends [Result] ? never : 'returns') | ([Args] extends [Params] ? [UndeclaredKeys<Args, Params>] extends [never] ? never : 'parameters' : 'parameters') : 'type' : [QbitRpcClient[K]] extends [Exclude<Copy[K], undefined>] ? never : 'type' : {} extends Pick<Copy, K> ? never : 'missing';
+} extends infer Reasons ? {
+    [K in keyof Reasons as [Reasons[K]] extends [never] ? never : K]: Reasons[K];
+} extends infer Mismatches ? {} extends Mismatches ? true : Mismatches : never : never;
+
+// @public
 export interface ConfirmationTarget {
     readonly auxpowHashrate: number;
     // (undocumented)
@@ -1473,6 +1480,13 @@ export interface TxSpendingPrevout {
     // (undocumented)
     readonly vout: number;
 }
+
+// @public
+export type UndeclaredKeys<Arg, Param> = unknown extends Param ? never : [Param] extends [never] ? never : 0 extends 1 & Arg ? never : Arg extends (...args: never) => unknown ? never : Arg extends readonly unknown[] ? {
+    [I in keyof Arg]-?: UndeclaredKeys<Arg[I], Param extends unknown ? (I extends keyof Param ? Param[I] : never) : never>;
+}[number] : Arg extends object ? Exclude<keyof Arg, Param extends unknown ? keyof Param : never> | {
+    [K in keyof Arg]-?: UndeclaredKeys<Arg[K], Param extends unknown ? (K extends keyof Param ? Param[K] : never) : never>;
+}[keyof Arg] : never;
 
 // @public
 export interface UnloadedWallet {

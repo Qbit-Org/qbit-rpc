@@ -6,7 +6,8 @@ first call. These pages hold the details:
 - [Configuration](configuration.md): every client option, per-call options
   (`signal`, `timeoutMs`), and what the client keeps secret.
 - [Methods, arguments and batches](methods.md): every typed method and what it
-  returns, how arguments are checked, `call()` and `batch()`.
+  returns, how arguments are checked, `call()` and `batch()`, and checking an
+  interface of your own against the client with `ClientSatisfies`.
 - [Capabilities and the allowlist](capabilities.md): which method needs which
   capability, opening further methods with `extraMethods`, and `node-admin`.
 - [Chain guard](chain-guard.md): how the client checks that it talks to the
@@ -65,6 +66,7 @@ For the Node.js, platform and TypeScript versions, see
 | Any other allowlisted method | `rpc.call('getindexinfo')` (numbers come back as `JsonNumber`) |
 | A method the package does not allowlist | open it for one client, `extraMethods: { getchaintxstats: { capability: 'read', sideEffects: false } }`, then `rpc.call('getchaintxstats')`; see [opening another method](capabilities.md#opening-another-method-extramethods) |
 | Abort a call or give it its own deadline | the last argument: `rpc.getTxOut(txid, vout, { includeMempool: true }, { signal, timeoutMs: 5_000 })` |
+| Check that the client still fits an interface you declare for it | `true satisfies ClientSatisfies<CoreRpc>` in a type test; see [checking an interface of your own](methods.md#checking-an-interface-of-your-own-clientsatisfies) |
 | Convert amounts | `parseQbt('1.5')` → `150000000n`, `formatQbt(1n)` → `'0.00000001'` |
 | Block and mempool notifications | [`@qbit-oss/zmq`](../zmq/README.md): `new QbitZmqSubscriber({ url, topics })`, `subscriber.health()` |
 
@@ -77,8 +79,11 @@ shows up in review as a change to that file. To update it after an intended
 change, see [CONTRIBUTING.md](../../CONTRIBUTING.md#the-api-report).
 
 The package exports `QbitRpcClient` with its option and result types,
-`requests`, the error classes, `JsonNumber`, and the amount helpers
-`parseQbt`, `formatQbt`, `BITS_PER_QBT` and `MAX_MONEY_BITS`. The allowlist,
+`requests`, the error classes, `JsonNumber`, the amount helpers `parseQbt`,
+`formatQbt`, `BITS_PER_QBT` and `MAX_MONEY_BITS`, and the types
+`ClientSatisfies` and `UndeclaredKeys`, which check an interface a consumer
+declares for the client (see
+[checking an interface of your own](methods.md#checking-an-interface-of-your-own-clientsatisfies)). The allowlist,
 the lists of capabilities and chains, the default genesis hashes and signet
 challenge, and the supported qbit Core versions are internal: the `Capability`
 and `QbitChain` types name the values, the pages above list them, the
