@@ -290,12 +290,11 @@ Steps 2 to 5 bring these to the settings below.
     two-factor authentication and disallow tokens". Check that no
     `NPM_TOKEN` secret is left in the environment and no token from step 8
     is left on npmjs.com.
-12. **Network verification** of the candidate (#7): regtest with fault
-    injection, a mainnet read-only sweep and ZMQ soak, and optionally one
-    small mainnet send. The network check that runs them,
-    `pnpm verify:network`, lands in its own pull request, whose
-    `docs/network-verification.md` gives the steps. Commit the reports, and
-    fix or explain each failure, before the final release.
+12. **Network verification** of the candidate, as
+    [docs/network-verification.md](docs/network-verification.md) describes:
+    regtest with fault injection, a mainnet read-only sweep and ZMQ soak, and
+    optionally one small mainnet send. Commit the reports, and fix or explain
+    each failure, before the final release.
 
 Then [the final release](#final-release) publishes `0.1.0`.
 

@@ -8,8 +8,9 @@ against v1.0.0, the release `scripts/qbit-core-release.mjs` names, by CI's
 `regtest smoke` job. A new minor version is supported only once that job passes
 against it, in a release of these packages that says so.
 
-Checks against a mainnet node, and scripted fault injection on regtest, are
-planned (#7): the network check that runs them lands in its own pull request.
+The scripted fault injection, `corepack pnpm verify:network regtest`, runs by
+hand on a throwaway regtest node. Checks against a mainnet node are planned in
+[Network verification](network-verification.md), which records each run.
 
 `@qbit-oss/rpc` checks the node's version with every chain check and exposes it
 as `rpc.nodeVersion`. On another version it refuses wallet-write, broadcast, mining and wallet-admin
