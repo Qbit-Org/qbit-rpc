@@ -252,7 +252,9 @@ export type ChainTipStatus = 'invalid' | 'headers-only' | 'valid-headers' | 'val
 
 // @public
 export type ClientSatisfies<Copy extends object> = {
-    -readonly [K in keyof Copy]-?: K extends keyof QbitRpcClient ? Exclude<Copy[K], undefined> extends (...args: infer Args) => infer Result ? QbitRpcClient[K] extends (...args: infer Params) => infer ClientResult ? ([ClientResult] extends [Result] ? never : 'returns') | ([Args] extends [Params] ? [UndeclaredKeys<Args, Params>] extends [never] ? never : 'parameters' : 'parameters') : 'type' : [QbitRpcClient[K]] extends [Exclude<Copy[K], undefined>] ? never : 'type' : {} extends Pick<Copy, K> ? never : 'missing';
+    -readonly [K in keyof Copy]-?: K extends keyof QbitRpcClient ? Exclude<Copy[K], undefined | null> extends (...args: infer Args) => infer Result ? QbitRpcClient[K] extends (...args: infer Params) => infer ClientResult ? ([ClientResult] extends [Result] ? never : 'returns') | ([Args] extends [Params] ? [UndeclaredKeys<Args, Params>] extends [never] ? never : 'parameters' : 'parameters') : 'type' : [
+    QbitRpcClient[K]
+    ] extends [{} extends Pick<Copy, K> ? Exclude<Copy[K], undefined> : Copy[K]] ? never : 'type' : {} extends Pick<Copy, K> ? never : 'missing';
 } extends infer Reasons ? {
     [K in keyof Reasons as [Reasons[K]] extends [never] ? never : K]: Reasons[K];
 } extends infer Mismatches ? {} extends Mismatches ? true : Mismatches : never : never;
@@ -1224,11 +1226,11 @@ export interface TxSpendingPrevout {
 }
 
 // @public
-export type UndeclaredKeys<Arg, Param> = unknown extends Param ? never : [Param] extends [never] ? never : 0 extends 1 & Arg ? never : Arg extends (...args: never) => unknown ? never : Arg extends readonly unknown[] ? {
-    [I in keyof Arg]-?: UndeclaredKeys<Arg[I], Param extends unknown ? (I extends keyof Param ? Param[I] : never) : never>;
-}[number] : Arg extends object ? Exclude<keyof Arg, Param extends unknown ? keyof Param : never> | {
-    [K in keyof Arg]-?: UndeclaredKeys<Arg[K], Param extends unknown ? (K extends keyof Param ? Param[K] : never) : never>;
-}[keyof Arg] : never;
+export type UndeclaredKeys<Arg, Param> = unknown extends Param ? never : [Param] extends [never] ? never : 0 extends 1 & Arg ? never : Arg extends (...args: never) => unknown ? never : Arg extends string | number | bigint | boolean | symbol | null | undefined ? never : (Param extends unknown ? (Arg extends Param ? Param : never) : never) extends infer Matched ? ([Matched] extends [never] ? Param : Matched) extends infer P ? Arg extends readonly unknown[] ? {
+    [I in keyof Arg]-?: UndeclaredKeys<Arg[I], P extends readonly unknown[] ? number extends P['length'] ? P[number] : I extends keyof P ? P[I] : never : never>;
+}[number] : Arg extends object ? [keyof Arg] extends [never] ? P extends readonly unknown[] ? never : P extends object ? string extends keyof P ? never : [keyof P] extends [never] ? never : string : never : Exclude<keyof Arg, P extends unknown ? keyof P : never> | {
+    [K in keyof Arg]-?: UndeclaredKeys<Arg[K], P extends unknown ? (K extends keyof P ? P[K] : never) : never>;
+}[keyof Arg] : never : never : never;
 
 // @public
 export interface UnloadedWallet {

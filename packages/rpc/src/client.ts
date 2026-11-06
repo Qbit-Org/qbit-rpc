@@ -349,6 +349,18 @@ export type ChainStatus = 'unconfirmed' | 'confirmed' | 'stale' | 'mismatch' | '
  * - `type`: a member that is not a method has a type the client's is not
  *   assignable to, or one of the two is a method and the other is not.
  *
+ * Limits, where TypeScript gives the type nothing to compare:
+ *
+ * - Overloads: only the last signature of an overloaded member is checked.
+ *   Declare one signature per member.
+ * - Generic methods: a generic signature is compared at its constraints, so
+ *   a copy's generic method can pass where a call through it would not, and
+ *   the client's generic `batch` reports `returns` for a copy that
+ *   specializes it. Declare copies without type parameters.
+ * - Outpoints: `lockUnspent` and `unlockUnspent` accept a typed result with
+ *   its extra fields at run time, but declare `{ txid, vout }`; a copy that
+ *   declares the extras reports `parameters`.
+ *
  * Check it in the consumer's type tests, which its CI compiles:
  *
  * ```ts
@@ -359,7 +371,7 @@ export type ChainStatus = 'unconfirmed' | 'confirmed' | 'stale' | 'mismatch' | '
  */
 export type ClientSatisfies<Copy extends object> = {
   -readonly [K in keyof Copy]-?: K extends keyof QbitRpcClient
-    ? Exclude<Copy[K], undefined> extends (...args: infer Args) => infer Result
+    ? Exclude<Copy[K], undefined | null> extends (...args: infer Args) => infer Result
       ? QbitRpcClient[K] extends (...args: infer Params) => infer ClientResult
         ? | ([ClientResult] extends [Result] ? never : 'returns')
           | ([Args] extends [Params]
@@ -368,7 +380,8 @@ export type ClientSatisfies<Copy extends object> = {
                 : 'parameters'
               : 'parameters')
         : 'type'
-      : [QbitRpcClient[K]] extends [Exclude<Copy[K], undefined>]
+      : // A member the copy declares as required keeps its own undefined: the nodeVersion getter can return it.
+        [QbitRpcClient[K]] extends [{} extends Pick<Copy, K> ? Exclude<Copy[K], undefined> : Copy[K]]
         ? never
         : 'type'
     : {} extends Pick<Copy, K>
@@ -387,8 +400,12 @@ export type ClientSatisfies<Copy extends object> = {
  * parameter `Param` it is passed to does not declare; `never` when there is
  * none. TypeScript lets such a key through, since an object with more
  * properties is assignable to one with fewer, but the client refuses it with a
- * `TypeError`. Argument lists (tuples) are compared position by position, and
- * a key of any member of a union `Param` is declared. For {@link ClientSatisfies}.
+ * `TypeError`. Argument lists (tuples) are compared position by position, an
+ * array parameter giving its element type to each position of a tuple
+ * argument. Against a union `Param`, a key is declared when a member the
+ * argument is assignable to declares it. A primitive, branded or not, holds no
+ * key, and an argument of type `object` or `{}` holds any. For
+ * {@link ClientSatisfies}.
  */
 export type UndeclaredKeys<Arg, Param> = unknown extends Param
   ? never
@@ -398,21 +415,47 @@ export type UndeclaredKeys<Arg, Param> = unknown extends Param
       ? never
       : Arg extends (...args: never) => unknown
         ? never
-        : Arg extends readonly unknown[]
-          ? {
-              [I in keyof Arg]-?: UndeclaredKeys<
-                Arg[I],
-                Param extends unknown ? (I extends keyof Param ? Param[I] : never) : never
-              >
-            }[number]
-          : Arg extends object
-            ? | Exclude<keyof Arg, Param extends unknown ? keyof Param : never>
-              | {
-                  [K in keyof Arg]-?: UndeclaredKeys<
-                    Arg[K],
-                    Param extends unknown ? (K extends keyof Param ? Param[K] : never) : never
-                  >
-                }[keyof Arg]
+        : // A primitive, branded or not (string & { __brand }), holds no key the client reads.
+          Arg extends string | number | bigint | boolean | symbol | null | undefined
+          ? never
+          : // The members of a union parameter the argument is assignable to; all of them when it fits none.
+            (Param extends unknown ? (Arg extends Param ? Param : never) : never) extends infer Matched
+            ? ([Matched] extends [never] ? Param : Matched) extends infer P
+              ? Arg extends readonly unknown[]
+                ? {
+                    // Position by position; an array parameter gives its element type to each position.
+                    [I in keyof Arg]-?: UndeclaredKeys<
+                      Arg[I],
+                      P extends readonly unknown[]
+                        ? number extends P['length']
+                          ? P[number]
+                          : I extends keyof P
+                            ? P[I]
+                            : never
+                        : never
+                    >
+                  }[number]
+                : Arg extends object
+                  ? [keyof Arg] extends [never]
+                    ? // `object` or `{}` lets any key through, where the client's parameter declares its own.
+                      P extends readonly unknown[]
+                      ? never
+                      : P extends object
+                        ? string extends keyof P
+                          ? never
+                          : [keyof P] extends [never]
+                            ? never
+                            : string
+                        : never
+                    : | Exclude<keyof Arg, P extends unknown ? keyof P : never>
+                      | {
+                          [K in keyof Arg]-?: UndeclaredKeys<
+                            Arg[K],
+                            P extends unknown ? (K extends keyof P ? P[K] : never) : never
+                          >
+                        }[keyof Arg]
+                  : never
+              : never
             : never
 
 type ChainState =

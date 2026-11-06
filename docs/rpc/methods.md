@@ -260,6 +260,13 @@ true satisfies ClientSatisfies<Drifted>
 | `parameters` | The copy allows arguments the client does not take. They are compared both ways: the copy's arguments must be assignable to the client's parameters, compared strictly rather than bivariantly, and may hold no key, at any depth, that the client does not declare there (the type `UndeclaredKeys` lists them). The copy may take fewer arguments, or narrower values, such as `sighashType?: 'DEFAULT'`, or `options?: undefined` to pass call options alone. |
 | `type` | A member that is not a method has a type the client's is not assignable to, or one of the two is a method and the other is not. |
 
+Parameters are compared position by position, and a tuple argument element by element against an array parameter. Against a union, such as a funded PSBT's outputs, a key counts as declared only by a member the argument fits, so one output with both `address` and `data` is reported. Options typed `object` or `{}` are reported too, as they let any key through. A branded primitive (`string & { __brand: 'Txid' }`) fits where the client takes the primitive.
+
+**Limits, where TypeScript gives the type nothing to compare:**
+- **Overloads:** only the last signature of an overloaded member is checked. Declare one signature per member.
+- **Generic methods:** a generic signature is compared at its constraints. A copy's generic method can pass where a call through it would not, and a copy that specializes the client's generic `batch` reports `returns`. Declare copies without type parameters.
+- **Outpoints:** `lockUnspent` and `unlockUnspent` accept a typed result with its extra fields at run time, but declare `{ txid, vout }`. A copy that declares the extras reports `parameters`: declare `{ txid, vout }` too.
+
 `tsc` shortens a long type in its messages: set `"noErrorTruncation": true` in
 the tsconfig of the type tests to see every member. The check runs whenever
 your CI does, against the version of this package you install, so a change
