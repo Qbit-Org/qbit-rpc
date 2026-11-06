@@ -14,6 +14,8 @@ The package READMEs cover installing and a first call:
 - [Packaging and dependencies](packaging.md): what each tarball holds, and the
   optional `zeromq` peer dependency.
 - [Limits](limits.md): what the packages do not do, or cannot check.
+- [Threat model](threat-model.md): what the packages protect, against whom,
+  and what stays with the application and the node's operator.
 
 Changes are in the [changelog](../CHANGELOG.md); security reports go as
 [SECURITY.md](../SECURITY.md) describes; development is in

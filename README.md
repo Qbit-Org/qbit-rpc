@@ -90,6 +90,9 @@ Development, checks and the regtest smoke test are in
 [CONTRIBUTING.md](CONTRIBUTING.md). Report vulnerabilities as
 [SECURITY.md](SECURITY.md) describes, not in a public issue.
 
+What the packages protect, and what they leave to you, is in the
+[threat model](docs/threat-model.md).
+
 ## License
 
 [MIT](LICENSE)
