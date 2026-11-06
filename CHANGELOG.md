@@ -1033,3 +1033,47 @@ properties only. The API report is unchanged.
 - New exported types: `DataPqcHashSignature`, `DescriptorImport`,
   `DescriptorImportResult`, `DescriptorInfo`, `DescriptorRange`, `LoadedWallet`,
   `RescanResult`, `UnloadedWallet` and `WalletDirEntry`.
+
+### Breaking: PQC key budgets checked before signing
+
+An exhausted PQC key signs nothing and raises no error, and a key that runs
+out partway leaves the inputs after it unsigned, so every caller had to count,
+per key, the signatures a PSBT needs against `pqcSignaturesRemaining` before
+signing. The client does it now.
+
+- `checkPqcSigning(psbt)`, under `wallet-read`: `decodepsbt` for the output
+  each input spends (its `non_witness_utxo`'s when it has one, as the wallet
+  signs by it, else its `witness_utxo`), then `getaddressinfo` for each of
+  those addresses once, in batches of up to 1,000, and the count: each input
+  needs one signature from each PQC key its address holds. It resolves with a
+  `PqcSigningPlan`: each key's `pubkey`, `addresses`, `needed`, `remaining` and
+  `state`, the worst `state`, and a warning per `critical` key. Every field it
+  reads is validated with the typed methods' parsers: `decodepsbt`'s inputs
+  must match `tx.vin` one for one, a `non_witness_utxo` must be the spent
+  transaction with the spent output, and an address must not be empty.
+- `PqcSigningError`, with `reason` `no_address` (`inputIndex`), `no_keys` (a
+  PQC state without `pqc_key_states`, `address`), `exhausted`, `unknown_state`
+  (a state this version does not know: fail closed, `state`) or
+  `would_run_out` (`pubkey`, `needed`, `remaining`). `method` is
+  `walletprocesspsbt`; the message names the input and the key, never the
+  address. New exported types: `PqcSigningKey`, `PqcSigningPlan` and
+  `PqcSigningRefusal`.
+- `walletProcessPsbt` runs the check first whenever it signs, and sends
+  nothing to sign when it refuses or fails; the check's failure is thrown as
+  it is, about `decodepsbt` or `getaddressinfo`. So it now needs `wallet-read`
+  as well as `wallet-write`: without it, `RpcCapabilityError` (`required:
+  'wallet-read'`) before anything is sent. The check and the signing share one
+  deadline, the call's `timeoutMs` from when it starts, and its signal: a
+  deadline the check used up is an `RpcTimeoutError` about
+  `walletprocesspsbt`, with nothing sent. `sign: false` signs nothing and is
+  not checked. `{ pqcCheck: false }` skips the check, unsafe; `pqcCheck` is the
+  client's option, never sent, and `requests.walletProcessPsbt` does not take
+  it. `call('walletprocesspsbt')` is not checked.
+- The payout example in `docs/rpc/payments.md` uses `checkPqcSigning` instead
+  of its 25 hand-written lines, and the page gains "Checking PQC keys before
+  signing", with what the check cannot see: signatures made meanwhile, and a
+  PSBT built elsewhere that misstates an input's `witness_utxo`.
+- On regtest, with counts written into the wallet file, `walletProcessPsbt`
+  refuses a key with one signature left and two inputs (`would_run_out`) and an
+  exhausted key, its count read back unchanged, and signs a critical and a
+  normal key's inputs through the check.

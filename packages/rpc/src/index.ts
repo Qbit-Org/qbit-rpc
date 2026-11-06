@@ -10,6 +10,7 @@ export type {
 export type { Capability, QbitChain } from './capabilities'
 export type { RpcAuth, RpcConnect, RpcConnectTarget, RpcTlsOptions } from './endpoint'
 export {
+  PqcSigningError,
   QbitRpcError,
   RpcAbortedError,
   RpcCapabilityError,
@@ -21,11 +22,12 @@ export {
   RpcTransportError,
   RpcUnknownOutcomeError,
 } from './errors'
-export type { ChainCheck, ChainMismatch, RpcCapabilityRefusal, RpcChainGuardReason } from './errors'
+export type { ChainCheck, ChainMismatch, PqcSigningRefusal, RpcCapabilityRefusal, RpcChainGuardReason } from './errors'
 export { BITS_PER_QBT, MAX_MONEY_BITS, formatQbt, parseQbt } from './amount'
 export { JsonNumber } from './json'
 export { requests } from './methods'
 export type { NodeVersion } from './version'
+export type { PqcSigningKey, PqcSigningPlan } from './pqc-signing'
 export type {
   AddressInfo,
   AddressType,

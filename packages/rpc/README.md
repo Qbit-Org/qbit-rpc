@@ -97,6 +97,10 @@ first. A worked payout, from funding a PSBT to broadcasting it, is in
 - **Exact amounts.** Amounts are `bigint` bits, parsed from the reply's text,
   never a JavaScript `number`.
   [Amounts](https://github.com/Qbit-Org/qbit-rpc/blob/main/docs/rpc/amounts.md)
+- **PQC keys checked before signing.** `walletProcessPsbt` first counts the
+  signatures a PSBT needs from each PQC key, and signs nothing when an
+  exhausted key, or one that would run out partway, would leave it half signed.
+  [Payments](https://github.com/Qbit-Org/qbit-rpc/blob/main/docs/rpc/payments.md#checking-pqc-keys-before-signing)
 - **Wallet workflows.** PSBT payouts, PQC signature budgets, fee bumps, CPFP
   packages, wallet administration and mining.
   [Wallet](https://github.com/Qbit-Org/qbit-rpc/blob/main/docs/rpc/wallet.md),

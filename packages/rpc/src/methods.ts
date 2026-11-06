@@ -147,7 +147,7 @@ function argHex(value: unknown, name: string, bytes?: number): string {
   return value
 }
 
-function argBase64(value: unknown, name: string): string {
+export function argBase64(value: unknown, name: string): string {
   if (typeof value !== 'string' || value === '' || !/^[A-Za-z0-9+/]+={0,2}$/.test(value) || value.length % 4 !== 0) {
     throw new TypeError(`${name} must be non-empty padded base64`)
   }
@@ -485,7 +485,7 @@ export interface ScriptPubKey {
   readonly type: string
 }
 
-function parseInput(value: unknown, path: string): TransactionInput {
+export function parseInput(value: unknown, path: string): TransactionInput {
   const i = object(value, path)
   const txinwitness = optional(i, 'txinwitness', path, (v, p) => array(v, p, hex()))
   const sequence = field(i, 'sequence', path, uint32)
@@ -505,7 +505,7 @@ function parseInput(value: unknown, path: string): TransactionInput {
   })
 }
 
-function parseScriptPubKey(value: unknown, path: string): ScriptPubKey {
+export function parseScriptPubKey(value: unknown, path: string): ScriptPubKey {
   const spk = object(value, path)
   return compact<ScriptPubKey>({
     asm: field(spk, 'asm', path, string),
@@ -516,7 +516,7 @@ function parseScriptPubKey(value: unknown, path: string): ScriptPubKey {
   })
 }
 
-function parseOutput(value: unknown, path: string): TransactionOutput {
+export function parseOutput(value: unknown, path: string): TransactionOutput {
   const out = object(value, path)
   return compact<TransactionOutput>({
     valueBits: field(out, 'value', path, amount),

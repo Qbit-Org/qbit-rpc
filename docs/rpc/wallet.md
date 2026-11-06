@@ -105,18 +105,17 @@ What to watch, as observed on a v1.0.0 regtest node:
   left, the first input is signed and the second is not.
 - The wallet still lists an exhausted key's coins as spendable, counts them in
   its balance, and `walletCreateFundedPsbt` picks them.
-- So read the state of the keys you are about to use: `getAddressInfo` of each
-  input's address before signing (the addresses `decodepsbt` gives for the
-  funded PSBT's inputs, which can include the wallet's unconfirmed change; the
-  [payout example](payments.md#paying-out-from-a-wallet) reads them in one
-  `batch`), and of the change
-  address before you reuse it. `getAddressInfo` reports any state, `exhausted`
-  too, without warnings. Refuse to sign on `exhausted` or a state you do not
-  know, or when a key has fewer signatures left (`pqcKeyStates`) than the
-  inputs it would sign; `critical` is when to sign the spend that moves the
-  coins on. An
-  incomplete PSBT whose inputs are all the wallet's own may mean an exhausted
-  key.
+- So `walletProcessPsbt` reads the state of the keys it is about to use
+  first, and refuses to sign (`PqcSigningError`) on `exhausted`, on a state
+  this version does not know, or when a key has fewer signatures left than
+  the inputs it would sign; `checkPqcSigning(psbt)` runs that check alone, and
+  warns of a `critical` key, which is when to sign the spend that moves the
+  coins on. See [checking PQC keys before signing](payments.md#checking-pqc-keys-before-signing).
+  It reads `getAddressInfo` of each input's address, which can be the wallet's
+  unconfirmed change. Read the change address's state too before you reuse
+  it: `getAddressInfo` reports any state, `exhausted` too, without warnings.
+  An incomplete PSBT whose inputs are all the wallet's own may mean an
+  exhausted key, signed with `pqcCheck: false`.
 - The count is the wallet's own. A wallet restored from a backup counts from
   the backup's count, and one the descriptor is imported into counts from 0
   (`test/functional/wallet_pqc_usage.py`), so neither knows the signatures the
@@ -125,7 +124,9 @@ What to watch, as observed on a v1.0.0 regtest node:
 How this was checked: qbit Core v1.0.0 has no option to lower the limit, so the
 regtest smoke test writes a key's count into the wallet file below each
 threshold, reloads the wallet and signs; it asserts each state, both reminder
-lines, the limit, and the exhausted key's incomplete PSBT. The reasoning for
+lines, the limit, and the exhausted key's incomplete PSBT (signed with
+`pqcCheck: false`), and that `walletProcessPsbt` refuses a key that would run
+out, and an exhausted one, before signing, its count read back unchanged. The reasoning for
 the advice in the last column is ours, not the node's; that the worst key sets
 `pqcOverallLimitState` when several keys differ is read from the source only;
 and no key has reached these counts by signing.

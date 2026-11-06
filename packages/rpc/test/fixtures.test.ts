@@ -10,6 +10,7 @@ import { ResultIssue } from '../src/validate'
 import { FakeNode, type RpcCall } from './helpers/fake-node'
 import { fuzz, FUZZ_TIMEOUT_MS } from './helpers/fuzz'
 import {
+  clientArgs,
   clone,
   get,
   loadFixtures,
@@ -259,7 +260,7 @@ describe('mutated replies through the client', () => {
       capabilities: ['wallet-read', 'wallet-write', 'broadcast'],
     })
   const send = (rpc: QbitRpcClient, f: Fixture): Promise<unknown> =>
-    (rpc as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>)[f.builder]!(...f.args)
+    (rpc as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>)[f.builder]!(...clientArgs(f))
   /** What the client method resolves with for a validated value: these four resolve with nothing. */
   const returned = (f: Fixture, value: unknown): unknown =>
     ['lockUnspent', 'unlockUnspent', 'walletPassphrase', 'walletLock'].includes(f.builder) ? undefined : value

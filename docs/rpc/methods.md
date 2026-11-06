@@ -64,7 +64,8 @@ is the `cause` of an `RpcUnknownOutcomeError`. Each method also takes
 | `listTransactions({ label?, count?, skip?, includeWatchOnly? })` | `WalletHistoryEntry[]`, the newest `count` (default 10), oldest first |
 | `getBalances()` | `WalletBalances`: `mine` (`trustedBits`, `untrustedPendingBits`, `immatureBits`, `usedBits?`) and `lastProcessedBlock` |
 | `walletCreateFundedPsbt({ inputs?, outputs, locktime?, options?, bip32derivs?, version? })` | `{ psbt, feeBits, changePos }` |
-| `walletProcessPsbt(psbt, { sign?, sighashType?, bip32derivs?, finalize? })` | `ProcessedPsbt` with the PQC usage fields |
+| `walletProcessPsbt(psbt, { sign?, sighashType?, bip32derivs?, finalize?, pqcCheck? })` | `ProcessedPsbt` with the PQC usage fields; when it signs, after `checkPqcSigning` passes (`pqcCheck: false` skips it, unsafe), under one deadline |
+| `checkPqcSigning(psbt)` | `PqcSigningPlan`: the signatures signing takes from each of the wallet's PQC keys, or `PqcSigningError`; see [checking PQC keys before signing](payments.md#checking-pqc-keys-before-signing) |
 | `finalizePsbt(psbt, { extract? })` | `{ psbt?, hex?, complete }` |
 | `psbtBumpFee(txid, { feeRateBitsPerKvB?, confTarget?, estimateMode?, replaceable?, outputs?, originalChangeIndex? })` | `BumpedPsbt`: `{ psbt, originalFeeBits, feeBits, errors }`, the PSBT unsigned |
 | `walletPassphrase(passphrase, timeoutSeconds)`, `walletLock()` | nothing; see [unlocking a wallet](wallet.md#unlocking-an-encrypted-wallet) |

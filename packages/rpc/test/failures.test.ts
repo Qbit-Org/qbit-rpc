@@ -108,7 +108,7 @@ describe('unknown outcomes after a side effect may have happened', () => {
   })
 
   it.each([
-    ['walletprocesspsbt', (rpc: QbitRpcClient) => rpc.walletProcessPsbt('cHNidP8=')],
+    ['walletprocesspsbt', (rpc: QbitRpcClient) => rpc.walletProcessPsbt('cHNidP8=', { pqcCheck: false })],
     [
       'walletcreatefundedpsbt',
       (rpc: QbitRpcClient) => rpc.walletCreateFundedPsbt({ outputs: [{ address: 'tq1x', amountBits: 1n }] }),

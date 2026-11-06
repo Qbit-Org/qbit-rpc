@@ -660,7 +660,7 @@ describe('wallet methods', () => {
     node.results({
       walletprocesspsbt: `{"psbt":"cHNidP8=","complete":true,"hex":"00","pqc_key_states":[{"pubkey":"${HASH_A}","pqc_signature_count":268435457,"pqc_signature_limit":1073741824,"pqc_signatures_remaining":805306367,"pqc_limit_state":"warning"}],"pqc_overall_limit_state":"warning","pqc_signature_count":268435457,"pqc_signature_limit":1073741824,"pqc_signatures_remaining":805306367,"pqc_limit_state":"warning","warnings":["PQC key ... crossed the warning threshold"]}`,
     })
-    const processed = await rpc.walletProcessPsbt('cHNidP8=', { sighashType: 'ALL' })
+    const processed = await rpc.walletProcessPsbt('cHNidP8=', { sighashType: 'ALL', pqcCheck: false })
     expect(params()).toEqual(['cHNidP8=', null, 'ALL'])
     expect(processed).toMatchObject({
       complete: true,
@@ -672,7 +672,7 @@ describe('wallet methods', () => {
       pqcKeyStates: [{ pubkey: HASH_A, pqcSignatureLimit: 1073741824, pqcLimitState: 'warning' }],
     })
     node.results({ walletprocesspsbt: '{"psbt":"cHNidP8=","complete":false,"pqc_limit_state":3}' })
-    await invalidAfterSideEffect(rpc.walletProcessPsbt('cHNidP8='), 'result.pqc_limit_state')
+    await invalidAfterSideEffect(rpc.walletProcessPsbt('cHNidP8=', { pqcCheck: false }), 'result.pqc_limit_state')
     await expect(rpc.walletProcessPsbt('not base64!')).rejects.toThrow(TypeError)
   })
 
@@ -1099,7 +1099,7 @@ describe('hex and base64 results', () => {
     })
     await invalid(rpc.getTransaction(HASH_A), 'result.hex')
     await invalid(rpc.finalizePsbt('cHNidP8='), 'result.hex')
-    await invalidAfterSideEffect(rpc.walletProcessPsbt('cHNidP8='), 'result.hex')
+    await invalidAfterSideEffect(rpc.walletProcessPsbt('cHNidP8=', { pqcCheck: false }), 'result.hex')
   })
 
   it.each(['not base64!', 'cHNidP8', 'cHNi=dP8', '', 'cHNidP8=='])('rejects %j as a PSBT', async bad => {
@@ -1114,7 +1114,7 @@ describe('hex and base64 results', () => {
       rpc.walletCreateFundedPsbt({ outputs: [{ address: 'rq1a', amountBits: 1n }] }),
       'result.psbt'
     )
-    await invalidAfterSideEffect(rpc.walletProcessPsbt('cHNidP8='), 'result.psbt')
+    await invalidAfterSideEffect(rpc.walletProcessPsbt('cHNidP8=', { pqcCheck: false }), 'result.psbt')
     await invalid(rpc.finalizePsbt('cHNidP8='), 'result.psbt')
   })
 })

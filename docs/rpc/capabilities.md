@@ -27,6 +27,13 @@ steps they belong to, and so is `listwalletdir`, the step before `loadwallet`. S
 methods need `mining`, and [wallet administration](wallet-admin.md) for
 `wallet-admin`, the descriptor reads and `signdatapqchash`.
 
+`walletProcessPsbt` reads before it signs: its
+[PQC check](payments.md#checking-pqc-keys-before-signing) sends `decodepsbt`
+and `getaddressinfo`, so it needs `wallet-read` as well as `wallet-write`,
+refused with `RpcCapabilityError` (`required: 'wallet-read'`) before anything is
+sent, unless it signs nothing (`sign: false`) or skips the check
+(`pqcCheck: false`, unsafe). `checkPqcSigning` needs `wallet-read`.
+
 ## Opening another method: `extraMethods`
 
 qbit Core has many more methods. `extraMethods` opens one for one client,

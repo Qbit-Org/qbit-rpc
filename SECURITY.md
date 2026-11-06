@@ -39,7 +39,13 @@ and request parameters out of the errors it writes (a node's own error message
 is passed through). It does not hold private keys:
 signing happens in the qbitd wallet, which the `wallet-write` capability lets
 a client drive. Treat any process with that capability, and the node's RPC
-port, as able to spend the wallet's funds.
+port, as able to spend the wallet's funds. Before `walletProcessPsbt` signs, it counts the
+signatures the PSBT needs from each of the wallet's PQC keys and refuses, with
+nothing signed, when a key is exhausted, in a state it does not know, or would
+run out partway, which would leave the PSBT half signed; `pqcCheck: false`
+turns that off, and is unsafe. The check reads each input as the PSBT
+describes it, so it guards PSBTs the wallet built, not one crafted to
+misdescribe its inputs.
 
 `@qbit-oss/zmq` reads unauthenticated notifications. qbitd's ZMQ publisher has
 no authentication, so a notification proves nothing on its own: confirm what
