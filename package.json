@@ -41,6 +41,8 @@
   },
   "homepage": "https://github.com/Qbit-Org/qbit-rpc#readme",
   "devDependencies": {
-    "prettier": "3.9.10"
+    "prettier": "3.9.10",
+    "types-node-floor": "npm:@types/node@22.0.0",
+    "typescript-floor": "npm:typescript@5.0.4"
   }
 }

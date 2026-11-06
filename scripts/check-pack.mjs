@@ -9,15 +9,22 @@
 // outside src/ or does not carry the source it maps to, the manifest's
 // packaging fields or dependency policy have drifted (see the root README's
 // "Packaging and dependencies"), a package's LICENSE copy has drifted from the
-// root LICENSE, or a package is not marked private. The checks that need no
+// root LICENSE, a package is not marked private, the packed README has a
+// relative link that leaves the package or does not link the changelog, or
+// `author` names no organisation URL for npm to link. The checks that need no
 // pack are in pack-checks.mjs, which pack-checks.test.mjs tests.
+//
+// Declaration maps are not shipped, on purpose: tsup bundles the declarations
+// into one file per format, and its bundler cannot emit maps for them. The
+// JavaScript source maps carry `sourcesContent`. The exact file list below
+// fails a `.d.ts.map` or `.d.mts.map` in a tarball until that changes.
 // Adapted from Qbit-Org/qbit-js scripts/check-pack.mjs.
 import { execFileSync } from 'node:child_process'
 import { readdirSync, readFileSync } from 'node:fs'
 import { dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { mapProblems, peerProblems, sizeProblem } from './pack-checks.mjs'
+import { authorProblem, mapProblems, peerProblems, readmeProblems, sizeProblem } from './pack-checks.mjs'
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)))
 
@@ -74,6 +81,9 @@ for (const name of packages) {
   if (readFileSync(join(cwd, 'LICENSE'), 'utf8') !== rootLicense) {
     fail(`LICENSE differs from the root LICENSE`)
   }
+  const author = authorProblem(manifest.author)
+  if (author !== undefined) fail(author)
+  readmeProblems(readFileSync(join(cwd, 'README.md'), 'utf8')).forEach(fail)
   // No module runs code at import that a consumer relies on (the error brands
   // are set on the package's own prototypes), so a bundler may drop the
   // package when nothing from it is used.
