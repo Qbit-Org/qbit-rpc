@@ -32,24 +32,36 @@ import {
 const fixtures = loadFixtures()
 // Typed methods with no captured reply yet; #44 captures them. Only ever removed from.
 const NOT_YET_CAPTURED: readonly string[] = [
+  'backupWallet',
   'checkBlockProposal',
   'createAuxBlock',
+  'createWallet',
+  'deriveAddresses',
   'getBlock',
   'getBlockHex',
   'getBlockTemplate',
   'getBlockWithTransactions',
   'getChainTips',
+  'getDescriptorInfo',
   'getMempoolInfo',
   'getMiningInfo',
   'getRawMempool',
   'getRawMempoolSequence',
   'getRawMempoolVerbose',
   'getTxSpendingPrevout',
+  'importDescriptors',
+  'keypoolRefill',
+  'listWalletDir',
+  'loadWallet',
+  'rescanBlockchain',
+  'signDataPqcHash',
   'submitAuxBlock',
   'submitBlock',
   'submitPackage',
+  'unloadWallet',
   'waitForBlockHeight',
   'waitForNewBlock',
+  'walletPassphraseChange',
 ]
 const byName = new Map(fixtures.map(f => [f.name, f]))
 type Builder = (...args: unknown[]) => RpcRequest<unknown>

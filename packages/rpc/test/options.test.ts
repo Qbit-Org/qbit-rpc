@@ -346,28 +346,68 @@ describe('request builders', () => {
     expect(() => requests.listUnspent(typo)).toThrow(/options\.minconf is not a known key: use options\.minConf/)
   })
 
-  it('refuse, in call(), a walletcreatefundedpsbt option qbit Core accepts and then ignores', () => {
-    const options = { subtract_fee_from_outputs: [0], fee_rate: 2.5 }
-    expect(() => requests.raw('walletcreatefundedpsbt', [[], [{ rq1a: '0.5' }], 0, options])).toThrow(
-      /^walletcreatefundedpsbt option subtract_fee_from_outputs is accepted and then ignored by qbit Core v1\.0\.0: send subtractFeeFromOutputs, or use walletCreateFundedPsbt\(\)$/
-    )
-    // The spelling the node reads, and other methods, pass through untouched.
-    const read = requests.raw('walletcreatefundedpsbt', [[], [{ rq1a: '0.5' }], 0, { subtractFeeFromOutputs: [0] }])
-    expect(stringifyRequest(read.params[3])).toBe('{"subtractFeeFromOutputs":[0]}')
-    expect(requests.raw('walletcreatefundedpsbt', [[], [{ rq1a: '0.5' }]]).params).toHaveLength(2)
-    expect(requests.raw('decodepsbt', ['cHNidP8=', { subtract_fee_from_outputs: [0] }]).params).toHaveLength(2)
-    // An undefined value is never sent, so it is not refused. The request holds the options as sent.
-    const cleared = { fee_rate: 2.5, subtract_fee_from_outputs: undefined }
-    const sent = (options: object): string =>
-      stringifyRequest(requests.raw('walletcreatefundedpsbt', [[], [{ rq1a: '0.5' }], 0, options]).params[3])
-    expect(sent(cleared)).toBe('{"fee_rate":2.5}')
-    // What is checked is what JSON.stringify sends: toJSON() applies, and function values are left out.
-    const disguised = { toJSON: () => ({ subtract_fee_from_outputs: [0] }) }
-    expect(() => requests.raw('walletcreatefundedpsbt', [[], [{ rq1a: '0.5' }], 0, disguised])).toThrow(
-      /option subtract_fee_from_outputs is accepted and then ignored/
-    )
-    const dropped = { fee_rate: 2.5, subtract_fee_from_outputs: () => [0] }
-    expect(sent(dropped)).toBe('{"fee_rate":2.5}')
+  it('refuse, when call() sends it, a walletcreatefundedpsbt option qbit Core accepts and then ignores', async () => {
+    const node = await FakeNode.start()
+    try {
+      node.results({
+        ...chainResults('regtest'),
+        walletcreatefundedpsbt: '{"psbt":"cHNidP8=","fee":0.0001,"changepos":-1}',
+      })
+      const rpc = new QbitRpcClient({
+        url: node.url,
+        auth: { username: 'u', password: 'p' },
+        expectedChain: 'regtest',
+        capabilities: ['wallet-write'],
+      })
+      await rpc.confirmChain()
+      node.requests.length = 0
+      const fund = (options: unknown): Promise<unknown> =>
+        rpc.call('walletcreatefundedpsbt', [[], [{ rq1a: '0.5' }], 0, options])
+      const refused =
+        /^walletcreatefundedpsbt option subtract_fee_from_outputs is accepted and then ignored by qbit Core v1\.0\.0: send subtractFeeFromOutputs, or use walletCreateFundedPsbt\(\)$/
+      await expect(fund({ subtract_fee_from_outputs: [0], fee_rate: 2.5 })).rejects.toThrow(refused)
+      // What is checked is what is sent: toJSON() applies.
+      await expect(fund({ toJSON: () => ({ subtract_fee_from_outputs: [0] }) })).rejects.toThrow(refused)
+      expect(node.requests).toHaveLength(0)
+      // The spelling the node reads, an undefined value and a function value (both left out) are sent.
+      await fund({ subtractFeeFromOutputs: [0] })
+      await fund({ fee_rate: 2.5, subtract_fee_from_outputs: undefined })
+      await fund({ fee_rate: 2.5, subtract_fee_from_outputs: () => [0] })
+      expect(node.calls().map(call => call.params[3])).toEqual([
+        { subtractFeeFromOutputs: [0] },
+        { fee_rate: 2.5 },
+        { fee_rate: 2.5 },
+      ])
+      // A getter is read once, by the serialization the node receives: a second
+      // read can no longer slip the refused key past a check of the first.
+      node.requests.length = 0
+      let reads = 0
+      const shifting = Object.defineProperty({ fee_rate: 2.5 }, 'subtract_fee_from_outputs', {
+        enumerable: true,
+        get: () => (++reads > 1 ? [0] : undefined),
+      })
+      await fund(shifting)
+      expect(reads).toBe(1)
+      expect(node.calls().map(call => call.params[3])).toEqual([{ fee_rate: 2.5 }])
+      // Read first as the refused key, it is refused, and nothing is sent.
+      reads = 0
+      node.requests.length = 0
+      const first = Object.defineProperty({ fee_rate: 2.5 }, 'subtract_fee_from_outputs', {
+        enumerable: true,
+        get: () => (++reads === 1 ? [0] : undefined),
+      })
+      await expect(fund(first)).rejects.toThrow(refused)
+      expect(node.requests).toHaveLength(0)
+      // Other methods pass the key through untouched.
+      expect(requests.raw('decodepsbt', ['cHNidP8=', { subtract_fee_from_outputs: [0] }]).params).toHaveLength(2)
+      // The request holds the options as they will be sent, which is what the check reads.
+      const held = (options: object): string =>
+        stringifyRequest(requests.raw('walletcreatefundedpsbt', [[], [{ rq1a: '0.5' }], 0, options]).params[3])
+      expect(held({ fee_rate: 2.5, subtract_fee_from_outputs: undefined })).toBe('{"fee_rate":2.5}')
+      expect(held({ fee_rate: 2.5, subtract_fee_from_outputs: () => [0] })).toBe('{"fee_rate":2.5}')
+    } finally {
+      await node.close()
+    }
   })
 })
 

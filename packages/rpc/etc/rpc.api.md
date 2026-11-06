@@ -293,7 +293,7 @@ export interface CallOptions {
 }
 
 // @public
-export type Capability = 'wallet-read' | 'wallet-write' | 'broadcast' | 'mining' | 'node-admin';
+export type Capability = 'wallet-read' | 'wallet-write' | 'broadcast' | 'mining' | 'wallet-admin' | 'node-admin';
 
 // @public
 export type ChainCheck = 'chain' | 'genesis_hash' | 'signet_challenge';
@@ -378,6 +378,15 @@ export interface DataPqcHashProof {
 }
 
 // @public
+export interface DataPqcHashSignature extends DataPqcHashProof, PqcUsage {
+    readonly algorithm: string;
+    readonly datasigHash: string;
+    readonly domain: string;
+    readonly p2mrMerkleRoot: string;
+    readonly warnings?: readonly string[];
+}
+
+// @public
 export interface DataPqcHashVerification {
     // (undocumented)
     readonly address?: string;
@@ -428,6 +437,47 @@ export interface DecodedTransaction {
     // (undocumented)
     readonly weight: number;
 }
+
+// @public
+export interface DescriptorImport {
+    readonly active?: boolean;
+    readonly desc: string;
+    readonly internal?: boolean;
+    readonly label?: string;
+    readonly nextIndex?: number;
+    readonly range?: DescriptorRange;
+    readonly timestamp: number | 'now';
+}
+
+// @public
+export type DescriptorImportResult = {
+    readonly success: true;
+    readonly warnings?: readonly string[];
+} | {
+    readonly success: false;
+    readonly error: {
+        readonly rpcCode: number;
+        readonly message: string;
+    };
+    readonly warnings?: readonly string[];
+};
+
+// @public
+export interface DescriptorInfo {
+    readonly checksum: string;
+    readonly descriptor: string;
+    readonly hasP2mrStandardSatisfaction?: boolean;
+    // (undocumented)
+    readonly hasPrivateKeys: boolean;
+    // (undocumented)
+    readonly isRange: boolean;
+    // (undocumented)
+    readonly isSolvable: boolean;
+    readonly multipathExpansion?: readonly string[];
+}
+
+// @public
+export type DescriptorRange = number | readonly [begin: number, end: number];
 
 // @public
 export interface ExtraMethodPolicy {
@@ -539,6 +589,13 @@ export interface ListUnspentOptions {
     readonly minimumAmountBits?: bigint;
     // (undocumented)
     readonly minimumSumAmountBits?: bigint;
+}
+
+// @public
+export interface LoadedWallet {
+    readonly name: string;
+    // (undocumented)
+    readonly warnings?: readonly string[];
 }
 
 // @public
@@ -818,6 +875,7 @@ export class QbitRpcClient {
     // (undocumented)
     [inspect.custom](): string;
     constructor(options: QbitRpcClientOptions);
+    backupWallet(destination: string, callOptions?: CallOptions): Promise<void>;
     batch<const T extends readonly RpcRequest<unknown>[]>(entries: T, callOptions?: CallOptions): Promise<BatchResults<T>>;
     call(method: string, params?: readonly unknown[], callOptions?: CallOptions): Promise<unknown>;
     get chainStatus(): ChainStatus;
@@ -825,6 +883,16 @@ export class QbitRpcClient {
     close(): void;
     confirmChain(callOptions?: CallOptions): Promise<BlockchainInfo>;
     createAuxBlock(payoutAddress: string, callOptions?: CallOptions): Promise<AuxBlock>;
+    createWallet(walletName: string, options?: {
+        readonly disablePrivateKeys?: boolean;
+        readonly blank?: boolean;
+        readonly passphrase?: string;
+        readonly avoidReuse?: boolean;
+        readonly loadOnStartup?: boolean;
+    }, callOptions?: CallOptions): Promise<LoadedWallet>;
+    deriveAddresses(descriptor: string, options?: {
+        readonly range?: DescriptorRange;
+    }, callOptions?: CallOptions): Promise<string[]>;
     estimateSmartFee(confTarget: number, options?: {
         readonly mode?: FeeEstimateMode;
     }, callOptions?: CallOptions): Promise<SmartFeeEstimate>;
@@ -859,6 +927,7 @@ export class QbitRpcClient {
         readonly mergeMiningPct?: number;
         readonly btcHashrate?: number;
     }, callOptions?: CallOptions): Promise<ConfirmationTarget>;
+    getDescriptorInfo(descriptor: string, callOptions?: CallOptions): Promise<DescriptorInfo>;
     // (undocumented)
     getMempoolEntry(txid: string, callOptions?: CallOptions): Promise<MempoolEntry>;
     // (undocumented)
@@ -892,20 +961,39 @@ export class QbitRpcClient {
     getTxSpendingPrevout(outputs: readonly Outpoint[], callOptions?: CallOptions): Promise<TxSpendingPrevout[]>;
     // (undocumented)
     getWalletInfo(callOptions?: CallOptions): Promise<WalletInfo>;
+    importDescriptors(descriptors: readonly DescriptorImport[], callOptions?: CallOptions): Promise<DescriptorImportResult[]>;
+    keypoolRefill(options?: {
+        readonly newSize?: number;
+    }, callOptions?: CallOptions): Promise<void>;
     // (undocumented)
     listLockUnspent(callOptions?: CallOptions): Promise<Outpoint[]>;
     listSinceBlock(options?: ListSinceBlockOptions, callOptions?: CallOptions): Promise<SinceBlockHistory>;
     listTransactions(options?: ListTransactionsOptions, callOptions?: CallOptions): Promise<WalletHistoryEntry[]>;
     listUnspent(options?: ListUnspentOptions, callOptions?: CallOptions): Promise<UnspentOutput[]>;
+    // (undocumented)
+    listWalletDir(callOptions?: CallOptions): Promise<WalletDirEntry[]>;
+    loadWallet(filename: string, options?: {
+        readonly loadOnStartup?: boolean;
+    }, callOptions?: CallOptions): Promise<LoadedWallet>;
     lockUnspent(outputs: readonly Outpoint[], options?: {
         readonly persistent?: boolean;
     }, callOptions?: CallOptions): Promise<void>;
     get nodeVersion(): NodeVersion | undefined;
     psbtBumpFee(txid: string, options?: PsbtBumpFeeOptions, callOptions?: CallOptions): Promise<BumpedPsbt>;
+    rescanBlockchain(options?: {
+        readonly startHeight?: number;
+        readonly stopHeight?: number;
+    }, callOptions?: CallOptions): Promise<RescanResult>;
     sendRawTransaction(hex: string, options?: {
         readonly maxFeeRateBitsPerKvB?: bigint;
         readonly maxBurnAmountBits?: bigint;
     }, callOptions?: CallOptions): Promise<string>;
+    signDataPqcHash(address: string, messageHash: string, options?: {
+        readonly pubkey?: string;
+        readonly leafScript?: string;
+        readonly controlBlock?: string;
+        readonly includePqcUsage?: boolean;
+    }, callOptions?: CallOptions): Promise<DataPqcHashSignature>;
     submitAuxBlock(blockHash: string, auxpowHex: string, callOptions?: CallOptions): Promise<BlockSubmissionResult>;
     submitBlock(blockHex: string, callOptions?: CallOptions): Promise<BlockSubmissionResult>;
     submitPackage(rawTxs: readonly string[], options?: {
@@ -916,10 +1004,12 @@ export class QbitRpcClient {
         readonly maxFeeRateBitsPerKvB?: bigint;
     }, callOptions?: CallOptions): Promise<MempoolAcceptance[]>;
     toJSON(): Record<string, unknown>;
+    unloadWallet(walletName: string, options?: {
+        readonly loadOnStartup?: boolean;
+    }, callOptions?: CallOptions): Promise<UnloadedWallet>;
     unlockUnspent(outputs: readonly Outpoint[], callOptions?: CallOptions): Promise<void>;
     // (undocumented)
     validateAddress(address: string, callOptions?: CallOptions): Promise<AddressValidation>;
-    // (undocumented)
     verifyDataPqcHash(proof: DataPqcHashProof, callOptions?: CallOptions): Promise<DataPqcHashVerification>;
     waitForBlockHeight(height: number, waitMs: number, callOptions?: CallOptions): Promise<BlockRef>;
     waitForNewBlock(waitMs: number, options?: {
@@ -929,6 +1019,7 @@ export class QbitRpcClient {
     walletCreateFundedPsbt(args: WalletCreateFundedPsbtArgs, callOptions?: CallOptions): Promise<FundedPsbt>;
     walletLock(callOptions?: CallOptions): Promise<void>;
     walletPassphrase(passphrase: string, timeoutSeconds: number, callOptions?: CallOptions): Promise<void>;
+    walletPassphraseChange(oldPassphrase: string, newPassphrase: string, callOptions?: CallOptions): Promise<void>;
     walletProcessPsbt(psbt: string, options?: {
         readonly sign?: boolean;
         readonly sighashType?: SighashType;
@@ -1011,6 +1102,10 @@ export const requests: {
     }): RpcRequest<SmartFeeEstimate>;
     validateAddress: (address: string) => RpcRequest<AddressValidation>;
     verifyDataPqcHash(proof: DataPqcHashProof): RpcRequest<DataPqcHashVerification>;
+    getDescriptorInfo(descriptor: string): RpcRequest<DescriptorInfo>;
+    deriveAddresses(descriptor: string, options?: {
+        readonly range?: DescriptorRange;
+    }): RpcRequest<string[]>;
     testMempoolAccept(rawTxs: readonly string[], options?: {
         readonly maxFeeRateBitsPerKvB?: bigint;
     }): RpcRequest<MempoolAcceptance[]>;
@@ -1063,7 +1158,44 @@ export const requests: {
         readonly persistent?: boolean;
     }): RpcRequest<true>;
     unlockUnspent(outputs: readonly Outpoint[]): RpcRequest<true>;
+    signDataPqcHash(address: string, messageHash: string, options?: {
+        readonly pubkey?: string;
+        readonly leafScript?: string;
+        readonly controlBlock?: string;
+        readonly includePqcUsage?: boolean;
+    }): RpcRequest<DataPqcHashSignature>;
+    createWallet(walletName: string, options?: {
+        readonly disablePrivateKeys?: boolean;
+        readonly blank?: boolean;
+        readonly passphrase?: string;
+        readonly avoidReuse?: boolean;
+        readonly loadOnStartup?: boolean;
+    }): RpcRequest<LoadedWallet>;
+    loadWallet(filename: string, options?: {
+        readonly loadOnStartup?: boolean;
+    }): RpcRequest<LoadedWallet>;
+    unloadWallet(walletName: string, options?: {
+        readonly loadOnStartup?: boolean;
+    }): RpcRequest<UnloadedWallet>;
+    listWalletDir: () => RpcRequest<WalletDirEntry[]>;
+    importDescriptors(descriptors: readonly DescriptorImport[]): RpcRequest<DescriptorImportResult[]>;
+    rescanBlockchain(options?: {
+        readonly startHeight?: number;
+        readonly stopHeight?: number;
+    }): RpcRequest<RescanResult>;
+    backupWallet: (destination: string) => RpcRequest<null>;
+    walletPassphraseChange: (oldPassphrase: string, newPassphrase: string) => RpcRequest<null>;
+    keypoolRefill(options?: {
+        readonly newSize?: number;
+    }): RpcRequest<null>;
 };
+
+// @public
+export interface RescanResult {
+    // (undocumented)
+    readonly startHeight: number;
+    readonly stopHeight: number | null;
+}
 
 // @public
 export class RpcAbortedError extends QbitRpcError {
@@ -1299,6 +1431,12 @@ export interface TxSpendingPrevout {
 }
 
 // @public
+export interface UnloadedWallet {
+    // (undocumented)
+    readonly warnings?: readonly string[];
+}
+
+// @public
 export interface UnspentOutput {
     // (undocumented)
     readonly address?: string;
@@ -1378,6 +1516,13 @@ export interface WalletCreateFundedPsbtArgs {
     };
     readonly outputs: readonly FundedPsbtOutput[];
     readonly version?: number;
+}
+
+// @public
+export interface WalletDirEntry {
+    // (undocumented)
+    readonly name: string;
+    readonly warnings?: readonly string[];
 }
 
 // @public

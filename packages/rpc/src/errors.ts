@@ -131,7 +131,7 @@ function causeText(cause: unknown): string {
 }
 
 /**
- * A wallet-write, broadcast or mining call was refused, and nothing of it was sent,
+ * A wallet-write, broadcast, mining or wallet-admin call was refused, and nothing of it was sent,
  * because the node's chain has not been confirmed (`reason: 'unconfirmed'`), or
  * {@link QbitRpcClient.confirmChain} found a different chain, genesis block or
  * signet challenge (`reason: 'mismatch'`, see `differs`), or a qbit Core
@@ -379,7 +379,7 @@ export class RpcResponseError extends QbitRpcError {
 brand(RpcResponseError, 'RpcResponseError')
 
 /**
- * A wallet-write, broadcast or mining request may have been executed, but no valid
+ * A wallet-write, broadcast, mining or wallet-admin request may have been executed, but no valid
  * reply arrived: the deadline expired, the caller aborted, the connection
  * dropped, the reply was too large or malformed, or a proxy answered with a
  * 5xx status, or a JSON-RPC error under a status qbitd does not use for one,

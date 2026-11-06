@@ -15,6 +15,7 @@ import {
   type RpcRequest,
 } from '../src'
 import { parseJsonLossless, stringifyRequest } from '../src/json'
+import { descriptorChecksum } from '../src/methods'
 import { blockchainInfoJson, chainResults, FakeNode, HASH_A, HASH_B, TX_HEX, TX_TXID } from './helpers/fake-node'
 import { withPrototype } from './helpers/null-prototype'
 
@@ -67,6 +68,8 @@ const NOT_OWN =
 const notOwn = (name: string): RegExp => new RegExp(`^${name.replace(/[.[\]]/g, '\\$&')} ${NOT_OWN.source}`)
 
 const OUTPUT = { address: 'rq1a', amountBits: 1n }
+const DESCRIPTOR_BODY = `mr(pk(${'3c'.repeat(32)}))`
+const DESCRIPTOR = `${DESCRIPTOR_BODY}#${descriptorChecksum(DESCRIPTOR_BODY)!}`
 const PSBT = 'cHNidP8='
 const PROOF = {
   address: 'rq1a',
@@ -144,6 +147,18 @@ const CASES: { readonly [K in keyof Builders]: readonly (() => Parameters<Builde
   submitBlock: [() => ['00'.repeat(80)]],
   createAuxBlock: [() => ['rq1a']],
   submitAuxBlock: [() => [HASH_A, 'cafe']],
+  getDescriptorInfo: [() => [DESCRIPTOR]],
+  deriveAddresses: [() => [DESCRIPTOR], () => [DESCRIPTOR, {}]],
+  signDataPqcHash: [() => ['rq1a', HASH_A], () => ['rq1a', HASH_A, {}]],
+  createWallet: [() => ['w'], () => ['w', {}]],
+  loadWallet: [() => ['w'], () => ['w', {}]],
+  unloadWallet: [() => ['w'], () => ['w', {}]],
+  listWalletDir: [() => []],
+  importDescriptors: [() => [[{ desc: DESCRIPTOR, timestamp: 0 }]]],
+  rescanBlockchain: [() => [], () => [{}]],
+  backupWallet: [() => ['w.dat']],
+  walletPassphraseChange: [() => ['old passphrase', 'new passphrase']],
+  keypoolRefill: [() => [], () => [{}]],
 }
 const NAMES = Object.keys(CASES) as (keyof Builders)[]
 
@@ -162,6 +177,19 @@ const SAMPLES: Readonly<Record<string, unknown>> = {
   currentTip: HASH_B,
   rules: ['segwit', 'signet'],
   capabilities: ['proposal', 'coinbasetxn'],
+  range: 5,
+  includePqcUsage: true,
+  disablePrivateKeys: true,
+  blank: true,
+  passphrase: 'attacker',
+  avoidReuse: true,
+  loadOnStartup: true,
+  startHeight: 1,
+  stopHeight: 2,
+  newSize: 100,
+  active: true,
+  nextIndex: 1,
+  internal: true,
   includeMempool: false,
   securityLevel: 'maximum',
   mergeMiningPct: 0.5,
@@ -472,7 +500,7 @@ describe('call options under a polluted Object.prototype', () => {
       url: node.url,
       auth: { username: 'u', password: 'p' },
       expectedChain: 'regtest',
-      capabilities: ['wallet-read', 'wallet-write', 'broadcast', 'mining'],
+      capabilities: ['wallet-read', 'wallet-write', 'broadcast', 'mining', 'wallet-admin'],
       chainCheckMaxAgeMs: 86_400_000,
     })
     await rpc.confirmChain()

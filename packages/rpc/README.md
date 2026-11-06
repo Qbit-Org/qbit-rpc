@@ -32,16 +32,16 @@ const info = await rpc.getBlockchainInfo()
 | `expectedChain` | required | `main`, `test`, `testnet4`, `signet` or `regtest`. |
 | `expectedGenesisHash` | `expectedChain`'s, see [Chain guard](#chain-guard) | The genesis block hash every chain check expects from `getblockhash 0`: 64 hex characters, either case (compared in lowercase). Set it for a node built with other chain parameters. |
 | `expectedSignetChallenge` | `51` on signet | The `signet_challenge` every chain check expects: non-empty hex of whole bytes (the challenge script), either case (compared in lowercase). Only with `expectedChain: 'signet'`. |
-| `capabilities` | `[]` | Any of `wallet-read`, `wallet-write`, `broadcast`, `mining`, `node-admin`. |
+| `capabilities` | `[]` | Any of `wallet-read`, `wallet-write`, `broadcast`, `mining`, `wallet-admin`, `node-admin`. |
 | `extraMethods` | none | Methods to allow beyond the allowlist, untyped, each `{ capability, sideEffects }`. See [opening another method](#opening-another-method-extramethods). |
-| `timeoutMs` | 30,000; at least 120,000 for `walletPassphrase` and `walletLock`; at least the wait plus 10 s for a long poll | One deadline per operation: any wait for a request slot, cookie read, every attempt and every backoff. A shorter value does not shorten their 120 s, or a [long poll](#long-polls)'s. Override per call. See [unlocking a wallet](#unlocking-an-encrypted-wallet). With `connect`, it also bounds a pooled connection still opening after its read gave up (see [Proxies](#proxies-connect)). |
+| `timeoutMs` | 30,000; at least 120,000 for `walletPassphrase`, `walletLock`, `keypoolRefill`, `importDescriptors`, `rescanBlockchain`, `loadWallet` and `unloadWallet`; at least the wait plus 10 s for a long poll | One deadline per operation: any wait for a request slot, cookie read, every attempt and every backoff. A shorter value does not shorten those 120 s, or a [long poll](#long-polls)'s. Override per call. See [unlocking a wallet](#unlocking-an-encrypted-wallet) and [wallet administration](#wallet-administration). With `connect`, it also bounds a pooled connection still opening after its read gave up (see [Proxies](#proxies-connect)). |
 | `maxResponseBytes` | 16 MiB | Larger replies fail with `RpcResponseTooLargeError` (or an unknown outcome for side-effecting calls). A full block can pass the default: see [large replies](#large-replies). Leave a few KiB at least: the chain check's batched reply (`getblockchaininfo`, `getblockhash 0` and `getnetworkinfo`, about 2 KiB from a v1.0.0 node without peers) must fit, or every check fails. |
 | `readRetries` | 0 | Opt-in retries for methods without side effects (see below). |
 | `retryDelayMs` | 250 | First backoff; doubles per retry, capped at 10 s, never past the deadline. |
-| `chainCheckMaxAgeMs` | 10,000 | How long a chain confirmation stays fresh before a wallet-write, broadcast or mining call re-checks it. 0 re-checks before every such call. |
+| `chainCheckMaxAgeMs` | 10,000 | How long a chain confirmation stays fresh before a wallet-write, broadcast, mining or wallet-admin call re-checks it. 0 re-checks before every such call. |
 | `maxConcurrentRequests` | 8 | Most requests this client has open at once, on pooled and fresh connections alike (1 to 1,024); it also sizes the keep-alive pool. Further attempts wait in FIFO order under their deadline. See [the work queue](#the-work-queue). |
 | `directNode` | `false` | Set when `url` reaches `qbitd` itself. `qbitd`'s HTTP 503 `Work queue depth exceeded` is then a definite failure, not an unknown outcome. Opt-in, because a proxy in between can answer 503 after forwarding the request. See [the work queue](#the-work-queue). |
-| `allowUnsupportedNodeVersion` | `false` | Let wallet-write, broadcast and mining calls go to a node outside qbit Core 1.0.x releases, which they are refused otherwise (`RpcChainGuardError` `reason: 'unsupported_version'`). `nodeVersion` still shows the version, and one that does not parse still fails the check. See [Versions and compatibility](#versions-and-compatibility). |
+| `allowUnsupportedNodeVersion` | `false` | Let wallet-write, broadcast, mining and wallet-admin calls go to a node outside qbit Core 1.0.x releases, which they are refused otherwise (`RpcChainGuardError` `reason: 'unsupported_version'`). `nodeVersion` still shows the version, and one that does not parse still fails the check. See [Versions and compatibility](#versions-and-compatibility). |
 
 The options, and `tls` and `auth` within them, are read once each, when the
 client is constructed, from their own enumerable properties, and the arrays in
@@ -75,7 +75,8 @@ await rpc.sendRawTransaction(hex, undefined, { signal }) // none of its own opti
 ```
 
 `timeoutMs` (1 to 3,600,000) overrides the client's for this operation, and
-the own default of `walletPassphrase` and `walletLock` (see [unlocking a wallet](#unlocking-an-encrypted-wallet))
+the own default of `walletPassphrase` and `walletLock` (see [unlocking a wallet](#unlocking-an-encrypted-wallet)),
+the wallet-admin methods' (see [wallet administration](#wallet-administration))
 and a [long poll](#long-polls)'s, and `signal` aborts it (see the [failure model](#failure-model)). A method's own
 options never hold call options, and the call options hold nothing else: a key
 in the wrong one is a `TypeError` that says where it belongs. So a method can
@@ -358,11 +359,12 @@ documentation, and a test keeps the two equal.
 
 | Capability | Methods |
 | --- | --- |
-| none (read) | `getblockchaininfo`, `getnetworkinfo`, `getbestblockhash`, `getblockcount`, `getblockhash`, `getblockheader`, `getrawtransaction`, `getmempoolentry`, `gettxout`, `getconfirmationtarget`, `estimatesmartfee`, `validateaddress`, `verifydatapqchash`, `getblock`, `getchaintips`, `getmempoolinfo`, `getrawmempool`, `gettxspendingprevout`, `waitfornewblock`, `waitforblockheight`, `getmininginfo`; untyped: `decoderawtransaction`, `decodepsbt`, `analyzepsbt`, `getorphanmetrics`, `getarchivepeers`, `getindexinfo`, `getzmqnotifications`, `uptime` |
+| none (read) | `getblockchaininfo`, `getnetworkinfo`, `getbestblockhash`, `getblockcount`, `getblockhash`, `getblockheader`, `getrawtransaction`, `getmempoolentry`, `gettxout`, `getconfirmationtarget`, `estimatesmartfee`, `validateaddress`, `verifydatapqchash`, `getdescriptorinfo`, `deriveaddresses`, `getblock`, `getchaintips`, `getmempoolinfo`, `getrawmempool`, `gettxspendingprevout`, `waitfornewblock`, `waitforblockheight`, `getmininginfo`; untyped: `decoderawtransaction`, `decodepsbt`, `analyzepsbt`, `getorphanmetrics`, `getarchivepeers`, `getindexinfo`, `getzmqnotifications`, `uptime` |
 | `wallet-read` | `getwalletinfo`, `gettransaction`, `listunspent`, `getaddressinfo`, `listlockunspent`, `listsinceblock`, `listtransactions`, `getbalances`; untyped: `listwallets` |
-| `wallet-write` | `walletcreatefundedpsbt`, `walletprocesspsbt`, `finalizepsbt`, `psbtbumpfee`, `walletpassphrase`, `walletlock`, `getrawchangeaddress`, `lockunspent`, `getnewaddress` |
+| `wallet-write` | `walletcreatefundedpsbt`, `walletprocesspsbt`, `finalizepsbt`, `psbtbumpfee`, `walletpassphrase`, `walletlock`, `getrawchangeaddress`, `lockunspent`, `getnewaddress`, `signdatapqchash` |
 | `broadcast` | `testmempoolaccept`, `sendrawtransaction`, `submitpackage` |
 | `mining` | `getblocktemplate`, `submitblock`, `createauxblock`, `submitauxblock` |
+| `wallet-admin` | `createwallet`, `loadwallet`, `unloadwallet`, `listwalletdir`, `importdescriptors`, `rescanblockchain`, `backupwallet`, `walletpassphrasechange`, `keypoolrefill` |
 | `node-admin` | none built in: node administration opens only through [extraMethods](#node-administration-node-admin) |
 
 `sendmany`, `sendtoaddress`, `send`, `sendall` and `bumpfee` are not
@@ -371,8 +373,10 @@ transaction before it leaves the node. `psbtbumpfee` is allowlisted: it returns
 an unsigned PSBT and signs and broadcasts nothing (see
 [Bumping a stuck payment](#bumping-a-stuck-payment)). `finalizepsbt`,
 `testmempoolaccept` and `getblocktemplate` change nothing, but are gated with the
-steps they belong to. See [mining](#mining) for why `getmininginfo` is a read and
-the rest of a pool's methods need `mining`.
+steps they belong to, and so is `listwalletdir`, the step before `loadwallet`. See
+[mining](#mining) for why `getmininginfo` is a read and the rest of a pool's
+methods need `mining`, and [wallet administration](#wallet-administration) for
+`wallet-admin`, the descriptor reads and `signdatapqchash`.
 
 ### Opening another method: `extraMethods`
 
@@ -388,7 +392,7 @@ const rpc = new QbitRpcClient({
   capabilities: ['wallet-write'],
   extraMethods: {
     getchaintxstats: { capability: 'read', sideEffects: false },
-    keypoolrefill: { capability: 'wallet-write', sideEffects: true },
+    setlabel: { capability: 'wallet-write', sideEffects: true },
   },
 })
 const stats = await rpc.call('getchaintxstats', [144]) // numbers as JsonNumber
@@ -398,13 +402,14 @@ Each entry is the policy the client applies to the method, exactly as it does
 to an allowlisted method with that policy:
 
 - `capability`: `read` (no capability needed), or `wallet-read`,
-  `wallet-write`, `broadcast`, `mining` or `node-admin`, which `capabilities`
-  must enable. `wallet-write`, `broadcast`, `mining` and `node-admin` calls wait for the
-  [chain guard](#chain-guard), and re-check the chain once it is stale;
-  `node-admin` calls by the chain's identity only (see
+  `wallet-write`, `broadcast`, `mining`, `wallet-admin` or `node-admin`, which
+  `capabilities` must enable. `wallet-write`, `broadcast`, `mining`,
+  `wallet-admin` and `node-admin` calls wait for the [chain guard](#chain-guard),
+  and re-check the chain once it is stale; `node-admin` calls by the chain's
+  identity only (see
   [node administration](#node-administration-node-admin)).
 - `sideEffects`: required, `true` or `false`; there is no default. A method with
-  side effects needs `wallet-write`, `broadcast` or `mining`, so a client without them
+  side effects needs `wallet-write`, `broadcast`, `mining` or `wallet-admin`, so a client without them
   still cannot change state, and the chain guard covers every such call, or
   `node-admin`, for node administration, behind the guard too. Such a
   call is never retried, uses a fresh connection, and is an
@@ -413,22 +418,21 @@ to an allowlisted method with that policy:
 - For each of the 161 methods qbit Core v1.0.0's `help` lists, the package
   knows what it does, from its source, and refuses a policy below that, so an
   entry cannot open `walletpassphrasechange` or `signrawtransactionwithwallet`
-  as a read. A wallet method needs a wallet capability (`wallet-read` or
-  `wallet-write`), and one that changes state needs `sideEffects: true` under
-  its own kind's capability:
+  as a read. A wallet method needs a wallet capability (`wallet-read`,
+  `wallet-write` or `wallet-admin`), and one that changes state needs
+  `sideEffects: true` under its own kind's capability:
 
   | What the method does | Least policy | For example |
   | --- | --- | --- |
   | reads the chain, mempool, network or node, or computes from its arguments | any | `getchaintxstats`, `decodescript` |
-  | reads a wallet | `wallet-read` or `wallet-write` | `getbalance`, `listlabels` |
+  | reads a wallet | `wallet-read`, `wallet-write` or `wallet-admin` | `getbalance`, `listlabels` |
   | signs with a wallet's keys, or changes the wallet | `wallet-write`, side effects | `signrawtransactionwithwallet`, `signmessage`, `setlabel`, `fundrawtransaction` |
-  | administers a wallet, or returns its private keys | `wallet-write`, side effects (none for `listdescriptors` and `gethdkeys`) | `walletpassphrasechange`, `keypoolrefill`, `backupwallet`, `listdescriptors` |
+  | administers a wallet, or returns its private keys | `wallet-admin`, side effects (none for `listdescriptors` and `gethdkeys`) | `encryptwallet`, `restorewallet`, `abortrescan`, `listdescriptors` |
   | hands a transaction to the mempool and the network | `broadcast`, side effects | `sendrawtransaction` |
   | builds or submits blocks, or changes a block template | `mining`, side effects (none for `getblocktemplate`) | `submitheader`, `prioritisetransaction` |
   | changes what the node stores, follows or connects to, or stops it | `node-admin`, side effects | `stop`, `setban`, `addnode`, `pruneblockchain`, `savemempool`, `ping` |
 
-  Wallet administration has no capability of its own yet: it needs
-  `wallet-write`. Node administration has its own, `node-admin`. qbit Core
+  Node administration has its own capability, `node-admin`. qbit Core
   v1.0.0's 18 hidden methods, which `help` does not list, are classed the
   same way: `invalidateblock`, `reconsiderblock` and `setmocktime` need
   `node-admin`, and `generatetoaddress` the capability mining needs. A method
@@ -487,56 +491,9 @@ allows.
 > unsure. Open only what the service needs, and restrict the RPC user with
 > `-rpcwhitelist` as well.
 
-### Node administration: `node-admin`
-
-`stop`, `setban`, `clearbanned`, `addnode`, `disconnectnode`,
-`setnetworkactive`, `pruneblockchain`, `savemempool`, `importmempool`,
-`logging`, `dumptxoutset`, `loadtxoutset`, `getblockfrompeer`,
-`preciousblock` and `ping` change what the node stores, follows or connects
-to, or stop it. They need the `node-admin` capability, which allowlists
-nothing by default: a client reaches one only by enabling `node-admin` and
-opening it in `extraMethods`, with side effects:
-
-```ts
-const admin = new QbitRpcClient({
-  url,
-  auth,
-  expectedChain: 'testnet4',
-  capabilities: ['node-admin'],
-  extraMethods: { setban: { capability: 'node-admin', sideEffects: true } },
-})
-await admin.call('setban', ['127.0.0.2', 'add', 3600])
-```
-
-- Under any other capability, `broadcast` included, such an entry is a
-  `TypeError` that names the method and `node-admin`, so a payment service
-  that broadcasts cannot stop the node or ban a peer by stating `broadcast`.
-- Under `node-admin`, on a client that does not enable it, the constructor
-  throws, as for any capability.
-- A `node-admin` call waits for the [chain guard](#chain-guard), as
-  `wallet-write` and `broadcast` calls do, so a client that expects regtest
-  never stops, bans or invalidates on a mainnet node it was pointed at by
-  mistake. It is refused before `confirmChain()`, on another chain
-  (`mismatch`), and when the chain cannot be confirmed (`stale`,
-  `check_failed`). It needs the chain's identity only: on the expected chain
-  with a qbit Core version this package does not support, which refuses the
-  other guarded calls with `unsupported_version`, `stop` and `setban` still
-  go out. Every client has an `expectedChain`, so there is no way round the
-  guard: to administer a node whose chain cannot be confirmed, use
-  `qbit-cli`.
-- A `node-admin` call is never in a batch. Each has side effects: it is
-  never retried, uses a fresh connection, and is an `RpcUnknownOutcomeError`
-  when it may have run. `ping` too: it queues a ping on every peer.
-- Enabling `node-admin` opens no allowlisted method, and no method that
-  needs another capability.
-
-A hidden method that administers the node (`invalidateblock`,
-`reconsiderblock`, `setmocktime`, `addconnection`, `addpeeraddress`,
-`mockscheduler`, `sendmsgtopeer`) needs `node-admin` with side effects too.
-
 ### Chain guard
 
-`wallet-write`, `broadcast`, `mining` and `node-admin` calls also need `await rpc.confirmChain()`.
+`wallet-write`, `broadcast`, `mining`, `wallet-admin` and `node-admin` calls also need `await rpc.confirmChain()`.
 Each chain check sends `getblockchaininfo`, `getblockhash 0` and
 `getnetworkinfo` as one JSON-RPC batch, so one node answers all three in one
 round trip, and compares three things: `chain` with `expectedChain`, the genesis
@@ -586,7 +543,7 @@ in between must pass JSON-RPC batches.
 A confirmation goes stale after `chainCheckMaxAgeMs` (default 10 s), and at
 once on a connection error (including a reset keep-alive connection whose read
 then succeeded on another attempt), an HTTP 401, or a changed cookie (qbitd
-writes a new one each time it starts). A wallet-write, broadcast or mining call made
+writes a new one each time it starts). A wallet-write, broadcast, mining or wallet-admin call made
 while it is stale first runs the check again, under the call's own deadline
 and in the same attempt, with no timer of its own. If that check fails, the
 call is refused without being sent, with `RpcChainGuardError` `reason:
@@ -647,7 +604,7 @@ passes against it, in a release of this package that says so. The range is
 defined once, in `src/version.ts`.
 
 **The node's version.** Every chain check, `confirmChain()`'s and the re-check
-before a wallet-write, broadcast or mining call, reads `getnetworkinfo` in its batch, so
+before a wallet-write, broadcast, mining or wallet-admin call, reads `getnetworkinfo` in its batch, so
 the version is checked as often as the chain: a guarded call checks again once
 the confirmation is older than `chainCheckMaxAgeMs`, or after a sign of a qbitd
 restart, as an upgrade is (a connection error, an HTTP 401, a new cookie).
@@ -665,7 +622,7 @@ rpc.nodeVersion // { version: 10000, subversion: '/qbit:1.0.0/', major: 1, minor
 with no pre-release suffix: `/qbit:1.0.1/` is supported; `/qbit:1.1.0/`,
 `/qbit:1.0.1-rc1/` and `/qbit:0.1.2-testnet4/` are not.
 
-On a version that is not supported, wallet-write, broadcast and mining calls are
+On a version that is not supported, wallet-write, broadcast, mining and wallet-admin calls are
 refused (`node-admin` calls are not: they need the chain's identity only),
 unsent, with `RpcChainGuardError` `reason: 'unsupported_version'` (its
 `nodeVersion` says which), and `chainStatus` is `unsupported_version`. Like a
@@ -756,7 +713,9 @@ is the `cause` of an `RpcUnknownOutcomeError`. Each method also takes
 | `getConfirmationTarget(valueBits, { securityLevel?, mergeMiningPct?, btcHashrate? })` | `ConfirmationTarget` (the node's float `value_qbt` echo is dropped) |
 | `estimateSmartFee(confTarget, { mode? })` | `{ feeRateBitsPerKvB?, errors?, blocks }` |
 | `validateAddress(address)` | `AddressValidation`, a union on `isValid` |
-| `verifyDataPqcHash(proof)` | `DataPqcHashVerification` |
+| `verifyDataPqcHash(proof)` | `DataPqcHashVerification`; takes a `signDataPqcHash()` result as it is |
+| `getDescriptorInfo(descriptor)` | `DescriptorInfo`: the canonical form, without private keys, and `checksum`, checked against the descriptor; see [descriptors](#descriptors) |
+| `deriveAddresses(descriptor, { range? })` | the addresses, one per index of `range`; see [descriptors](#descriptors) |
 | `testMempoolAccept(rawTxs, { maxFeeRateBitsPerKvB? })` | one `MempoolAcceptance` per transaction, checked against each hex's txid; see [fee-rate caps](#fee-rate-caps) |
 | `sendRawTransaction(hex, { maxFeeRateBitsPerKvB?, maxBurnAmountBits? })` | txid, checked against the hex; see [fee-rate caps](#fee-rate-caps) |
 | `submitPackage(rawTxs, { maxFeeRateBitsPerKvB?, maxBurnAmountBits? })` | `PackageSubmission`; see [submitting a package](#submitting-a-package-cpfp) |
@@ -783,6 +742,13 @@ is the `cause` of an `RpcUnknownOutcomeError`. Each method also takes
 | `getNewAddress({ label?, addressType? })` | a new receiving address, filed under `label` |
 | `lockUnspent(outputs, { persistent? })` | nothing, once every output is locked |
 | `unlockUnspent(outputs)` | nothing, once every output is unlocked |
+| `signDataPqcHash(address, messageHash, { pubkey?, leafScript?, controlBlock?, includePqcUsage? })` | `DataPqcHashSignature`, the proof and what was signed, checked against the request; see [signing a data hash](#signing-a-data-hash) |
+| `createWallet(name, { disablePrivateKeys?, blank?, passphrase?, avoidReuse?, loadOnStartup? })`, `loadWallet(name, { loadOnStartup? })` | `LoadedWallet` (`name`, checked, and `warnings`); see [wallet administration](#wallet-administration) |
+| `unloadWallet(name, { loadOnStartup? })` | `UnloadedWallet` (`warnings`) |
+| `listWalletDir()` | `WalletDirEntry[]` (`name`, `warnings`) |
+| `importDescriptors(descriptors)` | one `DescriptorImportResult` per descriptor, in order |
+| `rescanBlockchain({ startHeight?, stopHeight? })` | `RescanResult` (`startHeight`, `stopHeight`), checked against the heights asked for |
+| `backupWallet(destination)`, `walletPassphraseChange(oldPassphrase, newPassphrase)`, `keypoolRefill({ newSize? })` | nothing |
 
 `AddressInfo` and `ProcessedPsbt` carry qbit Core's PQC signature-budget
 fields: for the keys of one of the wallet's addresses (`getaddressinfo`, absent
@@ -843,10 +809,11 @@ for all of it, only about 0.2 s each while it runs.
 
 **The default deadline.** So `walletPassphrase` and `walletLock`, typed or as
 `walletpassphrase` and `walletlock` through `call()`, have a default deadline of
-120 s, more than twice the slowest first unlock measured. Every other method
-keeps 30 s. A client's `timeoutMs` applies to these two only when it is longer
-than 120 s, so a client that sets a short one does not cut the first unlock, or
-a lock waiting for it. The call's own `timeoutMs` always wins:
+120 s, more than twice the slowest first unlock measured, as five
+[wallet-admin](#wallet-administration) methods have; every other method keeps
+30 s. A client's `timeoutMs` applies to these only when it is longer than
+120 s, so a client that sets a short one does not cut the first unlock, or a
+lock waiting for it. The call's own `timeoutMs` always wins:
 
 ```ts
 const rpc = new QbitRpcClient({ ...options, timeoutMs: 10_000 }) // every call; these two keep 120 s
@@ -1405,11 +1372,268 @@ array is one more, so a `batch()` entry's nest at most 510. Deeper parameters ar
 a `TypeError` before anything is sent, where the node would answer HTTP 500
 `Parse error`: `requests.raw()` refuses more than 511, and `batch()` more than
 510, naming the entry.
-There is one exception: it
-refuses `walletcreatefundedpsbt` options, as they are serialized, that qbit
-Core v1.0.0 accepts and then ignores, so far `subtract_fee_from_outputs` (the node reads
-`subtractFeeFromOutputs`; with the other name the wallet pays the fee).
+There is one exception to passing them through unchecked: when it sends the
+call, the client refuses options that qbit Core v1.0.0 accepts and then
+ignores, read from the request body as it is sent:
+`walletcreatefundedpsbt`'s `subtract_fee_from_outputs` (the node reads
+`subtractFeeFromOutputs`; with the other name the wallet pays the fee), and
+`signdatapqchash`'s camel-case option names.
 `psbtbumpfee` has none: qbit Core refuses every option key it does not read.
+
+qbit Core's own results and error messages can quote private keys: a refused
+`importdescriptors` quotes the private descriptor, or its xprv, in its error.
+The typed methods redact key material from the node's messages, but `call()`
+returns the node's result as sent, and redacts only the `RpcError` messages
+about `importdescriptors`, `deriveaddresses` and `getdescriptorinfo`, so never
+log a raw `call()` result, or an error about another method, for a method that
+takes keys.
+
+### Wallet administration
+
+`wallet-admin` lets a client create, load, unload and list wallets, back them
+up, change their passphrase, import descriptors, rescan and refill keypools.
+It is apart from `wallet-write`: a payout service that signs needs none of it,
+and a tool that sets wallets up signs nothing. Every `wallet-admin` call waits
+for the [chain guard](#chain-guard), `listWalletDir()` included, since
+importing descriptors, rescanning or creating a wallet on the wrong chain is a
+misconfiguration worth refusing, and none goes in a batch. All but
+`listWalletDir()` have side effects: never retried, on a fresh connection, and
+an `RpcUnknownOutcomeError` when it may have run.
+
+```ts
+const admin = new QbitRpcClient({ url, auth, expectedChain: 'testnet4', capabilities: ['wallet-admin'] })
+await admin.confirmChain()
+await admin.createWallet('payouts', { passphrase, loadOnStartup: true })
+// The calls about one wallet go to its endpoint.
+const payouts = new QbitRpcClient({ url, auth, wallet: 'payouts', expectedChain: 'testnet4', capabilities: ['wallet-admin'] })
+await payouts.confirmChain()
+await payouts.backupWallet('/var/backups/qbit/payouts.dat') // a path on the node's host
+```
+
+`createWallet`, `loadWallet`, `unloadWallet` and `listWalletDir` act on the
+node's wallet list, from any endpoint; with a client `wallet`, `unloadWallet`'s
+name must be that wallet's (`RpcError` -8 otherwise). The others act on the
+client's wallet, as the wallet-write methods do.
+
+| Method | A lost reply: what to look at | Calling it again |
+| --- | --- | --- |
+| `createWallet` | `listWalletDir()` lists it once created | -4 (`Database already exists`) once it exists |
+| `loadWallet` | `call('listwallets')` (`wallet-read`) | -35 once it is loaded |
+| `unloadWallet` | `call('listwallets')` | -18 once it is unloaded |
+| `importDescriptors` | `getAddressInfo(address).isMine`, for an address `deriveAddresses` gives; `getWalletInfo().scanning` while it still rescans | can be -4 (`new range must include current range`): an import widens the range to the keypool's lookahead |
+| `rescanBlockchain` | `getWalletInfo().scanning`, `false` once no rescan runs | -4 while one runs; afterwards it rescans again |
+| `backupWallet` | the file on the node's host | writes the same backup again |
+| `walletPassphraseChange` | keep both passphrases until you know | -14 once the old one no longer applies |
+| `keypoolRefill` | `getWalletInfo().keypoolSize`, which waits for a refill still running | harmless: it derives only what is missing |
+
+**Deadlines.** On a chain that allows only P2MR outputs (every chain, unless
+regtest runs with `-p2mronly=0`), qbit Core v1.0.0 derives each key of a
+keypool or a descriptor range before it answers, at 18 to 21 ms a key on a
+loaded shared host. Five methods have a default deadline of 120 s, as
+`walletPassphrase` has; a client `timeoutMs` shorter than that does not
+shorten it, a longer one applies, and a call's own `timeoutMs` always wins:
+
+- `keypoolRefill` tops each active descriptor, a receiving and a change one by
+  default, up to `newSize` (default `-keypool`, 1,000) under the wallet's
+  lock. A new wallet holds 16 keys a descriptor until its deferred top-up runs
+  (in the background from 30 s after it is created, or inside an encrypted
+  one's first unlock), so refilling it takes as long as that first unlock: 41
+  s on regtest; 500 more keys a descriptor took 21 s. The time grows with
+  `newSize`: about 40 ms for each one above the keypool's size on that host,
+  as both descriptors grow.
+- `importDescriptors` derives each ranged descriptor's `range`, and at least
+  `-keypool` keys past its next index even when it is not active (17.8 s for
+  one descriptor imported with `range: [0, 9]`), then rescans once from the
+  earliest timestamp: a receiving and a change descriptor imported with
+  timestamp 0 took 35 s.
+- `rescanBlockchain` reads every block from `startHeight` to the tip (1,010
+  regtest blocks: 0.25 s), and derives replacement keys for each used address
+  it finds past the keypool's low watermark, inside the scan.
+- `unloadWallet` answers once every call still running on the wallet has
+  ended: sent during that 41 s refill, it took 36 s.
+- `loadWallet` does both kinds of work before it answers: it tops up the
+  keypool, unless the wallet defers its first top-up (`CWallet::Create`,
+  src/wallet/wallet.cpp), and attaches the wallet to the chain, rescanning
+  from the last block it saw (`CWallet::AttachChain`). Loading a wallet that
+  is up to date with a full keypool took 0.1 s; one that missed many blocks,
+  or holds fewer keys than `-keypool`, takes as long as that rescan or refill.
+
+What grows with the chain or with the keys asked for has no default that fits:
+a rescan of a long chain from an early height, an import with an early
+`timestamp` (qbit Core warns it "can take over an hour"), or a large `newSize`
+or `range`. Give those calls a `timeoutMs` for the work, measured on your node
+(`getWalletInfo().scanning` shows a rescan's `duration` and `progress`), or
+import with `timestamp: 'now'`, which scans the last 2 hours of blocks only, and
+rescan from the height you need. A call that
+misses its deadline is an `RpcUnknownOutcomeError`, and the node goes on with
+it: reconcile as the table says before you call again. The other wallet-admin
+methods keep 30 s: on that host `createWallet` took 0.6 s (1.1 s with a
+passphrase), `walletPassphraseChange` 0.4 s and `backupWallet` of a 1.5 MB
+wallet 0.02 s.
+
+**Encrypted wallets.** `createWallet` with a `passphrase` creates the wallet
+with 16 keys a descriptor and leaves the rest of its keypool to its first
+unlock, which takes 25 to 49 s (see
+[unlocking an encrypted wallet](#unlocking-an-encrypted-wallet)); unlock it once
+right after creating it, before it serves anything. An empty `passphrase` is
+refused, as qbit Core creates an unencrypted wallet for one, with only a
+warning, and so is a `passphrase` with `disablePrivateKeys`, which qbit Core
+refuses. `walletPassphraseChange` does not run the deferred top-up, and leaves
+the wallet locked if it was. `keypoolRefill`, `importDescriptors` and
+`rescanBlockchain` need an encrypted wallet unlocked (`RpcError` -13).
+
+**Secrets.** `createWallet`'s passphrase and `walletPassphraseChange`'s two
+travel only in the request body, as `walletPassphrase`'s does: no message or
+property this package writes holds them, nor `toJSON()` or a log line. A
+descriptor can hold private keys, and on a P2MR chain a ranged one must
+(`pqc(<xprv>/...)`): it is treated the same way by `importDescriptors`,
+`getDescriptorInfo` and `deriveAddresses`, and the argument checks never quote
+it. qbit Core's own messages do quote descriptors: a malformed key in its error
+(`key '...' is not valid`), and a refused import a whole descriptor (`Could not
+add descriptor '...'`, live). So the client redacts every run of 16 or more
+letters and digits of the call's descriptors, which every key encoding is,
+in any case, as the node may print hex in another, from the node's messages
+about these three methods, typed, through `call()` or in a batch, before it
+caps them at 1,000 characters: an `RpcError`'s `message`, and each
+`DescriptorImportResult`'s `error.message` and `warnings`, read `[redacted]`
+there. The descriptors are read from the request body the client sends, so a
+copied or hand-built batch entry, params changed after `requests.raw()`, and a
+descriptor passed as a `String` or behind `toJSON()` are redacted all the
+same. Through `call('importdescriptors')` the result is the
+node's as it is, and can quote a descriptor in full: use `importDescriptors`.
+The request objects `requests` builds hold the secrets in `params`, as they are
+sent: do not log them.
+
+**Backups.** `backupWallet(destination)` copies the wallet to a file on the
+node's host, which it overwrites if it exists. Pass an absolute path: a
+relative one is resolved against `qbitd`'s working directory, not its data
+directory. qbit Core v1.0.0 refuses a directory, despite its help text, and a
+path whose directory does not exist, with `RpcError` -4 (`Wallet backup
+failed!`; the reason is in `debug.log`). An empty destination is refused
+before sending: qbit Core answers it with success, and writes nothing.
+
+#### Descriptors
+
+`importDescriptors`, `deriveAddresses` and `getDescriptorInfo` check each
+descriptor before sending it: descriptor characters only, and at most one `#`,
+then its 8-character checksum (BIP 380), which the client computes and
+compares. `importDescriptors` and `deriveAddresses` need the checksum, as qbit
+Core does; `getDescriptorInfo` returns it. A descriptor is ranged when a key
+path ends in `*`, and multipath when it has `<0;1>`: the client reads both from
+the text, as nothing else in a descriptor uses those characters.
+
+- `getDescriptorInfo(descriptor)` needs no capability. `descriptor` is the
+  canonical form, with its own checksum, which is checked, and without private
+  keys (`hasPrivateKeys` says whether the input had any); `checksum` must be
+  the input's, and `isRange` must match its `*`. For a multipath descriptor,
+  `multipathExpansion` lists each path's descriptor.
+- `deriveAddresses(descriptor, { range })` needs no capability either. A ranged
+  descriptor needs `range`, and any other refuses it, as qbit Core does:
+  `end`, from 0, or `[begin, end]`, both included, from 0 to 2,147,483,647 and
+  at most 1,000,000 indexes, in either form, as qbit Core checks (`end` at
+  most 999,999). The reply must hold one address per index
+  (`combo()`, several). A multipath descriptor is refused: derive each of
+  `getDescriptorInfo()`'s `multipathExpansion`.
+- `importDescriptors(descriptors)` takes `{ desc, timestamp, active?, range?,
+  nextIndex?, internal?, label? }` per descriptor and answers one result per
+  descriptor, in order: a refused one does not stop the others, so the client
+  refuses before sending what qbit Core would refuse or silently ignore for
+  one: `range`, `nextIndex` or `active` without `*`, a `nextIndex` outside
+  `range`, or without one (qbit Core's default range is the node's first
+  `-keypool` indexes, which the client cannot check it against), a `label` on
+  a ranged, multipath or internal descriptor or of `*`, and `internal` on a
+  multipath one. `timestamp` is Unix time in seconds, 0
+  for the whole chain, or `'now'`, the tip's median time; one above 2^32 - 1,
+  most likely in milliseconds, is refused. The node scans from 2 hours before
+  the earlier of the earliest timestamp and the tip's time (`TIMESTAMP_WINDOW`,
+  src/chain.h), so every import scans the last 2 hours of blocks at least: on a
+  young regtest chain, all of them, whatever the timestamp (live). A wallet with private keys takes a descriptor only
+  with its private keys (`pqc(<xprv>/...)`). A watch-only one
+  (`disablePrivateKeys`) takes one P2MR key, `mr(pk(<32-byte PQC key>))`, but no
+  ranged public P2MR descriptor, as `pqc(<xpub>/...)` cannot derive PQC keys:
+  for that qbit Core offers `exportpubkeydb` and `importpubkeydb`, which are not
+  allowlisted.
+
+### Node administration: `node-admin`
+
+`stop`, `setban`, `clearbanned`, `addnode`, `disconnectnode`,
+`setnetworkactive`, `pruneblockchain`, `savemempool`, `importmempool`,
+`logging`, `dumptxoutset`, `loadtxoutset`, `getblockfrompeer`,
+`preciousblock` and `ping` change what the node stores, follows or connects
+to, or stop it. Like wallet administration they have a capability of their
+own, `node-admin`, but no typed methods, and it allowlists nothing by default:
+a client reaches one only by enabling `node-admin` and opening it in
+`extraMethods`, with side effects:
+
+```ts
+const admin = new QbitRpcClient({
+  url,
+  auth,
+  expectedChain: 'testnet4',
+  capabilities: ['node-admin'],
+  extraMethods: { setban: { capability: 'node-admin', sideEffects: true } },
+})
+await admin.call('setban', ['127.0.0.2', 'add', 3600])
+```
+
+- Under any other capability, `broadcast` included, such an entry is a
+  `TypeError` that names the method and `node-admin`, so a payment service
+  that broadcasts cannot stop the node or ban a peer by stating `broadcast`.
+- Under `node-admin`, on a client that does not enable it, the constructor
+  throws, as for any capability.
+- A `node-admin` call waits for the [chain guard](#chain-guard), as
+  `wallet-write` and `broadcast` calls do, so a client that expects regtest
+  never stops, bans or invalidates on a mainnet node it was pointed at by
+  mistake. It is refused before `confirmChain()`, on another chain
+  (`mismatch`), and when the chain cannot be confirmed (`stale`,
+  `check_failed`). It needs the chain's identity only: on the expected chain
+  with a qbit Core version this package does not support, which refuses the
+  other guarded calls with `unsupported_version`, `stop` and `setban` still
+  go out. Every client has an `expectedChain`, so there is no way round the
+  guard: to administer a node whose chain cannot be confirmed, use
+  `qbit-cli`.
+- A `node-admin` call is never in a batch. Each has side effects: it is
+  never retried, uses a fresh connection, and is an `RpcUnknownOutcomeError`
+  when it may have run. `ping` too: it queues a ping on every peer.
+- Enabling `node-admin` opens no allowlisted method, and no method that
+  needs another capability.
+
+A hidden method that administers the node (`invalidateblock`,
+`reconsiderblock`, `setmocktime`, `addconnection`, `addpeeraddress`,
+`mockscheduler`, `sendmsgtopeer`) needs `node-admin` with side effects too.
+
+### Signing a data hash
+
+`signDataPqcHash(address, messageHash, options)` signs a 32-byte hash with the
+PQC key a P2MR address of the wallet commits to, for sign-in or attestation.
+It is a `wallet-write` call, behind the chain guard, and needs the wallet
+unlocked (`RpcError` -13; -4 for an address the wallet does not have, or while
+the wallet validates its PQC keys). The result is checked against the request
+(address, hash and any `pubkey`, `leafScript` or `controlBlock` asked for; the
+address in either case, as a bech32m address in capitals is the same one, and
+qbit Core v1.0.0 echoes it as it was sent), and `verifyDataPqcHash` takes it
+as it is:
+
+```ts
+const signed = await rpc.signDataPqcHash(address, challengeHash, { includePqcUsage: true })
+const { valid } = await rpc.verifyDataPqcHash(signed) // any node, no wallet or capability
+const state = signed.pqcOverallLimitState
+if (state !== undefined && state !== 'normal' && state !== 'warning') {
+  // critical, exhausted, or a state a later qbit Core adds: rotate to a new address
+}
+```
+
+Each signature uses one of the key's 2^30 (SLH-DSA-SHA2-128s-bounded30), so it
+has side effects: never retried, and a lost reply is an
+`RpcUnknownOutcomeError`, after which the count may have advanced; signing
+again uses another. Sign each challenge once, and keep a signature you need
+again. `includePqcUsage` adds the key's [PQC usage fields](#typed-methods) and
+threshold `warnings`, as `walletProcessPsbt`'s; qbit Core advises it only for
+local diagnostics, as they show the exact remaining budget. Without it, read
+the budget with `getAddressInfo(address)`. qbit Core reads the option names in
+snake case and ignores any other, so through `call()`, `includePqcUsage`,
+`leafScript` and `controlBlock` are refused (send `include_pqc_usage` and so
+on, or use the typed method).
 
 ## Public API
 
@@ -1473,7 +1697,7 @@ you made, or in `cause` the request that failed. Every error has its own
 | `RpcCapabilityError` | `reason: 'not_enabled'` | The method's capability (`required`) is not enabled. | Not sent | A configuration error. |
 | `RpcCapabilityError` | `reason: 'unknown_method'` | The method is not on the allowlist or in `extraMethods`. | Not sent | A programming error. |
 | `RpcCapabilityError` | `reason: 'not_batchable'` | A method other than a read in `batch()`, or a [long poll](#long-polls). | Not sent | A programming error. |
-| `RpcChainGuardError` | `reason: 'unconfirmed'` | A wallet-write, broadcast or mining call before `confirmChain()` succeeded. | Not sent | Call `confirmChain()`. |
+| `RpcChainGuardError` | `reason: 'unconfirmed'` | A wallet-write, broadcast, mining or wallet-admin call before `confirmChain()` succeeded. | Not sent | Call `confirmChain()`. |
 | `RpcChainGuardError` | `reason: 'mismatch'` | A chain check (yours, or the automatic re-check) found another chain, genesis block or signet challenge; `differs` says which. | Not sent | Check the URL, or set `expectedGenesisHash` or `expectedSignetChallenge` for a node with other chain parameters or a custom signet, then call `confirmChain()`. |
 | `RpcChainGuardError` | `reason: 'unsupported_version'` | A chain check found a qbit Core version outside 1.0.x releases; `nodeVersion` says which. | Not sent | Run a supported qbit Core, or a release of this package that supports the node's, then call `confirmChain()`; or accept the risk with `allowUnsupportedNodeVersion`. |
 | `RpcChainGuardError` | `reason: 'stale'` | Every chain check the call ran was overtaken by a connection error, an HTTP 401 or another check. | Not sent | Try again later. |
@@ -1490,7 +1714,7 @@ you made, or in `cause` the request that failed. Every error has its own
 | `RpcResponseTooLargeError` | | The reply passed `maxResponseBytes`, `limitBytes`. | Unknown outcome | Treat the node or proxy as misbehaving; do not guess the value. |
 | `RpcResponseError` | `reason: 'protocol'` | The reply was not valid JSON-RPC; `path` says where. | Unknown outcome | Treat the node or proxy as misbehaving; do not guess the value. |
 | `RpcResponseError` | `reason: 'validation'` | A result failed validation; `path` says where. For a [custom `parse`](#batches) that threw, `path` is `result` and `cause` is what it threw. | Unknown outcome | Treat the node or proxy as misbehaving; do not guess the value. |
-| `RpcUnknownOutcomeError` | | The call may have been executed, but no valid reply arrived; `cause` is the failure; for `sendrawtransaction` (typed or through `call()`), `txid` is the computed txid, and for `submitpackage` (likewise), `txids` holds one entry per transaction in package order, its txid or `null` where its hex does not parse here, with `txid` unset; for `submitpackage` it is also a node error that can follow the acceptance of part of the package (see [submitting a package](#submitting-a-package-cpfp)), with that `RpcError` as `cause`; and for `submitblock`, `submitheader` and `submitauxblock` (likewise), `blockHash` names the block. Never retried. | Unknown outcome | Reconcile before acting again: look up `txid` or each of `txids` for a broadcast, re-read wallet state for a signing call, read `getWalletInfo().unlockedUntil` after `walletPassphrase` ([unlocking a wallet](#unlocking-an-encrypted-wallet)). |
+| `RpcUnknownOutcomeError` | | The call may have been executed, but no valid reply arrived; `cause` is the failure; for `sendrawtransaction` (typed or through `call()`), `txid` is the computed txid, and for `submitpackage` (likewise), `txids` holds one entry per transaction in package order, its txid or `null` where its hex does not parse here, with `txid` unset; for `submitpackage` it is also a node error that can follow the acceptance of part of the package (see [submitting a package](#submitting-a-package-cpfp)), with that `RpcError` as `cause`; and for `submitblock`, `submitheader` and `submitauxblock` (likewise), `blockHash` names the block. Never retried. | Unknown outcome | Reconcile before acting again: look up `txid` or each of `txids` for a broadcast, `blockHash` with `getBlockHeader` for a block ([mining](#mining)), re-read wallet state for a signing call, read `getWalletInfo().unlockedUntil` after `walletPassphrase` ([unlocking a wallet](#unlocking-an-encrypted-wallet)), and for a wallet-admin call see [wallet administration](#wallet-administration)'s table. |
 
 A bad argument or option is a `TypeError` or `RangeError`, and nothing is sent.
 
@@ -1550,7 +1774,7 @@ Retries, deadlines and connections work like this:
   takes the normal path: the cookie is read again, and `finalizepsbt` and
   `testmempoolaccept` re-check the chain before they are sent again. If it
   fails, its error is reported like any connection error. The chain re-check
-  before a wallet-write, broadcast or mining call gets the same extra attempt: the call
+  before a wallet-write, broadcast, mining or wallet-admin call gets the same extra attempt: the call
   itself has not been sent yet, and goes out once, after a check that succeeds.
   A later reset (the node failing during a request), any other error and a
   reply that began get no extra attempt, so a proxy in between is covered only

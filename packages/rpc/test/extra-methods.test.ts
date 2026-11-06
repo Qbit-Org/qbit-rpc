@@ -37,20 +37,22 @@ const WALLET_READ = { capability: 'wallet-read', sideEffects: false } as const
 const WALLET_WRITE = { capability: 'wallet-write', sideEffects: true } as const
 const BROADCAST = { capability: 'broadcast', sideEffects: true } as const
 const MINING = { capability: 'mining', sideEffects: true } as const
+const WALLET_ADMIN = { capability: 'wallet-admin', sideEffects: true } as const
 const NODE_ADMIN = { capability: 'node-admin', sideEffects: true } as const
-const ALL: Capability[] = ['wallet-read', 'wallet-write', 'broadcast', 'mining', 'node-admin']
+const ALL: Capability[] = ['wallet-read', 'wallet-write', 'broadcast', 'mining', 'wallet-admin', 'node-admin']
 const SIGN_AND_BROADCAST = ['sendmany', 'sendtoaddress', 'send', 'sendall', 'bumpfee']
 const RESULTS: Record<string, string> = {
   ...chainResults('regtest'),
   getchaintxstats: '{"txcount":18446744073709551616,"window_block_count":10}',
   getbalance: '0.5',
   getblockcount: '7',
-  keypoolrefill: 'null',
+  setlabel: 'null',
   utxoupdatepsbt: '"cHNidP8="',
   prioritisetransaction: '{"package_msg":"success"}',
   // A method help does not list, as a later release's broadcast method would be: it keeps the policy given.
   futurebroadcast: 'null',
   submitheader: 'null',
+  abortrescan: 'true',
   setban: 'null',
   ping: 'null',
   stop: '"qbit server stopping"',
@@ -150,7 +152,7 @@ describe('extraMethods at construction', () => {
       [
         { getchaintxstats: { sideEffects: false } },
         [],
-        /^extraMethods\.getchaintxstats\.capability must be one of read, wallet-read, wallet-write, broadcast, mining, node-admin$/,
+        /^extraMethods\.getchaintxstats\.capability must be one of read, wallet-read, wallet-write, broadcast, mining, wallet-admin, node-admin$/,
       ],
       [{ getchaintxstats: { capability: 'admin', sideEffects: false } }, ALL, /\.capability must be one of/],
       [{ getchaintxstats: { capability: 'pool', sideEffects: false } }, ALL, /\.capability must be one of/],
@@ -167,12 +169,12 @@ describe('extraMethods at construction', () => {
       [
         { futurenodemethod: { capability: 'read', sideEffects: true } },
         ALL,
-        /^extraMethods\.futurenodemethod: a method with side effects needs the wallet-write, broadcast or mining capability, which puts it behind the chain guard, or node-admin to administer the node$/,
+        /^extraMethods\.futurenodemethod: a method with side effects needs the wallet-write, broadcast, mining or wallet-admin capability, which puts it behind the chain guard, or node-admin to administer the node$/,
       ],
       [
         { futureminingmethod: { capability: 'wallet-read', sideEffects: true } },
         ALL,
-        /needs the wallet-write, broadcast or mining/,
+        /needs the wallet-write, broadcast, mining or wallet-admin/,
       ],
       // Hidden ones are classed as the listed ones are.
       [
@@ -192,15 +194,16 @@ describe('extraMethods at construction', () => {
         ALL,
         /^extraMethods\.submitheader: qbit Core v1\.0\.0's submitheader .* so it needs \{ capability: 'mining', sideEffects: true \}$/,
       ],
-      [{ keypoolrefill: { capability: 'wallet-read', sideEffects: true } }, ALL, /needs \{ capability: 'wallet-write'/],
+      [{ setlabel: { capability: 'wallet-read', sideEffects: true } }, ALL, /needs \{ capability: 'wallet-write'/],
       [
         { getbalance: WALLET_READ },
         [],
         /^extraMethods\.getbalance needs the 'wallet-read' capability, which this client does not enable$/,
       ],
-      [{ keypoolrefill: WALLET_WRITE }, ['wallet-read', 'broadcast'], /needs the 'wallet-write' capability/],
+      [{ setlabel: WALLET_WRITE }, ['wallet-read', 'broadcast'], /needs the 'wallet-write' capability/],
       [{ futurebroadcast: BROADCAST }, ['wallet-read', 'wallet-write'], /needs the 'broadcast' capability/],
       [{ submitheader: MINING }, ['wallet-read', 'broadcast'], /needs the 'mining' capability/],
+      [{ abortrescan: WALLET_ADMIN }, ['wallet-write'], /needs the 'wallet-admin' capability/],
       // One bad entry fails the whole option.
       [
         { getchaintxstats: READ, getblockstats: { capability: 'read' } },
@@ -235,6 +238,11 @@ describe('extraMethods at construction', () => {
       ['submitauxblock', WALLET_WRITE, "'mining', sideEffects: true"],
       ['getblocktemplate', READ, "'mining', sideEffects: false"],
       ['getmininginfo', MINING, "'read', sideEffects: false"],
+      // A service that opened keypoolrefill before wallet-admin existed must drop the entry and enable wallet-admin.
+      ['keypoolrefill', WALLET_WRITE, "'wallet-admin', sideEffects: true"],
+      ['listwalletdir', WALLET_READ, "'wallet-admin', sideEffects: false"],
+      ['signdatapqchash', WALLET_ADMIN, "'wallet-write', sideEffects: true"],
+      ['getdescriptorinfo', WALLET_READ, "'read', sideEffects: false"],
     ] as const) {
       expect(() => client({ [name]: entry }, { capabilities: ALL })).toThrow(
         `extraMethods.${name}: ${name} is allowlisted already as { capability: ${builtIn} }, which extraMethods cannot change`
@@ -306,22 +314,23 @@ describe('extraMethods at construction', () => {
 
   it('shows the opened methods and their policies in toJSON() and util.inspect, and nothing when none', () => {
     const rpc = client(
-      { getchaintxstats: READ, getbalance: WALLET_READ, keypoolrefill: WALLET_WRITE },
+      { getchaintxstats: READ, getbalance: WALLET_READ, setlabel: WALLET_WRITE },
       { capabilities: ['wallet-read', 'wallet-write'] }
     )
-    const extraMethods = { getchaintxstats: READ, getbalance: WALLET_READ, keypoolrefill: WALLET_WRITE }
+    const extraMethods = { getchaintxstats: READ, getbalance: WALLET_READ, setlabel: WALLET_WRITE }
     expect(rpc.toJSON()).toMatchObject({ capabilities: ['wallet-read', 'wallet-write'], extraMethods })
     expect(JSON.parse(JSON.stringify(rpc))).toMatchObject({ extraMethods })
-    expect(inspect(rpc)).toContain("keypoolrefill: { capability: 'wallet-write', sideEffects: true }")
+    expect(inspect(rpc)).toContain("setlabel: { capability: 'wallet-write', sideEffects: true }")
     expect(client(undefined).toJSON()).not.toHaveProperty('extraMethods')
     expect(client({}).toJSON()).not.toHaveProperty('extraMethods')
   })
 
-  // The batch rule and the chain guard rely on it: only wallet-write, broadcast and mining change state.
+  // The batch rule and the chain guard rely on it: only wallet-write, broadcast, mining and wallet-admin change state.
   it('keeps every allowlisted method with side effects behind the chain guard, as extraMethods must', () => {
     for (const [name, policy] of Object.entries(METHOD_POLICIES)) {
       expect(name).toMatch(/^[a-z][a-z0-9]{0,63}$/)
-      if (policy.sideEffects) expect(['wallet-write', 'broadcast', 'mining']).toContain(policy.capability)
+      if (policy.sideEffects)
+        expect(['wallet-write', 'broadcast', 'mining', 'wallet-admin']).toContain(policy.capability)
       // node-admin allowlists nothing: its methods are opened with extraMethods only.
       expect(policy.capability, name).not.toBe('node-admin')
     }
@@ -331,11 +340,11 @@ describe('extraMethods at construction', () => {
 describe('extraMethods against what each method does', () => {
   it('refuses a policy below what qbit Core does, naming the method and the class it needs', async () => {
     const cases: [string, ExtraMethodPolicy, string][] = [
-      // A wallet's passphrase, changed by a read-only client, retried and batched, never an unknown outcome.
+      // A wallet encrypted by a read-only client, retried and batched, never an unknown outcome.
       [
-        'walletpassphrasechange',
+        'encryptwallet',
         READ,
-        "qbit Core v1.0.0's walletpassphrasechange administers a wallet or returns its private keys, so it needs { capability: 'wallet-write', sideEffects: true }",
+        "qbit Core v1.0.0's encryptwallet administers a wallet or returns its private keys, so it needs { capability: 'wallet-admin', sideEffects: true }",
       ],
       [
         'signrawtransactionwithwallet',
@@ -349,7 +358,7 @@ describe('extraMethods against what each method does', () => {
       [
         'getbalance',
         READ,
-        "qbit Core v1.0.0's getbalance reads a wallet, so it needs a wallet capability (wallet-read, wallet-write)",
+        "qbit Core v1.0.0's getbalance reads a wallet, so it needs a wallet capability (wallet-read, wallet-write, wallet-admin)",
       ],
       // The node's own state, as a read a read-only service could call.
       [
@@ -362,7 +371,8 @@ describe('extraMethods against what each method does', () => {
       ['submitheader', READ, "needs { capability: 'mining', sideEffects: true }"],
       ['prioritisetransaction', BROADCAST, "needs { capability: 'mining', sideEffects: true }"],
       // Its own kind, not another with side effects.
-      ['keypoolrefill', BROADCAST, "needs { capability: 'wallet-write', sideEffects: true }"],
+      ['abortrescan', BROADCAST, "needs { capability: 'wallet-admin', sideEffects: true }"],
+      ['restorewallet', WALLET_WRITE, "needs { capability: 'wallet-admin', sideEffects: true }"],
       ['setban', WALLET_WRITE, "needs { capability: 'node-admin', sideEffects: true }"],
       // Broadcasting is not administering the node.
       ['stop', BROADCAST, "needs { capability: 'node-admin', sideEffects: true }"],
@@ -373,16 +383,16 @@ describe('extraMethods against what each method does', () => {
         { capability: 'node-admin', sideEffects: false },
         "needs { capability: 'node-admin', sideEffects: true }",
       ],
-      // Node administration does not stand in for another kind.
+      // Node administration does not stand in for another kind, wallet administration included.
       ['submitheader', NODE_ADMIN, "needs { capability: 'mining', sideEffects: true }"],
-      ['keypoolrefill', NODE_ADMIN, "needs { capability: 'wallet-write', sideEffects: true }"],
+      ['abortrescan', NODE_ADMIN, "needs { capability: 'wallet-admin', sideEffects: true }"],
       ['getbalance', NODE_ADMIN, 'needs a wallet capability'],
       ['getbalance', BROADCAST, 'needs a wallet capability'],
       // A key export is a backup, not a wallet read.
       [
         'listdescriptors',
         WALLET_READ,
-        "administers a wallet or returns its private keys, so it needs { capability: 'wallet-write'",
+        "administers a wallet or returns its private keys, so it needs { capability: 'wallet-admin'",
       ],
       ['fundrawtransaction', WALLET_READ, "needs { capability: 'wallet-write', sideEffects: true }"],
     ]
@@ -399,7 +409,7 @@ describe('extraMethods against what each method does', () => {
     const rpc = client(
       {
         signrawtransactionwithwallet: WALLET_WRITE,
-        walletpassphrasechange: WALLET_WRITE,
+        encryptwallet: { capability: 'wallet-admin', sideEffects: true },
         getbalance: WALLET_READ,
         getreceivedbyaddress: { capability: 'wallet-write', sideEffects: false },
         listlabels: { capability: 'wallet-write', sideEffects: true },
@@ -408,7 +418,7 @@ describe('extraMethods against what each method does', () => {
         getchaintxstats: READ,
         getblockstats: WALLET_READ,
         decodescript: BROADCAST,
-        listdescriptors: { capability: 'wallet-write', sideEffects: false },
+        listdescriptors: { capability: 'wallet-admin', sideEffects: false },
       },
       { capabilities: ALL }
     )
@@ -462,6 +472,24 @@ describe('extraMethods against what each method does', () => {
 })
 
 describe('extraMethods calls', () => {
+  it('opens a wallet-admin method as an allowlisted one: behind the capability and the chain guard, never retried', async () => {
+    const rpc = client(
+      { abortrescan: WALLET_ADMIN },
+      { capabilities: ['wallet-admin'], readRetries: 3, retryDelayMs: 0 }
+    )
+    expect((await refusal(client({}, { capabilities: ['wallet-write'] }).call('abortrescan'))).reason).toBe(
+      'unknown_method'
+    )
+    expect(await failure(rpc.call('abortrescan'))).toMatchObject({ reason: 'unconfirmed' })
+    expect(node.requests).toHaveLength(0)
+    await rpc.confirmChain()
+    expect(await rpc.call('abortrescan')).toBe(true)
+    node.handler = (request, response) => (/abortrescan/.test(request.body) ? response.destroy() : response.end('[]'))
+    const error = await failure(rpc.call('abortrescan'))
+    expect(RpcUnknownOutcomeError.is(error)).toBe(true)
+    expect(node.calls().filter(call => call.method === 'abortrescan')).toHaveLength(2)
+  })
+
   it('opens a mining method as an allowlisted one: behind the capability and the chain guard, never retried', async () => {
     const rpc = client({ submitheader: MINING }, { capabilities: ['mining'], readRetries: 3, retryDelayMs: 0 })
     expect(await failure(rpc.call('submitheader', ['00']))).toMatchObject({ reason: 'unconfirmed' })
@@ -512,13 +540,13 @@ describe('extraMethods calls', () => {
   it('puts extra wallet-write and broadcast methods behind the chain guard', async () => {
     const rpc = client(
       {
-        keypoolrefill: WALLET_WRITE,
+        setlabel: WALLET_WRITE,
         utxoupdatepsbt: { capability: 'wallet-write', sideEffects: false },
         futurebroadcast: BROADCAST,
       },
       { capabilities: ['wallet-write', 'broadcast'], chainCheckMaxAgeMs: 0 }
     )
-    for (const method of ['keypoolrefill', 'utxoupdatepsbt', 'futurebroadcast']) {
+    for (const method of ['setlabel', 'utxoupdatepsbt', 'futurebroadcast']) {
       const error = await failure(rpc.call(method))
       expect(RpcChainGuardError.is(error)).toBe(true)
       expect(error).toMatchObject({ reason: 'unconfirmed', method })
@@ -527,13 +555,13 @@ describe('extraMethods calls', () => {
 
     await rpc.confirmChain()
     // chainCheckMaxAgeMs 0: each call checks the chain again first.
-    await rpc.call('keypoolrefill', [100])
+    await rpc.call('setlabel', ['qbrt1zaddress', 'deposits'])
     await rpc.call('futurebroadcast')
     await rpc.call('utxoupdatepsbt', ['cHNidP8='])
     expect(node.calls().map(call => call.method)).toEqual([
       ...CHECK,
       ...CHECK,
-      'keypoolrefill',
+      'setlabel',
       ...CHECK,
       'futurebroadcast',
       ...CHECK,
@@ -541,17 +569,17 @@ describe('extraMethods calls', () => {
     ])
 
     // A failed re-check: check_failed, and the call is not sent.
-    node.results({ keypoolrefill: 'null' })
+    node.results({ setlabel: 'null' })
     const before = singles().length
-    const failedCheck = await failure(rpc.call('keypoolrefill'))
-    expect(failedCheck).toMatchObject({ reason: 'check_failed', method: 'keypoolrefill' })
+    const failedCheck = await failure(rpc.call('setlabel'))
+    expect(failedCheck).toMatchObject({ reason: 'check_failed', method: 'setlabel' })
     expect(RpcError.is((failedCheck as Error).cause)).toBe(true)
     expect(singles()).toHaveLength(before)
 
     // Another chain: refused until confirmChain() matches again.
     node.results(chainResults('main'))
     await failure(rpc.confirmChain())
-    for (const method of ['keypoolrefill', 'futurebroadcast']) {
+    for (const method of ['setlabel', 'futurebroadcast']) {
       expect(await failure(rpc.call(method))).toMatchObject({ reason: 'mismatch', method, actualChain: 'main' })
     }
     expect(singles()).toHaveLength(before)
@@ -559,14 +587,14 @@ describe('extraMethods calls', () => {
 
   it('treats an extra call with side effects as an allowlisted one: a fresh connection, never retried, an unknown outcome', async () => {
     const rpc = client(
-      { keypoolrefill: WALLET_WRITE, futurebroadcast: BROADCAST },
+      { setlabel: WALLET_WRITE, futurebroadcast: BROADCAST },
       { capabilities: ['wallet-write', 'broadcast'], readRetries: 3, retryDelayMs: 0 }
     )
     await rpc.confirmChain()
     node.requests.length = 0
     await rpc.getBlockCount()
     await rpc.getBlockCount()
-    await rpc.call('keypoolrefill')
+    await rpc.call('setlabel')
     await rpc.call('futurebroadcast')
     const [read1, read2, write1, write2] = node.requests
     expect(read1!.remotePort).toBe(read2!.remotePort)
@@ -586,7 +614,7 @@ describe('extraMethods calls', () => {
       ],
       ['a malformed reply', (_request, response) => response.end('{"jsonrpc"'), RpcResponseError.is],
     ]
-    for (const method of ['keypoolrefill', 'futurebroadcast']) {
+    for (const method of ['setlabel', 'futurebroadcast']) {
       for (const [, fail, cause] of outcomes) {
         failSingles(fail)
         const before = singles().length
@@ -600,18 +628,18 @@ describe('extraMethods calls', () => {
     }
     // A deadline that passes after sending.
     failSingles(() => undefined)
-    const late = await failure(rpc.call('keypoolrefill', [], { timeoutMs: 100 }))
+    const late = await failure(rpc.call('setlabel', [], { timeoutMs: 100 }))
     expect(RpcUnknownOutcomeError.is(late)).toBe(true)
     expect(RpcTimeoutError.is((late as Error).cause)).toBe(true)
     // The node's own error is its answer: definite.
     node.rpc(call =>
-      call.method === 'keypoolrefill'
-        ? { error: { code: -13, message: 'Error: Please enter the wallet passphrase with walletpassphrase first.' } }
+      call.method === 'setlabel'
+        ? { error: { code: -5, message: 'Invalid qbit address' } }
         : { result: RESULTS[call.method]! }
     )
-    const answered = await failure(rpc.call('keypoolrefill'))
+    const answered = await failure(rpc.call('setlabel'))
     expect(RpcError.is(answered)).toBe(true)
-    expect(answered).toMatchObject({ rpcCode: -13, method: 'keypoolrefill' })
+    expect(answered).toMatchObject({ rpcCode: -5, method: 'setlabel' })
   })
 
   it('refuses extra methods in a batch unless they are reads without side effects', async () => {
@@ -619,7 +647,7 @@ describe('extraMethods calls', () => {
       {
         getchaintxstats: READ,
         getbalance: WALLET_READ,
-        keypoolrefill: WALLET_WRITE,
+        setlabel: WALLET_WRITE,
         utxoupdatepsbt: { capability: 'wallet-write', sideEffects: false },
         futurebroadcast: BROADCAST,
       },
@@ -627,7 +655,7 @@ describe('extraMethods calls', () => {
     )
     await rpc.confirmChain()
     const before = node.requests.length
-    for (const method of ['keypoolrefill', 'utxoupdatepsbt', 'futurebroadcast']) {
+    for (const method of ['setlabel', 'utxoupdatepsbt', 'futurebroadcast']) {
       const error = await refusal(rpc.batch([requests.raw('getchaintxstats'), requests.raw(method)]))
       expect(error).toMatchObject({ reason: 'not_batchable', method })
     }
@@ -639,7 +667,7 @@ describe('extraMethods calls', () => {
 
   it('takes a request slot as any call does', async () => {
     const rpc = client(
-      { keypoolrefill: WALLET_WRITE, getchaintxstats: READ },
+      { setlabel: WALLET_WRITE, getchaintxstats: READ },
       {
         capabilities: ['wallet-write'],
         maxConcurrentRequests: 1,
@@ -653,17 +681,17 @@ describe('extraMethods calls', () => {
     const reply = ({ call, response }: (typeof held)[number]): void => {
       response.end(`{"jsonrpc":"2.0","result":${RESULTS[call.method]!},"id":${String(call.id)}}`)
     }
-    const write = rpc.call('keypoolrefill')
+    const write = rpc.call('setlabel')
     const read = rpc.call('getchaintxstats')
     await vi.waitFor(() => expect(held).toHaveLength(1))
     await new Promise(resolve => setTimeout(resolve, 50))
-    expect(held.map(({ call }) => call.method)).toEqual(['keypoolrefill'])
+    expect(held.map(({ call }) => call.method)).toEqual(['setlabel'])
     reply(held[0]!)
     await write
     await vi.waitFor(() => expect(held).toHaveLength(2))
     reply(held[1]!)
     await read
-    expect(held.map(({ call }) => call.method)).toEqual(['keypoolrefill', 'getchaintxstats'])
+    expect(held.map(({ call }) => call.method)).toEqual(['setlabel', 'getchaintxstats'])
   })
 })
 

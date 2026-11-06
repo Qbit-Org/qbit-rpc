@@ -791,9 +791,9 @@ properties only. The API report is unchanged.
 - Each of the 161 methods qbit Core v1.0.0's `help` lists has a fixed class,
   from its source: a policy below it is a `TypeError` naming the method and the
   policy it needs. A wallet method needs a wallet capability; one that signs or
-  changes a wallet needs `wallet-write` with side effects; one that builds or
-  submits blocks needs `mining`; one that hands a transaction to the network
-  needs `broadcast`
+  changes a wallet needs `wallet-write` with side effects; one that
+  administers a wallet, `wallet-admin`; one that builds or submits blocks,
+  `mining`; one that hands a transaction to the network needs `broadcast`
   with side effects. `walletpassphrasechange` or `signrawtransactionwithwallet`
   cannot be opened as a read. qbit Core v1.0.0's 18 hidden methods are
   classed too: `invalidateblock` cannot be opened as a read either. A method
@@ -926,3 +926,103 @@ properties only. The API report is unchanged.
   own properties, and their own elements: a hole is a `TypeError`.
 - `pack:check`'s ceiling for `@qbit-oss/rpc` is 2,270,000 bytes unpacked, a
   quarter above its 1.82 MB with these methods.
+
+### Breaking: wallet operators: administration, descriptors and data-hash signing
+
+- The `wallet-admin` capability goes behind the chain guard, since importing
+  descriptors, rescanning or creating a wallet on the wrong chain is a
+  misconfiguration worth refusing; `Capability`, the capability tables and the
+  guard's documentation name it.
+- Typed and validated under it: `createWallet`, `loadWallet`, `unloadWallet`,
+  `listWalletDir`, `importDescriptors`, `rescanBlockchain`, `backupWallet`,
+  `walletPassphraseChange` and `keypoolRefill`. All but `listWalletDir`, a read
+  gated as the step before `loadWallet`, have side effects: never retried, on a
+  fresh connection, and an `RpcUnknownOutcomeError` when the reply is lost. None
+  goes in a batch. The package README says how to reconcile each after a lost
+  reply, and what calling it again does.
+- Default deadlines of 120 s, as `walletPassphrase` has, for the calls qbit Core
+  v1.0.0 makes derive PQC keys before answering, measured on regtest on a
+  loaded shared host at 18 to 21 ms a key: `keypoolRefill` (41 s for a new
+  wallet's default refill), `importDescriptors` (35 s for a receiving and a
+  change descriptor from timestamp 0), `rescanBlockchain` (1,010 blocks in 0.25
+  s, plus keys for each used address it finds), `unloadWallet`, which answers
+  once the calls still running on the wallet end (36 s behind that refill), and
+  `loadWallet`, which tops up the keypool and attaches the wallet to the chain,
+  rescanning from the last block it saw, before it answers. A shorter client
+  `timeoutMs` does not shorten them, a longer one applies, and a call's own
+  always wins. A rescan of a long chain, an import
+  with an early timestamp, or a large `newSize` or range needs the call's own
+  `timeoutMs`: the README says how to size it. The other wallet-admin calls keep
+  30 s (`createWallet` 0.6 s, 1.1 s with a passphrase).
+- Secrets: `createWallet`'s passphrase and `walletPassphraseChange`'s two travel
+  only in the request body, as `walletPassphrase`'s does. A descriptor can hold
+  private keys, and qbit Core quotes them, a malformed key in its error and a
+  refused import a whole descriptor (live). So the node's messages about
+  `importdescriptors`, `deriveaddresses` and `getdescriptorinfo`, typed or
+  through `call()` or in a batch, have every run of 16 or more letters and
+  digits of the call's descriptors replaced by `[redacted]`, in any case, before
+  they are capped at 1,000 characters: an `RpcError`'s `message`, and each
+  `DescriptorImportResult`'s `error.message` and `warnings`. The client reads the
+  descriptors from the request body it sends, so a copied or hand-built batch
+  entry, params changed after `requests.raw()`, and a descriptor passed as a
+  `String` or behind `toJSON()` are redacted too. A `call('importdescriptors')`
+  result is the node's as it is.
+- The package README warns that `call()` returns results, and other methods'
+  errors, as the node sent them, which can quote private keys: never log them
+  for a method that takes keys.
+- Checked before sending, where qbit Core would refuse, or ignore, one
+  descriptor of an import and go on with the others: each descriptor's
+  characters and checksum (BIP 380, computed here; required by
+  `importDescriptors` and `deriveAddresses`), `range`, `nextIndex` and `active`
+  without `*`, a `nextIndex` outside `range` or without one (the default range
+  is the node's first `-keypool` indexes, which the client cannot know), a
+  label on a ranged, multipath or internal descriptor or of `*`, `internal` on
+  a multipath one, and a timestamp above 2^32 - 1, most likely in
+  milliseconds. An empty `createWallet`
+  passphrase is refused (qbit Core creates the wallet unencrypted), as are a
+  passphrase with `disablePrivateKeys`, an empty `backupWallet` destination
+  (qbit Core answers success and writes nothing, live) and `newSize: 0` (qbit
+  Core's "the default": leave it out).
+- `getDescriptorInfo` and `deriveAddresses`, reads needing no capability and
+  allowed in a batch. `getDescriptorInfo`'s canonical form and multipath
+  expansion must carry their own checksums, its `checksum` must be the input's,
+  and `isRange` must match its `*`. `deriveAddresses` takes the range qbit Core
+  takes (from 0 to 2,147,483,647, at most 1,000,000 indexes in either form, so
+  an end index of at most 999,999), which a ranged descriptor needs and any
+  other refuses, and its reply must hold an address per index; a multipath descriptor is refused, as its reply would be one list per
+  path.
+- `signDataPqcHash`, under `wallet-write` with side effects: each signature uses
+  one of the key's 2^30, so a lost reply is an `RpcUnknownOutcomeError`, and
+  signing again uses another. Its result is checked against the request, the
+  address in either case, as a bech32m address in capitals is the same one
+  (qbit Core v1.0.0 echoes it as sent), and `includePqcUsage` adds the key's
+  PQC usage fields and `warnings`, parsed as `walletProcessPsbt`'s.
+  `verifyDataPqcHash` takes a `signDataPqcHash()` result as it is: the fields
+  beyond the proof's are allowed and not read. qbit Core ignores an option name
+  it does not read, so `call('signdatapqchash')` refuses `includePqcUsage`,
+  `leafScript` and `controlBlock`, as it refuses `walletcreatefundedpsbt`'s
+  `subtract_fee_from_outputs`: send `include_pqc_usage` and so on. Both checks
+  run on the request body as it is sent, so a getter is read once, by what the
+  node receives, and `requests.raw()` itself refuses neither.
+- `extraMethods` refuses `createwallet`, `loadwallet`, `unloadwallet`,
+  `listwalletdir`, `importdescriptors`, `rescanblockchain`, `backupwallet`,
+  `walletpassphrasechange`, `keypoolrefill`, `getdescriptorinfo`,
+  `deriveaddresses` and `signdatapqchash` under any policy but the allowlist's,
+  as for every allowlisted method; restating the allowlist's policy is
+  accepted. The package README's example opens `setlabel`.
+- `extraMethods` also takes `wallet-admin`, behind the chain guard, for a method
+  with side effects, such as `abortrescan`. The `TypeError` for side effects
+  without a guarded capability names `wallet-admin` too. The wallet
+  administration methods move from `wallet-write` to `wallet-admin`: an
+  `extraMethods` entry that opened one under `wallet-write` is a `TypeError`
+  naming the policy it needs. `wallet-admin` sits beside `node-admin`, which
+  is guarded by the chain's identity only, and neither goes in a batch.
+- Every new result object has no prototype, as every other result: each
+  descriptor's import result and its `error`, the rescan's heights, the
+  loaded, unloaded and listed wallets, the descriptor info and the data-hash
+  signature. `importDescriptors()` reads its descriptors by their own
+  elements, a hole being a `TypeError`. The send-time checks read the request
+  body parsed back as the node will read it, its objects without a prototype.
+- New exported types: `DataPqcHashSignature`, `DescriptorImport`,
+  `DescriptorImportResult`, `DescriptorInfo`, `DescriptorRange`, `LoadedWallet`,
+  `RescanResult`, `UnloadedWallet` and `WalletDirEntry`.

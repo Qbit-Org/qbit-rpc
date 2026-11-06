@@ -35,14 +35,24 @@ export const QBIT_DEFAULT_SIGNET_CHALLENGE = '51'
  *   `walletprocesspsbt`, `walletpassphrase`, `walletlock`, ...).
  * - `broadcast`: `testmempoolaccept`, `sendrawtransaction` and `submitpackage`.
  * - `mining`: `getblocktemplate`, `submitblock`, `createauxblock` and `submitauxblock`.
+ * - `wallet-admin`: create, load, unload, back up and re-key wallets, import
+ *   descriptors, rescan and refill keypools (`createwallet`, `importdescriptors`,
+ *   `rescanblockchain`, `walletpassphrasechange`, `keypoolrefill`, ...).
  * - `node-admin`: node administration (`stop`, `setban`, `addnode`,
  *   `pruneblockchain`, `savemempool`, `ping`, ...). No allowlisted method needs
  *   it: a client opens these through `extraMethods` only. Its calls wait for
  *   the chain guard, by the chain's identity only, and none goes in a batch.
  */
-export type Capability = 'wallet-read' | 'wallet-write' | 'broadcast' | 'mining' | 'node-admin'
+export type Capability = 'wallet-read' | 'wallet-write' | 'broadcast' | 'mining' | 'wallet-admin' | 'node-admin'
 
-export const CAPABILITIES: readonly Capability[] = ['wallet-read', 'wallet-write', 'broadcast', 'mining', 'node-admin']
+export const CAPABILITIES: readonly Capability[] = [
+  'wallet-read',
+  'wallet-write',
+  'broadcast',
+  'mining',
+  'wallet-admin',
+  'node-admin',
+]
 
 /** How the client treats a method: what it needs, and whether a call can change node or wallet state. */
 export interface MethodPolicy {
@@ -72,6 +82,7 @@ const WALLET_READ: MethodPolicy = { capability: 'wallet-read', sideEffects: fals
 const WALLET_WRITE: MethodPolicy = { capability: 'wallet-write', sideEffects: true }
 const LONG_POLL: MethodPolicy = { capability: 'read', sideEffects: false, longPoll: true }
 const MINING_WRITE: MethodPolicy = { capability: 'mining', sideEffects: true }
+const WALLET_ADMIN: MethodPolicy = { capability: 'wallet-admin', sideEffects: true }
 
 /**
  * The default deadline of `walletpassphrase` and `walletlock`. qbit Core v1.0.0
@@ -85,6 +96,40 @@ const MINING_WRITE: MethodPolicy = { capability: 'mining', sideEffects: true }
  * knowing whether the wallet is locked.
  */
 const FIRST_UNLOCK_TIMEOUT_MS = 120_000
+
+/**
+ * The default deadline of the wallet-admin calls that derive PQC keys before
+ * answering, as the first unlock does: on a chain that allows only P2MR
+ * outputs, each key took 18 to 21 ms on regtest on a loaded shared host.
+ *
+ * - `keypoolrefill` tops every active descriptor (a receiving and a change one
+ *   by default) up to `newsize` keys, or `-keypool` (1,000), under the wallet's
+ *   lock (`CWallet::TopUpKeyPoolResult`, src/wallet/wallet.cpp). On a new
+ *   wallet, which holds 16 keys per descriptor until its deferred top-up runs,
+ *   the default refill took 41 s; 500 more keys per descriptor took 21 s.
+ * - `importdescriptors` derives a ranged descriptor's range, and at least
+ *   `-keypool` keys past its next index even when inactive
+ *   (`DescriptorScriptPubKeyMan::TopUp`, src/wallet/scriptpubkeyman.cpp), then
+ *   rescans from the earliest timestamp. A receiving and a change descriptor
+ *   imported with timestamp 0 took 35 s.
+ * - `rescanblockchain` reads every block from `start_height`
+ *   (`CWallet::ScanForWalletTransactions`, src/wallet/wallet.cpp): 1,010
+ *   regtest blocks took 0.25 s. Each used address it finds past the keypool's
+ *   low watermark derives replacement keys inside the scan
+ *   (`DescriptorScriptPubKeyMan::MarkUnusedAddresses`).
+ * - `unloadwallet` answers once every call still running on the wallet has
+ *   ended (`WaitForDeleteWallet`): sent during that refill, it took 36 s.
+ * - `loadwallet` tops up the keypool, unless the wallet defers its first
+ *   top-up (`CWallet::Create`, src/wallet/wallet.cpp), and attaches it to the
+ *   chain, rescanning from its last synced block (`CWallet::AttachChain`), so
+ *   it does the work of `keypoolrefill` and `rescanblockchain` before it
+ *   answers.
+ *
+ * 120 s leaves more than twice the slowest, as for `walletpassphrase`. What
+ * grows with the chain (blocks to scan) or with `newsize` and the range (keys
+ * to derive) needs the call's own `timeoutMs`.
+ */
+const KEY_DERIVATION_TIMEOUT_MS = 120_000
 
 /**
  * qbit Core v1.0.0's methods that sign and broadcast in one step, so a caller
@@ -125,6 +170,9 @@ export const METHOD_POLICIES: Readonly<Record<string, MethodPolicy>> = Object.fr
   waitfornewblock: LONG_POLL,
   waitforblockheight: LONG_POLL,
   getmininginfo: READ,
+  // Descriptor reads touch no wallet, but may carry private keys: see requests.getDescriptorInfo.
+  getdescriptorinfo: READ,
+  deriveaddresses: READ,
   // Further reads, untyped: use call().
   decoderawtransaction: READ,
   decodepsbt: READ,
@@ -174,6 +222,22 @@ export const METHOD_POLICIES: Readonly<Record<string, MethodPolicy>> = Object.fr
   // it can take change keys from the keypool for good (no change in the
   // original, or outputs that drop the change), so it counts as side-effecting.
   psbtbumpfee: WALLET_WRITE,
+  // Each signature counts against the key's PQC signature budget.
+  signdatapqchash: WALLET_WRITE,
+
+  // Wallet administration: every one changes a wallet, the node's wallet list
+  // or a file on the node's host, apart from listwalletdir, which is gated
+  // with them as the step before loadwallet.
+  createwallet: WALLET_ADMIN,
+  loadwallet: { ...WALLET_ADMIN, timeoutMs: KEY_DERIVATION_TIMEOUT_MS },
+  unloadwallet: { ...WALLET_ADMIN, timeoutMs: KEY_DERIVATION_TIMEOUT_MS },
+  listwalletdir: { capability: 'wallet-admin', sideEffects: false },
+  importdescriptors: { ...WALLET_ADMIN, timeoutMs: KEY_DERIVATION_TIMEOUT_MS },
+  rescanblockchain: { ...WALLET_ADMIN, timeoutMs: KEY_DERIVATION_TIMEOUT_MS },
+  // It overwrites a file at the destination.
+  backupwallet: WALLET_ADMIN,
+  walletpassphrasechange: WALLET_ADMIN,
+  keypoolrefill: { ...WALLET_ADMIN, timeoutMs: KEY_DERIVATION_TIMEOUT_MS },
 })
 
 /** A name `extraMethods` may hold: every qbit Core v1.0.0 method is lowercase letters and digits. */
@@ -287,22 +351,31 @@ export const IGNORED_OPTIONS: Readonly<
     typed: 'walletCreateFundedPsbt',
     keys: { subtract_fee_from_outputs: 'subtractFeeFromOutputs' },
   },
+  // It ignores every key it does not read: these would sign without the usage
+  // fields asked for, or with whichever leaf the wallet picks.
+  signdatapqchash: {
+    param: 2,
+    typed: 'signDataPqcHash',
+    keys: { includePqcUsage: 'include_pqc_usage', leafScript: 'leaf_script', controlBlock: 'control_block' },
+  },
 })
 
 /**
  * The capabilities whose calls wait for the chain guard: the one list the
  * guard, the batch rule and `extraMethods` read. `mining` is here because a
  * block on the wrong chain is wasted work, and a pool's payouts depend on its
- * blocks being on the right one. `node-admin` too, by the chain's identity
- * only (no qbit Core version refuses it): a client that expects regtest never
- * stops, bans or invalidates on a mainnet node it was pointed at by mistake.
- * A batch is sent as a read, without the guard, so it carries no call needing
- * one of these.
+ * blocks being on the right one; `wallet-admin` because importing descriptors,
+ * rescanning or creating a wallet on the wrong chain is a misconfiguration;
+ * `node-admin` by the chain's identity only (no qbit Core version refuses
+ * it): a client that expects regtest never stops, bans or invalidates on a
+ * mainnet node it was pointed at by mistake. A batch is sent as a read,
+ * without the guard, so it carries no call needing one of these.
  */
 export const GUARDED_CAPABILITIES: ReadonlySet<Capability> = new Set<Capability>([
   'wallet-write',
   'broadcast',
   'mining',
+  'wallet-admin',
   'node-admin',
 ])
 
@@ -311,7 +384,7 @@ export function guarded(policy: MethodPolicy): boolean {
   return policy.capability !== 'read' && GUARDED_CAPABILITIES.has(policy.capability)
 }
 
-/** The capabilities that change a wallet, the mempool or blocks, as a message lists them: `wallet-write, broadcast or mining`. */
+/** The capabilities that change a wallet, the mempool or blocks, as a message lists them: `wallet-write, broadcast, mining or wallet-admin`. */
 function guardedList(): string {
   const names = [...GUARDED_CAPABILITIES].filter(name => name !== 'node-admin')
   return `${names.slice(0, -1).join(', ')} or ${names.at(-1)!}`
