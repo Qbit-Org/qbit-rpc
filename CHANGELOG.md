@@ -784,15 +784,16 @@ properties only. The API report is unchanged.
   plain object (a `Map`, a class instance), an unknown capability or one the
   client does not enable (restated allowlisted methods included), a missing
   `sideEffects` (it has no default), side effects without `wallet-write`,
-  `broadcast` or `node-admin`, a method the package already allowlists with another policy
+  `broadcast`, `mining` or `node-admin`, a method the package already allowlists with another policy
   (restating its own is accepted), and `sendmany`, `sendtoaddress`, `send`,
   `sendall` and `bumpfee`, which sign and broadcast in one step. `toJSON()` and
   `util.inspect` list the opened methods.
 - Each of the 161 methods qbit Core v1.0.0's `help` lists has a fixed class,
   from its source: a policy below it is a `TypeError` naming the method and the
   policy it needs. A wallet method needs a wallet capability; one that signs or
-  changes a wallet needs `wallet-write` with side effects; one that hands a
-  transaction to the network or builds or submits blocks needs `broadcast`
+  changes a wallet needs `wallet-write` with side effects; one that builds or
+  submits blocks needs `mining`; one that hands a transaction to the network
+  needs `broadcast`
   with side effects. `walletpassphrasechange` or `signrawtransactionwithwallet`
   cannot be opened as a read. qbit Core v1.0.0's 18 hidden methods are
   classed too: `invalidateblock` cannot be opened as a read either. A method
@@ -885,3 +886,56 @@ properties only. The API report is unchanged.
 - `raw-tx-vectors.test.ts` pins three txids: Bitcoin's genesis coinbase (the
   legacy format) and, from qbit Core v1.0.0 on regtest, a coinbase and a P2MR
   wallet spend (the extended format).
+
+### Mining pools
+
+- The `mining` capability goes behind the chain guard; `Capability`, the
+  capability tables and the guard's documentation name it.
+- `getMiningInfo`, a read needing no capability, allowed in a batch.
+- `getBlockTemplate({ rules?, capabilities? })` and
+  `checkBlockProposal(blockHex)` (`getblocktemplate` in `template` and `proposal`
+  mode), under `mining` without side effects: behind the chain guard, because a
+  template from another chain is wasted hashing, retried like reads, and refused
+  in a batch. `coinbaseValueBits` and each transaction's `feeBits` are `bigint`
+  bits, and `target` is checked against `bits`, each `txid` against its `data`,
+  and each `depends` entry against the transactions before it. qbit Core v1.0.0's
+  template has no AuxPoW field, and its `version` never signals AuxPoW. The typed
+  method takes no `longpollid`, as BIP22's wait has no end of its own: use ZMQ or
+  `waitForNewBlock`. `call()` refuses a `getblocktemplate` with `longpollid`
+  too, a `TypeError`, unsent.
+- `submitBlock(blockHex)`, `createAuxBlock(payoutAddress)` and
+  `submitAuxBlock(blockHash, auxpowHex)`, under `mining` with side effects: behind
+  the chain guard, never retried, on a fresh connection, and an
+  `RpcUnknownOutcomeError` when the reply is lost. `submitBlock` and
+  `submitAuxBlock` answer null or a `BlockSubmissionReason`, an open enum:
+  `duplicate` and `inconclusive` are not refusals. `submitauxblock` in v1.0.0
+  answers as `submitblock` does, not with a boolean.
+- `RpcUnknownOutcomeError` has an optional `blockHash`, its fifth constructor
+  argument: for `submitblock` and `submitheader` the hash of the hex's 80-byte
+  header, when it holds one, and for `submitauxblock` the hash submitted, typed
+  or through `call()`. A lost `createauxblock` names nothing.
+  Reconcile with `getBlockHeader(blockHash)`: submitting an accepted aux block
+  again answers `stale-prevblk`, as the node forgets it.
+- `extraMethods` refuses `getblocktemplate`, `submitblock`, `createauxblock`,
+  `submitauxblock` and `getmininginfo` under any policy but the allowlist's, as
+  for every allowlisted method: `submitblock` opened as `broadcast` is a
+  `TypeError` at construction. Restating its policy is accepted.
+- `extraMethods` also takes `mining` for a method with side effects, such as
+  `submitheader`, which it treats as any other guarded call. qbit Core's mining
+  methods (`submitheader`, `prioritisetransaction`) need `mining` there.
+- `QbitRpcClient.getBlockTemplate()` defaults `rules` to `['segwit', 'signet']`
+  with `expectedChain: 'signet'`, as qbit Core refuses a signet template
+  without the `signet` rule; elsewhere `['segwit']`.
+- A template transaction whose `data` does not parse as a transaction, or whose
+  `txid` or `hash` (the wtxid) is not that of its `data`, fails validation.
+- The capabilities whose calls wait for the chain guard are kept in one list,
+  which the guard, the batch rule and `extraMethods` all read: a batch, sent
+  without the guard, carries none of them. `node-admin` is in it, guarded by
+  the chain's identity only.
+- Every new result object has no prototype, as every other result: the
+  mining info and its `next`, the block template with its transactions, rules
+  and `vbAvailable` and `coinbaseAux` maps, and the aux block.
+  `getBlockTemplate`'s `rules` and `capabilities` are read from the options'
+  own properties, and their own elements: a hole is a `TypeError`.
+- `pack:check`'s ceiling for `@qbit-oss/rpc` is 2,270,000 bytes unpacked, a
+  quarter above its 1.82 MB with these methods.

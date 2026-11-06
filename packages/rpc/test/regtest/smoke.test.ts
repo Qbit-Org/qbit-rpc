@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
+import { createServer, request as httpRequest } from 'node:http'
 import { connect as netConnect, type AddressInfo } from 'node:net'
 import { DatabaseSync } from 'node:sqlite'
 import { createServer as createTlsServer } from 'node:tls'
@@ -17,10 +18,12 @@ import {
   RpcError,
   RpcResponseTooLargeError,
   RpcTimeoutError,
+  RpcUnknownOutcomeError,
   type Outpoint,
   type QbitRpcClientOptions,
 } from '../../src'
 import { QBIT_GENESIS_HASHES } from '../../src/capabilities'
+import { buildAuxPow, buildBlock } from '../helpers/block-builder'
 import { HIDDEN_METHOD_CLASSES, METHOD_CLASSES } from '../../src/method-classes'
 import { testPki } from '../helpers/certificates'
 import type { CoreRpc } from '../helpers/core-rpc'
@@ -1844,6 +1847,262 @@ describe.runIf(enabled)('qbit Core v1.0.0 regtest', () => {
 
       mineOne()
       expect(await wallet.getRawMempool()).toEqual([])
+    })
+  })
+
+  describe('mining', () => {
+    const payoutAddress = (): string => cli('-rpcwallet=smoke', 'getnewaddress', '', 'p2mr')
+    const payoutScript = async (rpc: QbitRpcClient, address: string): Promise<string> => {
+      const validation = await rpc.validateAddress(address)
+      if (!validation.isValid) throw new Error(validation.error)
+      return validation.scriptPubKey
+    }
+    const miner = async (options: Partial<QbitRpcClientOptions> = {}): Promise<QbitRpcClient> => {
+      const rpc = client({ capabilities: ['mining'], ...options })
+      await rpc.confirmChain()
+      return rpc
+    }
+    const generate = (): void => {
+      cli('generatetoaddress', '1', payoutAddress())
+    }
+
+    /**
+     * Forwards to the node, but drops the reply to a request that mentions
+     * `method` once the node has answered: what a client sees when the
+     * connection dies after the node acted.
+     */
+    const losingProxy = async (method: string): Promise<{ readonly url: string; close(): void }> => {
+      const target = new URL(url)
+      const proxy = createServer((incoming, outgoing) => {
+        const chunks: Buffer[] = []
+        incoming.on('data', (chunk: Buffer) => chunks.push(chunk))
+        incoming.on('end', () => {
+          const body = Buffer.concat(chunks)
+          const forward = httpRequest(
+            { host: target.hostname, port: target.port, path: incoming.url, method: 'POST', headers: incoming.headers },
+            reply => {
+              const answer: Buffer[] = []
+              reply.on('data', (chunk: Buffer) => answer.push(chunk))
+              reply.on('end', () => {
+                if (body.includes(method)) {
+                  outgoing.destroy()
+                  return
+                }
+                outgoing.writeHead(reply.statusCode ?? 500, reply.headers)
+                outgoing.end(Buffer.concat(answer))
+              })
+            }
+          )
+          forward.end(body)
+        })
+      })
+      await new Promise<void>(resolve => proxy.listen(0, '127.0.0.1', resolve))
+      return {
+        url: `http://127.0.0.1:${(proxy.address() as AddressInfo).port}/`,
+        close: () => proxy.close(),
+      }
+    }
+
+    it('reads mining info, and refuses mining calls without the capability or a confirmed chain', async () => {
+      const reader = client()
+      const before = await reader.getBlockCount()
+      const info = await reader.getMiningInfo()
+      expect(info).toMatchObject({ blocks: before, chain: 'regtest', bits: '207fffff', warnings: [] })
+      expect(info.next.height).toBe(before + 1)
+      expect(info.blockMinTxFeeBitsPerKvB).toBeGreaterThan(0n)
+      expect(info.networkHashPs).toBeGreaterThan(0)
+      await expect(reader.getBlockTemplate()).rejects.toMatchObject({ reason: 'not_enabled', required: 'mining' })
+      await expect(reader.submitBlock('00')).rejects.toSatisfy(RpcCapabilityError.is)
+      const unconfirmed = client({ capabilities: ['mining'] })
+      await expect(unconfirmed.getBlockTemplate()).rejects.toMatchObject({ reason: 'unconfirmed' })
+      await expect(unconfirmed.createAuxBlock(payoutAddress())).rejects.toMatchObject({ reason: 'unconfirmed' })
+      const other = client({ capabilities: ['mining'], expectedGenesisHash: 'ab'.repeat(32) })
+      await expect(other.confirmChain()).rejects.toSatisfy(RpcChainGuardError.is)
+      await expect(other.submitBlock('00')).rejects.toMatchObject({ reason: 'mismatch' })
+      expect(await reader.getBlockCount()).toBe(before)
+    })
+
+    it('mines a block from a template: a mempool transaction in it, proposed, submitted, and the tip', async () => {
+      const rpc = await miner()
+      const address = payoutAddress()
+      const txid = cli('-rpcwallet=smoke', 'sendtoaddress', payoutAddress(), '0.1')
+      const tip = await rpc.getBestBlockHash()
+      const height = await rpc.getBlockCount()
+
+      const template = await rpc.getBlockTemplate()
+      expect(template).toMatchObject({
+        previousBlockHash: tip,
+        height: height + 1,
+        bits: '207fffff',
+        capabilities: ['proposal'],
+        nonceRange: '00000000ffffffff',
+      })
+      expect(template.rules).toContain('!segwit')
+      expect(template.p2mrValidationWeight.perSigop).toBeGreaterThan(0)
+      expect(template.curTime).toBeGreaterThanOrEqual(template.minTime)
+      expect(template.defaultWitnessCommitment).toMatch(/^6a24aa21a9ed/)
+      const paid = template.transactions.find(tx => tx.txid === txid)!
+      expect(paid.feeBits).toBeGreaterThan(0n)
+      expect(paid.data).toBe(JSON.parse(cli('-rpcwallet=smoke', 'gettransaction', txid)).hex)
+      expect(paid.hash).toBe((await rpc.getMempoolEntry(txid)).wtxid)
+
+      // What the node printed, unconverted: the amount as an integer, and no AuxPoW field or signal.
+      const raw = JSON.parse(cli('getblocktemplate', '{"rules":["segwit"]}')) as Record<string, unknown>
+      expect(BigInt(raw['coinbasevalue'] as number)).toBe(template.coinbaseValueBits)
+      expect(Object.keys(raw).filter(key => /aux/i.test(key) && key !== 'coinbaseaux')).toEqual([])
+      expect(template.version & 0x100).toBe(0)
+
+      const script = await payoutScript(rpc, address)
+      const block = buildBlock(template, script)
+
+      expect(await rpc.checkBlockProposal(block.hex)).toBeNull()
+      const overpaid = buildBlock(template, script, { coinbaseValueBits: template.coinbaseValueBits + 1n })
+      expect(await rpc.checkBlockProposal(overpaid.hex)).toBe('bad-cb-amount')
+      expect(await rpc.getBestBlockHash()).toBe(tip)
+
+      // Each refusal first, then the block itself; none moves the tip.
+      expect(await rpc.submitBlock(buildBlock(template, script, { unsolved: true }).hex)).toBe('high-hash')
+      expect(await rpc.submitBlock(overpaid.hex)).toBe('bad-cb-amount')
+      await expect(rpc.submitBlock('00')).rejects.toSatisfy(
+        (error: unknown) => RpcError.is(error) && error.rpcCode === -22
+      )
+      expect(await rpc.getBestBlockHash()).toBe(tip)
+
+      expect(await rpc.submitBlock(block.hex)).toBeNull()
+      expect(await rpc.getBestBlockHash()).toBe(block.hash)
+      expect(await rpc.getBlockHex(block.hash)).toBe(block.hex)
+      const mined = await rpc.getBlockWithTransactions(block.hash)
+      expect(mined.height).toBe(height + 1)
+      expect(mined.tx.map(tx => tx.txid)).toContain(txid)
+      expect(mined.tx[0]!.vout[0]!.scriptPubKey.address).toBe(address)
+      expect(await rpc.getRawMempool()).not.toContain(txid)
+      expect((await rpc.getMiningInfo()).blocks).toBe(height + 1)
+
+      // Submitted again it is no refusal, which is how to reconcile a lost reply.
+      expect(await rpc.submitBlock(block.hex)).toBe('duplicate')
+      expect(await rpc.checkBlockProposal(block.hex)).toBe('duplicate')
+      expect(await rpc.call('submitblock', [block.hex])).toBe('duplicate')
+      // Refused once, it stays refused by name.
+      expect(await rpc.submitBlock(overpaid.hex)).toBe('duplicate-invalid')
+    })
+
+    it('tells a block on an old parent apart: stored, not the tip, and no refusal', async () => {
+      const rpc = await miner()
+      const script = await payoutScript(rpc, payoutAddress())
+      const late = buildBlock(await rpc.getBlockTemplate(), script)
+      generate()
+      const tip = await rpc.getBestBlockHash()
+      expect(await rpc.checkBlockProposal(late.hex)).toBe('inconclusive-not-best-prevblk')
+      expect(await rpc.submitBlock(late.hex)).toBe('inconclusive')
+      expect(await rpc.getBestBlockHash()).toBe(tip)
+      expect((await rpc.getChainTips()).find(entry => entry.hash === late.hash)?.status).toBe('valid-headers')
+      expect(await rpc.getBlockHeader(late.hash)).toMatchObject({ confirmations: -1 })
+      // duplicate says the node has it, not that it is on the chain.
+      expect(await rpc.submitBlock(late.hex)).toBe('duplicate')
+      expect(await rpc.getBestBlockHash()).toBe(tip)
+    })
+
+    it('merge mines: a candidate, refused proofs, a proof built here, and the tip paying the address', async () => {
+      const rpc = await miner()
+      const address = payoutAddress()
+      const tip = await rpc.getBestBlockHash()
+      const height = await rpc.getBlockCount()
+
+      const candidate = await rpc.createAuxBlock(address)
+      expect(candidate).toMatchObject({
+        previousBlockHash: tip,
+        height: height + 1,
+        // QBIT_TEST_CHAIN_AUXPOW_CHAIN_ID and nAuxpowDisplayCommitmentHeight on regtest (src/kernel/chainparams.cpp).
+        chainId: 31430,
+        commitmentOrder: 'display',
+        commitmentActivationHeight: 0,
+        bits: '207fffff',
+      })
+      const raw = JSON.parse(cli('createauxblock', address)) as { coinbasevalue: number; chainid: number }
+      expect(BigInt(raw.coinbasevalue)).toBe(candidate.coinbaseValueBits)
+      expect(raw.chainid).toBe(candidate.chainId)
+
+      const refusedProofs: [string, string][] = [
+        ['bad-auxpow-parent-hash', buildAuxPow(candidate, { unsolved: true })],
+        ['bad-auxpow-commitment', buildAuxPow(candidate, { commitTo: 'ab'.repeat(32) })],
+        ['bad-auxpow-chain-index', buildAuxPow(candidate, { chainIndex: 1 })],
+      ]
+      for (const [reason, proof] of refusedProofs) {
+        expect(await rpc.submitAuxBlock(candidate.hash, proof)).toBe(reason)
+      }
+      await expect(rpc.submitAuxBlock(candidate.hash, 'abcd')).rejects.toSatisfy(
+        (error: unknown) => RpcError.is(error) && error.rpcCode === -22
+      )
+      expect(await rpc.submitAuxBlock('ab'.repeat(32), buildAuxPow(candidate))).toBe('stale-prevblk')
+      await expect(rpc.createAuxBlock('not an address')).rejects.toSatisfy(
+        (error: unknown) => RpcError.is(error) && error.rpcCode === -5
+      )
+      expect(await rpc.getBestBlockHash()).toBe(tip)
+
+      const proof = buildAuxPow(candidate)
+      expect(await rpc.submitAuxBlock(candidate.hash, proof)).toBeNull()
+      expect(await rpc.getBestBlockHash()).toBe(candidate.hash)
+      const header = await rpc.getBlockHeader(candidate.hash)
+      // [top bits:3][chain id:16][reserved:4][AuxPoW flag:1][version bits:8] (src/primitives/pureheader.h).
+      expect((header.version >>> 13) & 0xffff).toBe(candidate.chainId)
+      expect(header.version & 0x100).toBe(0x100)
+      const mined = await rpc.getBlockWithTransactions(candidate.hash)
+      expect(mined.tx[0]!.vout[0]).toMatchObject({
+        valueBits: candidate.coinbaseValueBits,
+        scriptPubKey: { address },
+      })
+
+      // The node forgets an accepted candidate: submitted again it reads as stale, though the block stands.
+      expect(await rpc.submitAuxBlock(candidate.hash, proof)).toBe('stale-prevblk')
+      expect(await rpc.getBestBlockHash()).toBe(candidate.hash)
+      // The stored block holds the proof after its header, and hashes by the header alone.
+      const hex = await rpc.getBlockHex(candidate.hash)
+      expect(hex).toContain(proof)
+      expect(await rpc.submitBlock(hex)).toBe('duplicate')
+
+      // A candidate whose parent has left the tip reads as stale too.
+      const stale = await rpc.createAuxBlock(address)
+      generate()
+      expect(await rpc.submitAuxBlock(stale.hash, buildAuxPow(stale))).toBe('stale-prevblk')
+    })
+
+    it('names a block whose reply was lost, and that name finds it on the node', async () => {
+      const direct = await miner()
+      const script = await payoutScript(direct, payoutAddress())
+
+      const losesBlock = await losingProxy('"submitblock"')
+      try {
+        const rpc = await miner({ url: losesBlock.url, readRetries: 3, retryDelayMs: 0 })
+        const block = buildBlock(await direct.getBlockTemplate(), script)
+        const error = (await rpc.submitBlock(block.hex).catch((e: unknown) => e)) as RpcUnknownOutcomeError
+        expect(RpcUnknownOutcomeError.is(error)).toBe(true)
+        expect(error.blockHash).toBe(block.hash)
+        expect(await direct.getBestBlockHash()).toBe(block.hash)
+        expect((await direct.getBlockHeader(error.blockHash!)).hash).toBe(block.hash)
+        expect(await direct.submitBlock(block.hex)).toBe('duplicate')
+        // What reconciling sees for a block that did not arrive.
+        await expect(direct.getBlockHeader('ab'.repeat(32))).rejects.toSatisfy(
+          (e: unknown) => RpcError.is(e) && e.rpcCode === -5
+        )
+        rpc.close()
+      } finally {
+        losesBlock.close()
+      }
+
+      const losesAux = await losingProxy('"submitauxblock"')
+      try {
+        const rpc = await miner({ url: losesAux.url, readRetries: 3, retryDelayMs: 0 })
+        const candidate = await direct.createAuxBlock(payoutAddress())
+        const error = (await rpc
+          .submitAuxBlock(candidate.hash, buildAuxPow(candidate))
+          .catch((e: unknown) => e)) as RpcUnknownOutcomeError
+        expect(RpcUnknownOutcomeError.is(error)).toBe(true)
+        expect(error.blockHash).toBe(candidate.hash)
+        expect(await direct.getBestBlockHash()).toBe(candidate.hash)
+        rpc.close()
+      } finally {
+        losesAux.close()
+      }
     })
   })
 })

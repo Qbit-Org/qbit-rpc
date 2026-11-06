@@ -4,6 +4,7 @@ import { inspect } from 'node:util'
 import {
   CAPABILITIES,
   extraMethodPolicies,
+  guarded,
   methodPolicy,
   QBIT_CHAINS,
   QBIT_DEFAULT_SIGNET_CHALLENGE,
@@ -49,10 +50,13 @@ import {
   type AddressInfo,
   type AddressType,
   type AddressValidation,
+  type AuxBlock,
   type Block,
   type BlockchainInfo,
   type BlockHeader,
   type BlockRef,
+  type BlockSubmissionResult,
+  type BlockTemplate,
   type BlockWithTransactions,
   type BumpedPsbt,
   type ChainTip,
@@ -70,6 +74,7 @@ import {
   type MempoolEntry,
   type MempoolInfo,
   type MempoolSnapshot,
+  type MiningInfo,
   type NetworkInfo,
   type Outpoint,
   type PackageSubmission,
@@ -127,7 +132,7 @@ export interface QbitRpcClientOptions {
    * cookie authentication. Default: connect to the URL's host directly.
    */
   readonly connect?: RpcConnect
-  /** The chain this client must talk to. `confirmChain()` checks it; wallet-write and broadcast calls wait for that check. */
+  /** The chain this client must talk to. `confirmChain()` checks it; wallet-write, broadcast and mining calls wait for that check. */
   readonly expectedChain: QbitChain
   /**
    * The genesis block hash the node must report (`getblockhash 0`) on every
@@ -150,13 +155,14 @@ export interface QbitRpcClientOptions {
    * Methods to allow beyond the package's allowlist, for this client, untyped,
    * through `call()` and `requests.raw()`. Each entry is the method's policy:
    * `capability`, `read` or one in `capabilities`, and `sideEffects`, which
-   * has no default; one with side effects needs `wallet-write`, `broadcast`
-   * or `node-admin`. The client treats the method as an allowlisted one with
-   * that policy: `wallet-write`, `broadcast` and `node-admin` wait for the
-   * chain guard, and a method with side effects is never retried or batched,
-   * uses a fresh connection, and is an `RpcUnknownOutcomeError` when it may
-   * have run. A `node-admin` call needs the chain's identity only: an
-   * unsupported qbit Core version does not refuse it. Node administration (`stop`, `setban`, `addnode`, ...) is
+   * has no default; one with side effects needs `wallet-write`, `broadcast`,
+   * `mining` or `node-admin`. The client treats the method as an allowlisted
+   * one with that policy: `wallet-write`, `broadcast`, `mining` and
+   * `node-admin` wait for the chain guard, and a method with side effects is
+   * never retried or batched, uses a fresh connection, and is an
+   * `RpcUnknownOutcomeError` when it may have run. A `node-admin` call needs
+   * the chain's identity only: an unsupported qbit Core version does not
+   * refuse it, and it is never batched; node administration (`stop`, `setban`, `addnode`, ...) is
    * reachable only this way, under `node-admin`. A method qbit Core
    * v1.0.0's `help` lists may not be declared below what it does: a wallet
    * method needs a wallet capability, and one that changes state needs
@@ -198,7 +204,7 @@ export interface QbitRpcClientOptions {
   /** Delay before the first retry; it doubles for each further one, up to 10 s. Default 250 ms. */
   readonly retryDelayMs?: number
   /**
-   * How long a chain confirmation stays fresh. A wallet-write or broadcast call
+   * How long a chain confirmation stays fresh. A wallet-write, broadcast or mining call
    * made later first re-runs the chain check, under the call's own deadline; if
    * that check fails, the call is not sent and rejects with `RpcChainGuardError`
    * (`reason: 'check_failed'`, the failure as `cause`). A connection error, an
@@ -226,7 +232,7 @@ export interface QbitRpcClientOptions {
    */
   readonly directNode?: boolean
   /**
-   * Let wallet-write and broadcast calls go to a node of a qbit Core version
+   * Let wallet-write, broadcast and mining calls go to a node of a qbit Core version
    * this package does not support. Every chain check also reads the node's
    * version (`getnetworkinfo`); by default one outside qbit Core 1.0.x
    * releases refuses them, as another chain does, with `RpcChainGuardError`
@@ -270,19 +276,19 @@ export type BatchResults<T extends readonly RpcRequest<unknown>[]> = {
 /**
  * The chain guard's state:
  *
- * - `unconfirmed`: `confirmChain()` has not succeeded yet. Wallet-write and
- *   broadcast calls are refused.
+ * - `unconfirmed`: `confirmChain()` has not succeeded yet. Wallet-write, broadcast and
+ *   mining calls are refused.
  * - `confirmed`: the node reported `expectedChain`, its genesis block and, on
  *   signet, its challenge, within `chainCheckMaxAgeMs`.
  * - `stale`: it did, but longer ago, or a connection error, an HTTP 401 or a
- *   cookie change happened since. The next wallet-write or broadcast call
+ *   cookie change happened since. The next wallet-write, broadcast or mining call
  *   checks the chain again before it is sent.
  * - `mismatch`: the node reported another chain, genesis block or signet
- *   challenge. Wallet-write and broadcast calls are refused until
+ *   challenge. Wallet-write, broadcast and mining calls are refused until
  *   `confirmChain()` matches again.
  * - `unsupported_version`: the node reported the expected chain, but a qbit
  *   Core version this package does not support (see `nodeVersion`), and
- *   `allowUnsupportedNodeVersion` is not set. Wallet-write and broadcast calls
+ *   `allowUnsupportedNodeVersion` is not set. Wallet-write, broadcast and mining calls
  *   are refused until `confirmChain()` finds a supported version.
  */
 export type ChainStatus = 'unconfirmed' | 'confirmed' | 'stale' | 'mismatch' | 'unsupported_version'
@@ -418,7 +424,7 @@ function checkInteger<F extends number | undefined>(
  * A JSON-RPC client for one qbit Core node (and optionally one wallet).
  *
  * Every method is checked against an allowlist and the client's capabilities
- * before anything is sent, wallet-write and broadcast calls also need a
+ * before anything is sent, wallet-write, broadcast and mining calls also need a
  * confirmed chain, and every typed result is validated before it is returned.
  * Amounts are `bigint` bits. See the package README for the failure model.
  *
@@ -584,8 +590,8 @@ export class QbitRpcClient {
    * genesis block hash with `expectedGenesisHash` and, on signet, its
    * `signet_challenge` with `expectedSignetChallenge` (a missing one differs),
    * and read its version into `nodeVersion`. On a match of all three, on a
-   * supported version (or with `allowUnsupportedNodeVersion`), wallet-write and
-   * broadcast calls are allowed; once the confirmation goes stale they re-run
+   * supported version (or with `allowUnsupportedNodeVersion`), wallet-write, broadcast and
+   * mining calls are allowed; once the confirmation goes stale they re-run
    * this check before they are sent. On a mismatch, or an unsupported version,
    * they stay refused and this throws `RpcChainGuardError` (`mismatch` or
    * `unsupported_version`), as it does when any check finds one while this
@@ -801,6 +807,45 @@ export class QbitRpcClient {
     callOptions?: CallOptions
   ): Promise<PackageSubmission> {
     return this.#lazy(() => requests.submitPackage(rawTxs, options), callOptions)
+  }
+  getMiningInfo(callOptions?: CallOptions): Promise<MiningInfo> {
+    return this.#single(requests.getMiningInfo(), callOptions)
+  }
+  /**
+   * See {@link requests.getBlockTemplate}. With `expectedChain: 'signet'`, the
+   * rules default to `['segwit', 'signet']`, as qbit Core requires there.
+   */
+  getBlockTemplate(
+    options?: { readonly rules?: readonly string[]; readonly capabilities?: readonly string[] },
+    callOptions?: CallOptions
+  ): Promise<BlockTemplate> {
+    return this.#lazy(() => {
+      // qbit Core refuses a signet template without the signet rule (src/rpc/mining.cpp:991-994).
+      // Anything but undefined or an object goes to the builder as it is, which refuses it as on any chain.
+      const object = typeof options === 'object' && options !== null
+      const defaultRules =
+        options === undefined ||
+        (object && (!Object.hasOwn(options, 'rules') || (options as { readonly rules?: unknown }).rules === undefined))
+      return requests.getBlockTemplate(
+        this.#expectedChain === 'signet' && defaultRules ? { ...options, rules: ['segwit', 'signet'] } : options
+      )
+    }, callOptions)
+  }
+  /** See {@link requests.checkBlockProposal}. */
+  checkBlockProposal(blockHex: string, callOptions?: CallOptions): Promise<BlockSubmissionResult> {
+    return this.#lazy(() => requests.checkBlockProposal(blockHex), callOptions)
+  }
+  /** See {@link requests.submitBlock}. */
+  submitBlock(blockHex: string, callOptions?: CallOptions): Promise<BlockSubmissionResult> {
+    return this.#lazy(() => requests.submitBlock(blockHex), callOptions)
+  }
+  /** See {@link requests.createAuxBlock}. */
+  createAuxBlock(payoutAddress: string, callOptions?: CallOptions): Promise<AuxBlock> {
+    return this.#lazy(() => requests.createAuxBlock(payoutAddress), callOptions)
+  }
+  /** See {@link requests.submitAuxBlock}. */
+  submitAuxBlock(blockHash: string, auxpowHex: string, callOptions?: CallOptions): Promise<BlockSubmissionResult> {
+    return this.#lazy(() => requests.submitAuxBlock(blockHash, auxpowHex), callOptions)
   }
   getWalletInfo(callOptions?: CallOptions): Promise<WalletInfo> {
     return this.#single(requests.getWalletInfo(), callOptions)
@@ -1278,13 +1323,9 @@ export class QbitRpcClient {
     if (typeof method !== 'string' || method === '') throw new TypeError('method must be a non-empty string')
     const policy = methodPolicy(method) ?? this.#extraMethods.get(method)
     if (policy === undefined) throw new RpcCapabilityError(method, 'unknown_method')
-    // A batch is sent as a read: on a pooled connection, retried, never an unknown outcome.
-    if (
-      inBatch &&
-      (policy.sideEffects ||
-        policy.longPoll === true ||
-        (policy.capability !== 'read' && policy.capability !== 'wallet-read'))
-    ) {
+    // A batch is sent as a read: on a pooled connection, retried, never an
+    // unknown outcome, and without the chain guard.
+    if (inBatch && (policy.sideEffects || policy.longPoll === true || guarded(policy))) {
       throw new RpcCapabilityError(method, 'not_batchable')
     }
     if (policy.capability !== 'read' && !this.#capabilities.has(policy.capability)) {
@@ -1356,7 +1397,7 @@ export class QbitRpcClient {
         const failure = asFailure(method, error, attempt)
         if (policy.sideEffects && failure.unknown) {
           throw new Failure(
-            new RpcUnknownOutcomeError(method, failure.error, request.txid, request.txids),
+            new RpcUnknownOutcomeError(method, failure.error, request.txid, request.txids, request.blockHash),
             false,
             false
           )
@@ -1677,14 +1718,6 @@ export class QbitRpcClient {
     }
     return { ok: false, error: nodeError }
   }
-}
-
-/**
- * Whether a call waits for the chain guard: one that can change a wallet, the
- * mempool or the node. A `node-admin` call needs the chain's identity only.
- */
-function guarded(policy: MethodPolicy): boolean {
-  return policy.capability === 'wallet-write' || policy.capability === 'broadcast' || policy.capability === 'node-admin'
 }
 
 /**

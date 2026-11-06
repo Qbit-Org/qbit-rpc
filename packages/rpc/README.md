@@ -32,16 +32,16 @@ const info = await rpc.getBlockchainInfo()
 | `expectedChain` | required | `main`, `test`, `testnet4`, `signet` or `regtest`. |
 | `expectedGenesisHash` | `expectedChain`'s, see [Chain guard](#chain-guard) | The genesis block hash every chain check expects from `getblockhash 0`: 64 hex characters, either case (compared in lowercase). Set it for a node built with other chain parameters. |
 | `expectedSignetChallenge` | `51` on signet | The `signet_challenge` every chain check expects: non-empty hex of whole bytes (the challenge script), either case (compared in lowercase). Only with `expectedChain: 'signet'`. |
-| `capabilities` | `[]` | Any of `wallet-read`, `wallet-write`, `broadcast`, `node-admin`. |
+| `capabilities` | `[]` | Any of `wallet-read`, `wallet-write`, `broadcast`, `mining`, `node-admin`. |
 | `extraMethods` | none | Methods to allow beyond the allowlist, untyped, each `{ capability, sideEffects }`. See [opening another method](#opening-another-method-extramethods). |
 | `timeoutMs` | 30,000; at least 120,000 for `walletPassphrase` and `walletLock`; at least the wait plus 10 s for a long poll | One deadline per operation: any wait for a request slot, cookie read, every attempt and every backoff. A shorter value does not shorten their 120 s, or a [long poll](#long-polls)'s. Override per call. See [unlocking a wallet](#unlocking-an-encrypted-wallet). With `connect`, it also bounds a pooled connection still opening after its read gave up (see [Proxies](#proxies-connect)). |
 | `maxResponseBytes` | 16 MiB | Larger replies fail with `RpcResponseTooLargeError` (or an unknown outcome for side-effecting calls). A full block can pass the default: see [large replies](#large-replies). Leave a few KiB at least: the chain check's batched reply (`getblockchaininfo`, `getblockhash 0` and `getnetworkinfo`, about 2 KiB from a v1.0.0 node without peers) must fit, or every check fails. |
 | `readRetries` | 0 | Opt-in retries for methods without side effects (see below). |
 | `retryDelayMs` | 250 | First backoff; doubles per retry, capped at 10 s, never past the deadline. |
-| `chainCheckMaxAgeMs` | 10,000 | How long a chain confirmation stays fresh before a wallet-write or broadcast call re-checks it. 0 re-checks before every such call. |
+| `chainCheckMaxAgeMs` | 10,000 | How long a chain confirmation stays fresh before a wallet-write, broadcast or mining call re-checks it. 0 re-checks before every such call. |
 | `maxConcurrentRequests` | 8 | Most requests this client has open at once, on pooled and fresh connections alike (1 to 1,024); it also sizes the keep-alive pool. Further attempts wait in FIFO order under their deadline. See [the work queue](#the-work-queue). |
 | `directNode` | `false` | Set when `url` reaches `qbitd` itself. `qbitd`'s HTTP 503 `Work queue depth exceeded` is then a definite failure, not an unknown outcome. Opt-in, because a proxy in between can answer 503 after forwarding the request. See [the work queue](#the-work-queue). |
-| `allowUnsupportedNodeVersion` | `false` | Let wallet-write and broadcast calls go to a node outside qbit Core 1.0.x releases, which they are refused otherwise (`RpcChainGuardError` `reason: 'unsupported_version'`). `nodeVersion` still shows the version, and one that does not parse still fails the check. See [Versions and compatibility](#versions-and-compatibility). |
+| `allowUnsupportedNodeVersion` | `false` | Let wallet-write, broadcast and mining calls go to a node outside qbit Core 1.0.x releases, which they are refused otherwise (`RpcChainGuardError` `reason: 'unsupported_version'`). `nodeVersion` still shows the version, and one that does not parse still fails the check. See [Versions and compatibility](#versions-and-compatibility). |
 
 The options, and `tls` and `auth` within them, are read once each, when the
 client is constructed, from their own enumerable properties, and the arrays in
@@ -358,18 +358,21 @@ documentation, and a test keeps the two equal.
 
 | Capability | Methods |
 | --- | --- |
-| none (read) | `getblockchaininfo`, `getnetworkinfo`, `getbestblockhash`, `getblockcount`, `getblockhash`, `getblockheader`, `getrawtransaction`, `getmempoolentry`, `gettxout`, `getconfirmationtarget`, `estimatesmartfee`, `validateaddress`, `verifydatapqchash`, `getblock`, `getchaintips`, `getmempoolinfo`, `getrawmempool`, `gettxspendingprevout`, `waitfornewblock`, `waitforblockheight`; untyped: `decoderawtransaction`, `decodepsbt`, `analyzepsbt`, `getorphanmetrics`, `getarchivepeers`, `getindexinfo`, `getzmqnotifications`, `uptime` |
+| none (read) | `getblockchaininfo`, `getnetworkinfo`, `getbestblockhash`, `getblockcount`, `getblockhash`, `getblockheader`, `getrawtransaction`, `getmempoolentry`, `gettxout`, `getconfirmationtarget`, `estimatesmartfee`, `validateaddress`, `verifydatapqchash`, `getblock`, `getchaintips`, `getmempoolinfo`, `getrawmempool`, `gettxspendingprevout`, `waitfornewblock`, `waitforblockheight`, `getmininginfo`; untyped: `decoderawtransaction`, `decodepsbt`, `analyzepsbt`, `getorphanmetrics`, `getarchivepeers`, `getindexinfo`, `getzmqnotifications`, `uptime` |
 | `wallet-read` | `getwalletinfo`, `gettransaction`, `listunspent`, `getaddressinfo`, `listlockunspent`, `listsinceblock`, `listtransactions`, `getbalances`; untyped: `listwallets` |
 | `wallet-write` | `walletcreatefundedpsbt`, `walletprocesspsbt`, `finalizepsbt`, `psbtbumpfee`, `walletpassphrase`, `walletlock`, `getrawchangeaddress`, `lockunspent`, `getnewaddress` |
 | `broadcast` | `testmempoolaccept`, `sendrawtransaction`, `submitpackage` |
+| `mining` | `getblocktemplate`, `submitblock`, `createauxblock`, `submitauxblock` |
 | `node-admin` | none built in: node administration opens only through [extraMethods](#node-administration-node-admin) |
 
 `sendmany`, `sendtoaddress`, `send`, `sendall` and `bumpfee` are not
 allowlisted: they sign and broadcast in one step, so you cannot store the signed
 transaction before it leaves the node. `psbtbumpfee` is allowlisted: it returns
 an unsigned PSBT and signs and broadcasts nothing (see
-[Bumping a stuck payment](#bumping-a-stuck-payment)). `finalizepsbt` and
-`testmempoolaccept` change nothing, but are gated with the steps they belong to.
+[Bumping a stuck payment](#bumping-a-stuck-payment)). `finalizepsbt`,
+`testmempoolaccept` and `getblocktemplate` change nothing, but are gated with the
+steps they belong to. See [mining](#mining) for why `getmininginfo` is a read and
+the rest of a pool's methods need `mining`.
 
 ### Opening another method: `extraMethods`
 
@@ -395,15 +398,15 @@ Each entry is the policy the client applies to the method, exactly as it does
 to an allowlisted method with that policy:
 
 - `capability`: `read` (no capability needed), or `wallet-read`,
-  `wallet-write`, `broadcast` or `node-admin`, which `capabilities` must
-  enable. `wallet-write`, `broadcast` and `node-admin` calls wait for the
+  `wallet-write`, `broadcast`, `mining` or `node-admin`, which `capabilities`
+  must enable. `wallet-write`, `broadcast`, `mining` and `node-admin` calls wait for the
   [chain guard](#chain-guard), and re-check the chain once it is stale;
   `node-admin` calls by the chain's identity only (see
   [node administration](#node-administration-node-admin)).
 - `sideEffects`: required, `true` or `false`; there is no default. A method with
-  side effects needs `wallet-write` or `broadcast`, so a client without them
+  side effects needs `wallet-write`, `broadcast` or `mining`, so a client without them
   still cannot change state, and the chain guard covers every such call, or
-  `node-admin`, for node administration. Such a
+  `node-admin`, for node administration, behind the guard too. Such a
   call is never retried, uses a fresh connection, and is an
   `RpcUnknownOutcomeError` when it may have run (see the
   [failure model](#failure-model)).
@@ -421,20 +424,18 @@ to an allowlisted method with that policy:
   | signs with a wallet's keys, or changes the wallet | `wallet-write`, side effects | `signrawtransactionwithwallet`, `signmessage`, `setlabel`, `fundrawtransaction` |
   | administers a wallet, or returns its private keys | `wallet-write`, side effects (none for `listdescriptors` and `gethdkeys`) | `walletpassphrasechange`, `keypoolrefill`, `backupwallet`, `listdescriptors` |
   | hands a transaction to the mempool and the network | `broadcast`, side effects | `sendrawtransaction` |
-  | builds or submits blocks, or changes a block template | `broadcast`, side effects (none for `getblocktemplate`) | `submitblock`, `prioritisetransaction` |
+  | builds or submits blocks, or changes a block template | `mining`, side effects (none for `getblocktemplate`) | `submitheader`, `prioritisetransaction` |
   | changes what the node stores, follows or connects to, or stops it | `node-admin`, side effects | `stop`, `setban`, `addnode`, `pruneblockchain`, `savemempool`, `ping` |
 
-  Wallet administration and mining have no capability of their own yet: they
-  need `wallet-write`, and `broadcast`, the capability that already changes
-  what the node holds and relays. Node administration has its own,
-  `node-admin`. qbit Core v1.0.0's 18 hidden methods, which `help` does not
-  list, are classed the same way: `invalidateblock`, `reconsiderblock` and
-  `setmocktime` need `node-admin`, and `generatetoaddress` the capability
-  mining needs. A method in neither table, such as one a later release
-  adds, keeps the policy you give it: the package cannot tell what it does.
-  The regtest smoke test compares the table with `help` on the node, and
-  each hidden name with `help <name>`, so a release that changes either
-  fails it.
+  Wallet administration has no capability of its own yet: it needs
+  `wallet-write`. Node administration has its own, `node-admin`. qbit Core
+  v1.0.0's 18 hidden methods, which `help` does not list, are classed the
+  same way: `invalidateblock`, `reconsiderblock` and `setmocktime` need
+  `node-admin`, and `generatetoaddress` the capability mining needs. A method
+  in neither table, such as one a later release adds, keeps the policy you
+  give it: the package cannot tell what it does. The regtest smoke test
+  compares the table with `help` on the node, and each hidden name with
+  `help <name>`, so a release that changes either fails it.
 - In a [batch](#batches), only `read` and `wallet-read` entries, which have no
   side effects; any other, `node-admin` included, is `RpcCapabilityError`
   `not_batchable`.
@@ -535,7 +536,7 @@ A hidden method that administers the node (`invalidateblock`,
 
 ### Chain guard
 
-`wallet-write`, `broadcast` and `node-admin` calls also need `await rpc.confirmChain()`.
+`wallet-write`, `broadcast`, `mining` and `node-admin` calls also need `await rpc.confirmChain()`.
 Each chain check sends `getblockchaininfo`, `getblockhash 0` and
 `getnetworkinfo` as one JSON-RPC batch, so one node answers all three in one
 round trip, and compares three things: `chain` with `expectedChain`, the genesis
@@ -585,7 +586,7 @@ in between must pass JSON-RPC batches.
 A confirmation goes stale after `chainCheckMaxAgeMs` (default 10 s), and at
 once on a connection error (including a reset keep-alive connection whose read
 then succeeded on another attempt), an HTTP 401, or a changed cookie (qbitd
-writes a new one each time it starts). A wallet-write or broadcast call made
+writes a new one each time it starts). A wallet-write, broadcast or mining call made
 while it is stale first runs the check again, under the call's own deadline
 and in the same attempt, with no timer of its own. If that check fails, the
 call is refused without being sent, with `RpcChainGuardError` `reason:
@@ -646,7 +647,7 @@ passes against it, in a release of this package that says so. The range is
 defined once, in `src/version.ts`.
 
 **The node's version.** Every chain check, `confirmChain()`'s and the re-check
-before a wallet-write or broadcast call, reads `getnetworkinfo` in its batch, so
+before a wallet-write, broadcast or mining call, reads `getnetworkinfo` in its batch, so
 the version is checked as often as the chain: a guarded call checks again once
 the confirmation is older than `chainCheckMaxAgeMs`, or after a sign of a qbitd
 restart, as an upgrade is (a connection error, an HTTP 401, a new cookie).
@@ -664,7 +665,7 @@ rpc.nodeVersion // { version: 10000, subversion: '/qbit:1.0.0/', major: 1, minor
 with no pre-release suffix: `/qbit:1.0.1/` is supported; `/qbit:1.1.0/`,
 `/qbit:1.0.1-rc1/` and `/qbit:0.1.2-testnet4/` are not.
 
-On a version that is not supported, wallet-write and broadcast calls are
+On a version that is not supported, wallet-write, broadcast and mining calls are
 refused (`node-admin` calls are not: they need the chain's identity only),
 unsent, with `RpcChainGuardError` `reason: 'unsupported_version'` (its
 `nodeVersion` says which), and `chainStatus` is `unsupported_version`. Like a
@@ -699,9 +700,11 @@ are dropped. An enum is open or closed:
 | `ConfirmationTarget.model.hashrateSource` | Passed through | It describes the model; the result means the same whatever it is. |
 | `WalletInfo.pqcKeyValidation.status` | Passed through | `signingBlocked` says whether the wallet signs. |
 | `PqcLimitState`: `pqcLimitState`, `pqcOverallLimitState` and each key's | Passed through | A signature-budget state must reach you, never be dropped or coerced: treat one you do not know as at least `critical`. |
+| `BlockSubmissionReason`: a `submitBlock`, `submitAuxBlock` or `checkBlockProposal` result | Passed through | It says why the node did not answer null, and the block's fate is the same whatever the words. |
 | `WalletTxCategory`: `category` | Fails validation | The sign and fee checks are per category, and so are the sums of what a wallet received and sent. |
 | `bip125Replaceable` | Fails validation | Its `unknown` already means "cannot tell". |
 | `ConfirmationTarget.securityLevel` | Fails validation | It names the level the call asked for. |
+| `AuxBlock.commitmentOrder` | Fails validation | The proof must commit in that byte order: work under an order this package cannot name would be wasted. |
 
 An open value is typed as its known values or `(string & {})`, so the known
 ones still complete in an editor and a `switch` over them needs a `default`. It
@@ -757,6 +760,12 @@ is the `cause` of an `RpcUnknownOutcomeError`. Each method also takes
 | `testMempoolAccept(rawTxs, { maxFeeRateBitsPerKvB? })` | one `MempoolAcceptance` per transaction, checked against each hex's txid; see [fee-rate caps](#fee-rate-caps) |
 | `sendRawTransaction(hex, { maxFeeRateBitsPerKvB?, maxBurnAmountBits? })` | txid, checked against the hex; see [fee-rate caps](#fee-rate-caps) |
 | `submitPackage(rawTxs, { maxFeeRateBitsPerKvB?, maxBurnAmountBits? })` | `PackageSubmission`; see [submitting a package](#submitting-a-package-cpfp) |
+| `getMiningInfo()` | `MiningInfo`; `blockMinTxFeeBitsPerKvB`, and `next`, the next block's candidate |
+| `getBlockTemplate({ rules?, capabilities? })` | `BlockTemplate`; `coinbaseValueBits`, each transaction's `feeBits`; see [mining](#mining) |
+| `checkBlockProposal(blockHex)` | `BlockSubmissionResult`: null, or the reason; see [mining](#mining) |
+| `submitBlock(blockHex)` | `BlockSubmissionResult`: null, or the reason; see [mining](#mining) |
+| `createAuxBlock(payoutAddress)` | `AuxBlock`; see [merge mining](#merge-mining-auxpow) |
+| `submitAuxBlock(blockHash, auxpowHex)` | `BlockSubmissionResult`: null, or the reason; see [merge mining](#merge-mining-auxpow) |
 | `getWalletInfo()` | `WalletInfo`, including `pqcKeyValidation` |
 | `getTransaction(txid)` | `WalletTransaction`; signed `amountBits` and `feeBits` |
 | `listUnspent(options?)` | `UnspentOutput[]` |
@@ -1013,6 +1022,118 @@ const { packageMsg, txResults } = await rpc.submitPackage([parentHex, childHex])
 
 `maxFeeRateBitsPerKvB` is checked for each transaction, and `maxBurnAmountBits`
 (default `0n`) for each output of each, as for `sendRawTransaction`.
+
+### Mining
+
+A pool enables `mining`, confirms the chain, and works from a template:
+
+```ts
+const rpc = new QbitRpcClient({ url, auth, expectedChain: 'main', capabilities: ['mining'] })
+await rpc.confirmChain()
+
+const template = await rpc.getBlockTemplate() // { coinbaseValueBits, transactions, bits, target, curTime, height, ... }
+// Build the coinbase, the merkle root and the header, then solve it.
+await rpc.checkBlockProposal(blockHex) // optional: null, or why the node would refuse it, before any hashing
+const result = await rpc.submitBlock(blockHex)
+// null: accepted. duplicate: the node had it. inconclusive: stored, but its parent left the tip.
+if (result !== null && result !== 'duplicate' && result !== 'inconclusive') logRefusal(result)
+```
+
+- `getMiningInfo()` is a read, needing no capability, like `getBlockchainInfo()`:
+  it reads what any dashboard wants and costs the node little.
+- `getBlockTemplate()` and `checkBlockProposal()` change nothing but need
+  `mining`, wait for the chain guard and cannot go in a batch, as the node
+  assembles or checks a whole block under its main lock, and work from another
+  chain's template is wasted. Having no side effects, they are retried under
+  `readRetries` and never an unknown outcome.
+- `submitBlock()`, `createAuxBlock()` and `submitAuxBlock()` change node state:
+  behind the chain guard, never retried, each on a fresh connection, and an
+  `RpcUnknownOutcomeError` when the reply is lost.
+
+**The guard and a block you found.** A block on the wrong chain is wasted work,
+and a pool's payouts depend on its blocks being on the right one, so each of
+these waits for the guard. Its re-check costs one round trip once the
+confirmation is older than `chainCheckMaxAgeMs`, right before the block leaves.
+A pool that cannot spare that round trip can raise `chainCheckMaxAgeMs`, or call
+`confirmChain()` on a timer shorter than it, so the confirmation is fresh when
+a block is found. If that re-check fails, the block was not sent: `RpcChainGuardError`
+`reason: 'check_failed'` or `'stale'`. It is safe to send again, and a found
+block is worth doing so at once, while its parent is the tip.
+
+**What a result means.** Null means accepted, which does not mean it became the
+tip: compare `getBestBlockHash()`. A string is a `BlockSubmissionReason`, and not
+every one is a refusal. These held on a v1.0.0 regtest node:
+
+| Result | Meaning |
+| --- | --- |
+| `null` | Accepted. |
+| `duplicate` | The node has the block already, accepted or stored before; it says nothing of the tip. |
+| `inconclusive` | Stored but not connected, as its parent is no longer the tip. Not refused; it may not win. |
+| `duplicate-invalid` | The node knows the block as invalid. |
+| `inconclusive-not-best-prevblk` | A proposal whose parent is not the tip. |
+| `stale-prevblk` | From `submitAuxBlock`: see [merge mining](#merge-mining-auxpow). |
+| `high-hash`, `bad-cb-amount`, `bad-auxpow-commitment`, ... | Refused, by the consensus check named. A later qbit Core may add others, which pass through. |
+
+Hex that does not decode as a block is `RpcError` -22, not a result. On main,
+`getBlockTemplate()` and `createAuxBlock()` are `RpcError` -9 with no peers and
+-10 while the node syncs; qbit Core skips both checks on a test chain.
+
+**A lost reply.** `RpcUnknownOutcomeError.blockHash` names the block: the hash of
+the hex's 80-byte header, through `call()` too (unset when the hex is too short
+to hold one), and for `submitheader`, opened with `extraMethods` under `mining`
+with side effects, the hash of the header it submitted. Read it with `getBlockHeader(blockHash)`: `RpcError` -5 says the
+node does not have it. Submitting the same hex again is also safe, and `duplicate`
+says the node has it. A deadline that passes while the node validates the block
+is the same unknown outcome: `submitBlock` has the client's deadline (30 s by
+default), and a call's own `timeoutMs` overrides it.
+
+**Long polling.** The typed `getBlockTemplate()` takes no `longpollid`. BIP22's
+wait has no end of its own: the node holds the request until the tip or mempool
+changes, and a request the client gave up on holds its `qbitd` worker until then.
+Use the ZMQ `hashblock` topic or [`waitForNewBlock`](#long-polls), then ask again.
+`call()` and `requests.raw()` refuse a `getblocktemplate` with `longpollid` too,
+with a `TypeError`, unsent, as they refuse a `waitfor` long poll with no
+timeout.
+
+On signet, qbit Core refuses a template without the `signet` rule, so with
+`expectedChain: 'signet'` the client's `getBlockTemplate()` sends `rules:
+['segwit', 'signet']` unless you give `rules`; `requests.getBlockTemplate()`,
+which does not know the chain, needs them passed. `capabilities` is sent as
+given, and qbit Core v1.0.0 does not read it.
+
+#### Merge mining (AuxPoW)
+
+```ts
+const candidate = await rpc.createAuxBlock(payoutAddress) // a P2MR address
+// { hash, chainId, previousBlockHash, coinbaseValueBits, bits, height, target, commitmentOrder, ... }
+// Commit to candidate.hash in the parent chain's coinbase, and mine the parent to candidate.target.
+const result = await rpc.submitAuxBlock(candidate.hash, auxpowHex)
+```
+
+- `getBlockTemplate()` has no AuxPoW fields, and its `version` never signals
+  AuxPoW: templates are permissionless work. `createAuxBlock()` is how merge
+  mining gets its work, and the node keeps the candidate, so the pool builds no
+  block itself.
+- `chainId` is the AuxPoW chain id, 47 on main and 31430 on testnet, testnet4,
+  signet and regtest. `commitmentOrder` is the byte order the commitment must
+  use: `display` from `commitmentActivationHeight` on, which is 0 except on
+  testnet4 (20,500), `internal` below it.
+- The proof is qbit's canonical layout or a Dogecoin-style one, as hex
+  (`auxpowHex`). A proof that does not decode is `RpcError` -22; one that decodes
+  and fails is a result, such as `bad-auxpow-commitment` or
+  `bad-auxpow-parent-hash`.
+- `submitAuxBlock()` answers as `submitBlock()` does, null or a reason, not with
+  a boolean.
+- `stale-prevblk` means no candidate is cached under that hash: its parent left
+  the tip, it passed `-auxpowtemplateexpiry` or `-auxpowtemplatecachelimit`, or
+  **it was accepted**: the node forgets a candidate it accepts. So after a lost
+  reply (`RpcUnknownOutcomeError.blockHash`, the hash you sent), read
+  `getBlockHeader(blockHash)`. Do not submit again to find out.
+- A lost `createAuxBlock()` reply names nothing: nothing is known but a candidate
+  no one can use, which the cache drops. Ask again.
+- The reply does not name the payout address, so the package cannot check it
+  against the request. Read the coinbase once the block is accepted, with
+  `getBlockWithTransactions(candidate.hash)`.
 
 ### Large replies
 
@@ -1334,7 +1455,8 @@ bits; the 210,000,000 QBT cap is 2.1e16 bits, above 2^53). Fee rates are
 
 All these errors extend `QbitRpcError`. Recognize them with `X.is(error)`, which
 also works across the CommonJS and ESM builds. A side-effecting method is
-`sendrawtransaction`, any wallet-write method except `finalizepsbt`, or an
+`sendrawtransaction`, `submitpackage`, `submitblock`, `createauxblock`,
+`submitauxblock`, any wallet-write method except `finalizepsbt`, or an
 [`extraMethods`](#opening-another-method-extramethods) entry with
 `sideEffects: true`. A read
 method gets the error that happened; a side-effecting one gets it only where the
@@ -1351,7 +1473,7 @@ you made, or in `cause` the request that failed. Every error has its own
 | `RpcCapabilityError` | `reason: 'not_enabled'` | The method's capability (`required`) is not enabled. | Not sent | A configuration error. |
 | `RpcCapabilityError` | `reason: 'unknown_method'` | The method is not on the allowlist or in `extraMethods`. | Not sent | A programming error. |
 | `RpcCapabilityError` | `reason: 'not_batchable'` | A method other than a read in `batch()`, or a [long poll](#long-polls). | Not sent | A programming error. |
-| `RpcChainGuardError` | `reason: 'unconfirmed'` | A wallet-write or broadcast call before `confirmChain()` succeeded. | Not sent | Call `confirmChain()`. |
+| `RpcChainGuardError` | `reason: 'unconfirmed'` | A wallet-write, broadcast or mining call before `confirmChain()` succeeded. | Not sent | Call `confirmChain()`. |
 | `RpcChainGuardError` | `reason: 'mismatch'` | A chain check (yours, or the automatic re-check) found another chain, genesis block or signet challenge; `differs` says which. | Not sent | Check the URL, or set `expectedGenesisHash` or `expectedSignetChallenge` for a node with other chain parameters or a custom signet, then call `confirmChain()`. |
 | `RpcChainGuardError` | `reason: 'unsupported_version'` | A chain check found a qbit Core version outside 1.0.x releases; `nodeVersion` says which. | Not sent | Run a supported qbit Core, or a release of this package that supports the node's, then call `confirmChain()`; or accept the risk with `allowUnsupportedNodeVersion`. |
 | `RpcChainGuardError` | `reason: 'stale'` | Every chain check the call ran was overtaken by a connection error, an HTTP 401 or another check. | Not sent | Try again later. |
@@ -1368,7 +1490,7 @@ you made, or in `cause` the request that failed. Every error has its own
 | `RpcResponseTooLargeError` | | The reply passed `maxResponseBytes`, `limitBytes`. | Unknown outcome | Treat the node or proxy as misbehaving; do not guess the value. |
 | `RpcResponseError` | `reason: 'protocol'` | The reply was not valid JSON-RPC; `path` says where. | Unknown outcome | Treat the node or proxy as misbehaving; do not guess the value. |
 | `RpcResponseError` | `reason: 'validation'` | A result failed validation; `path` says where. For a [custom `parse`](#batches) that threw, `path` is `result` and `cause` is what it threw. | Unknown outcome | Treat the node or proxy as misbehaving; do not guess the value. |
-| `RpcUnknownOutcomeError` | | The call may have been executed, but no valid reply arrived; `cause` is the failure; for `sendrawtransaction` (typed or through `call()`), `txid` is the computed txid, and for `submitpackage` (likewise), `txids` holds one entry per transaction in package order, its txid or `null` where its hex does not parse here, with `txid` unset; for `submitpackage` it is also a node error that can follow the acceptance of part of the package (see [submitting a package](#submitting-a-package-cpfp)), with that `RpcError` as `cause`. Never retried. | Unknown outcome | Reconcile before acting again: look up `txid` or each of `txids` for a broadcast, re-read wallet state for a signing call, read `getWalletInfo().unlockedUntil` after `walletPassphrase` ([unlocking a wallet](#unlocking-an-encrypted-wallet)). |
+| `RpcUnknownOutcomeError` | | The call may have been executed, but no valid reply arrived; `cause` is the failure; for `sendrawtransaction` (typed or through `call()`), `txid` is the computed txid, and for `submitpackage` (likewise), `txids` holds one entry per transaction in package order, its txid or `null` where its hex does not parse here, with `txid` unset; for `submitpackage` it is also a node error that can follow the acceptance of part of the package (see [submitting a package](#submitting-a-package-cpfp)), with that `RpcError` as `cause`; and for `submitblock`, `submitheader` and `submitauxblock` (likewise), `blockHash` names the block. Never retried. | Unknown outcome | Reconcile before acting again: look up `txid` or each of `txids` for a broadcast, re-read wallet state for a signing call, read `getWalletInfo().unlockedUntil` after `walletPassphrase` ([unlocking a wallet](#unlocking-an-encrypted-wallet)). |
 
 A bad argument or option is a `TypeError` or `RangeError`, and nothing is sent.
 
@@ -1428,7 +1550,7 @@ Retries, deadlines and connections work like this:
   takes the normal path: the cookie is read again, and `finalizepsbt` and
   `testmempoolaccept` re-check the chain before they are sent again. If it
   fails, its error is reported like any connection error. The chain re-check
-  before a wallet-write or broadcast call gets the same extra attempt: the call
+  before a wallet-write, broadcast or mining call gets the same extra attempt: the call
   itself has not been sent yet, and goes out once, after a check that succeeds.
   A later reset (the node failing during a request), any other error and a
   reply that began get no extra attempt, so a proxy in between is covered only

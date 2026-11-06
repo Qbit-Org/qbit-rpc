@@ -11,8 +11,8 @@ application.
 - [`@qbit-oss/rpc`](packages/rpc/README.md) to read chain and wallet state from
   `qbitd`, fund and sign PSBTs with its wallet, and broadcast. Every method is
   allowlisted, by the package or by the client's own `extraMethods`, and gated
-  by capabilities the client opts into, wallet-write and
-  broadcast calls wait until the node's chain is confirmed, results are
+  by capabilities the client opts into, wallet-write, broadcast and
+  mining calls wait until the node's chain is confirmed, results are
   validated, and amounts are exact `bigint` bits. No runtime dependencies.
 - [`@qbit-oss/zmq`](packages/zmq/README.md) to be woken by `qbitd`'s ZMQ
   notifications (new blocks, mempool changes) and told when you missed some. It
@@ -49,7 +49,7 @@ against v1.0.0, the release `scripts/qbit-core-release.mjs` names, by CI's
 against it, in a release of these packages that says so.
 
 `@qbit-oss/rpc` checks the node's version with every chain check and exposes it
-as `rpc.nodeVersion`. On another version it refuses wallet-write and broadcast
+as `rpc.nodeVersion`. On another version it refuses wallet-write, broadcast and mining
 calls with `RpcChainGuardError` `reason: 'unsupported_version'`, unless the
 client sets `allowUnsupportedNodeVersion`; reads go on, and every reply is
 still validated. Which values a later qbit Core may add pass through, and which
@@ -111,7 +111,7 @@ const rpc = new QbitRpcClient({
   capabilities: ['wallet-read', 'wallet-write', 'broadcast'],
 })
 
-await rpc.confirmChain() // wallet-write and broadcast calls are refused until this matches
+await rpc.confirmChain() // wallet-write, broadcast and mining calls are refused until this matches
 
 const funded = await rpc.walletCreateFundedPsbt({
   outputs: [{ address: 'tq1...', amountBits: 150_000_000n }], // 1.5 QBT
@@ -202,6 +202,8 @@ for await (const event of zmq) {
 | Fee floor and mempool | `rpc.getMempoolInfo()` → `mempoolMinFeeBitsPerKvB`, `rpc.getRawMempool()`, `rpc.getTxSpendingPrevout(outputs)` |
 | Wait for a block without ZMQ | `rpc.waitForNewBlock(waitMs, { currentTip })`, `rpc.waitForBlockHeight(height, waitMs)`; see [long polls](packages/rpc/README.md#long-polls) |
 | Pay for a parent with its child (CPFP) | `rpc.submitPackage([parentHex, childHex])`; a refusal is in the result, see [submitting a package](packages/rpc/README.md#submitting-a-package-cpfp) |
+| Mine a block, as a pool | with `capabilities: ['mining']`: `rpc.getBlockTemplate()`, `rpc.submitBlock(hex)`, which answers null or a reason; `rpc.getMiningInfo()` needs no capability; see [mining](packages/rpc/README.md#mining) |
+| Merge mine (AuxPoW) | `rpc.createAuxBlock(p2mrAddress)`, `rpc.submitAuxBlock(hash, auxpowHex)`; see [merge mining](packages/rpc/README.md#merge-mining-auxpow) |
 | Any other allowlisted method | `rpc.call('getindexinfo')` (numbers come back as `JsonNumber`) |
 | A method the package does not allowlist | open it for one client, `extraMethods: { getchaintxstats: { capability: 'read', sideEffects: false } }`, then `rpc.call('getchaintxstats')`; see [opening another method](packages/rpc/README.md#opening-another-method-extramethods) |
 | Abort a call or give it its own deadline | the last argument: `rpc.getTxOut(txid, vout, { includeMempool: true }, { signal, timeoutMs: 5_000 })` |
@@ -277,10 +279,10 @@ Each tarball holds exactly `package.json`, `README.md`, `LICENSE` and, in
 map for each and the declarations for each (`index.d.ts`, `index.d.mts`). The
 maps carry every source file in `sourcesContent`, so `src/` is not shipped:
 run Node.js with `--enable-source-maps` to see `src/*.ts` lines in stack traces.
-`@qbit-oss/rpc` is about 1.73 MB unpacked (448 KB packed), most of it the two
-maps; `@qbit-oss/zmq` about 224 KB (60 KB packed). `pack:check` fails on any
+`@qbit-oss/rpc` is about 1.86 MB unpacked (479 KB packed), most of it the two
+maps; `@qbit-oss/zmq` about 227 KB (61 KB packed). `pack:check` fails on any
 other file, on a map that does not carry its sources, and above a ceiling of
-1,815,000 and 280,000 bytes unpacked.
+2,270,000 and 280,000 bytes unpacked.
 
 The packages set no `"type"`: `.js` is CommonJS and `.mjs` ESM. They set
 `"sideEffects": false`: no module does anything at import that a consumer

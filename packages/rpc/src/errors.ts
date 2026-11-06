@@ -131,7 +131,7 @@ function causeText(cause: unknown): string {
 }
 
 /**
- * A wallet-write or broadcast call was refused, and nothing of it was sent,
+ * A wallet-write, broadcast or mining call was refused, and nothing of it was sent,
  * because the node's chain has not been confirmed (`reason: 'unconfirmed'`), or
  * {@link QbitRpcClient.confirmChain} found a different chain, genesis block or
  * signet challenge (`reason: 'mismatch'`, see `differs`), or a qbit Core
@@ -379,7 +379,7 @@ export class RpcResponseError extends QbitRpcError {
 brand(RpcResponseError, 'RpcResponseError')
 
 /**
- * A wallet-write or broadcast request may have been executed, but no valid
+ * A wallet-write, broadcast or mining request may have been executed, but no valid
  * reply arrived: the deadline expired, the caller aborted, the connection
  * dropped, the reply was too large or malformed, or a proxy answered with a
  * 5xx status, or a JSON-RPC error under a status qbitd does not use for one,
@@ -390,10 +390,18 @@ brand(RpcResponseError, 'RpcResponseError')
  * `sendrawtransaction`, look the `txid` up, and for `submitpackage`, each of
  * `txids` (`getrawtransaction`, `gettransaction`, `getmempoolentry`), as any
  * part of a package may have been accepted; resubmitting the same hex is
- * harmless, but never rebuild the payment with different inputs. The
- * underlying error is the `cause`.
+ * harmless, but never rebuild the payment with different inputs. For
+ * `submitblock`, `submitheader` and `submitauxblock`, look the `blockHash` up
+ * (`getblockheader`). A lost `createauxblock` names nothing: ask for another
+ * candidate. The underlying error is the `cause`.
  */
 export class RpcUnknownOutcomeError extends QbitRpcError {
+  /**
+   * For `submitblock` and `submitheader`, the hash computed from the header the
+   * submitted hex starts with, when it holds one; for `submitauxblock`, the
+   * hash submitted.
+   */
+  readonly blockHash?: string
   /** For `sendrawtransaction`, the txid computed from the submitted hex, when it parses. */
   readonly txid?: string
   /**
@@ -404,11 +412,18 @@ export class RpcUnknownOutcomeError extends QbitRpcError {
    */
   readonly txids?: readonly (string | null)[]
 
-  constructor(method: string, cause: QbitRpcError, txid?: string, txids?: readonly (string | null)[]) {
+  constructor(
+    method: string,
+    cause: QbitRpcError,
+    txid?: string,
+    txids?: readonly (string | null)[],
+    blockHash?: string
+  ) {
     super(`RPC ${method} outcome is unknown: the node may have executed it (${cause.message})`, method, { cause })
     if (txid !== undefined) this.txid = txid
     // Its own elements: a hole is refused, never read from Array.prototype.
     if (txids !== undefined) this.txids = Object.freeze(ownElements(txids, 'txids') as (string | null)[])
+    if (blockHash !== undefined) this.blockHash = blockHash
   }
 
   static override is(value: unknown): value is RpcUnknownOutcomeError {
