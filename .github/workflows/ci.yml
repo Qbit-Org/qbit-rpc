@@ -107,7 +107,7 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
 
-      # The smoke script runs the suites with `corepack pnpm`, as the README
+      # The smoke script runs the suites with `corepack pnpm`, as CONTRIBUTING.md
       # does locally; both must be the pnpm packageManager pins.
       - name: Check pnpm matches packageManager
         run: |

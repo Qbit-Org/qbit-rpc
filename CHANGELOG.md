@@ -680,7 +680,7 @@ properties only. The API report is unchanged.
   smoke test writes keys' counts into the wallet file below each threshold,
   signs, and asserts each state's fields and warning lines. Fixture tests cover
   each state and boundary through `walletProcessPsbt` and `getAddressInfo`.
-- The README's [PQC signature budgets](packages/rpc/README.md#pqc-signature-budgets)
+- The README's [PQC signature budgets](docs/rpc/wallet.md#pqc-signature-budgets)
   says what each state means and what to do, checked against the node. An
   exhausted key is not an error: `walletprocesspsbt` leaves its inputs
   unsigned (`complete: false`) and reports nothing about it, while the wallet

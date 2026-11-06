@@ -7,12 +7,12 @@
 // expected one, the unpacked size is over the package's ceiling (or either is
 // missing), a source map has no sources, leaves out a file of src/, maps one
 // outside src/ or does not carry the source it maps to, the manifest's
-// packaging fields or dependency policy have drifted (see the root README's
-// "Packaging and dependencies"), a package's LICENSE copy has drifted from the
-// root LICENSE, a package is not marked private, the packed README has a
-// relative link that leaves the package or does not link the changelog, or
-// `author` names no organisation URL for npm to link. The checks that need no
-// pack are in pack-checks.mjs, which pack-checks.test.mjs tests.
+// packaging fields or dependency policy have drifted (see docs/packaging.md
+// and CONTRIBUTING.md's "Dependency policy"), a package's LICENSE copy has
+// drifted from the root LICENSE, a package is not marked private, the packed
+// README has a relative link that leaves the package or does not link the
+// changelog, or `author` names no organisation URL for npm to link. The checks
+// that need no pack are in pack-checks.mjs, which pack-checks.test.mjs tests.
 //
 // Declaration maps are not shipped, on purpose: tsup bundles the declarations
 // into one file per format, and its bundler cannot emit maps for them. The

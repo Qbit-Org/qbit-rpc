@@ -215,7 +215,7 @@ export interface QbitZmqSubscriberOptions {
  * failed with, passed on as it is. The subscriber adds none of its own, so this
  * lists what `zeromq` and libzmq raise from the calls it makes on a SUB socket,
  * and stays open for anything else, such as a custom `socketFactory`'s error.
- * The package README says what each means.
+ * {@link https://github.com/Qbit-Org/qbit-rpc/blob/main/docs/zmq/errors.md | Errors} says what each means.
  */
 export type ZmqReconnectCode =
   | 'EAGAIN'

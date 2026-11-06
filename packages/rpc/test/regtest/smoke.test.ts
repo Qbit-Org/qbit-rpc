@@ -1571,7 +1571,7 @@ describe.runIf(enabled)('qbit Core v1.0.0 regtest', () => {
       expect(mixed).toMatchObject({ complete: false, ...oneKey('normal', 1) })
       expect(mixed).not.toHaveProperty('warnings')
 
-      // What the root README's quick start reads before signing: decodepsbt
+      // What the payout example in docs/rpc/payments.md reads before signing: decodepsbt
       // gives each input's address, and getaddressinfo in one batch its key's state.
       const funded = await wallet.walletCreateFundedPsbt({
         inputs: [keys.last.coins[1]!, keys.critical.coins[0]!, keys.normal.coins[0]!],

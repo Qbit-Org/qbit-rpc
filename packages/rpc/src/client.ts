@@ -136,7 +136,8 @@ export interface QbitRpcClientOptions {
   /**
    * TLS settings for an `https` url: a private CA, a client certificate, the
    * name to check, and key pins. Default: the system's CAs, no client
-   * certificate, the URL's host, no pin. See the package README's "Remote nodes".
+   * certificate, the URL's host, no pin. See
+   * {@link https://github.com/Qbit-Org/qbit-rpc/blob/main/docs/rpc/remote-nodes.md | Remote nodes}.
    */
   readonly tls?: RpcTlsOptions
   /**
@@ -150,8 +151,9 @@ export interface QbitRpcClientOptions {
   /**
    * The genesis block hash the node must report (`getblockhash 0`) on every
    * chain check: 64 hex characters, in either case (compared in lowercase).
-   * Default: `expectedChain`'s genesis block in qbit Core v1.0.0, which the
-   * package README lists. Set it for a node built with other chain parameters.
+   * Default: `expectedChain`'s genesis block in qbit Core v1.0.0, which
+   * {@link https://github.com/Qbit-Org/qbit-rpc/blob/main/docs/rpc/chain-guard.md | Chain guard}
+   * lists. Set it for a node built with other chain parameters.
    */
   readonly expectedGenesisHash?: string
   /**
@@ -195,7 +197,9 @@ export interface QbitRpcClientOptions {
    * `walletpassphrase` and `walletlock` it is at least 120,000 ms (see
    * {@link QbitRpcClient.walletPassphrase}), and so for `keypoolrefill`,
    * `importdescriptors`, `rescanblockchain`, `loadwallet` and `unloadwallet`
-   * (see the package README's wallet administration): a shorter client `timeoutMs` does
+   * (see
+   * {@link https://github.com/Qbit-Org/qbit-rpc/blob/main/docs/rpc/wallet-admin.md | Wallet administration}):
+   * a shorter client `timeoutMs` does
    * not shorten it, nor a long poll's, at least its wait plus 10 s (see
    * {@link QbitRpcClient.waitForNewBlock}). A call's own `timeoutMs` overrides
    * all of these. With `connect`, it also bounds a pooled connection still
@@ -234,7 +238,9 @@ export interface QbitRpcClientOptions {
    * in FIFO order under their operation's deadline; one that times out or is
    * aborted while waiting was never sent, so it is a plain `RpcTimeoutError` or
    * `RpcAbortedError`, never an unknown outcome. Keep the total over all clients of a node at or below its
-   * `-rpcworkqueue` (see the README's failure model). Default 8.
+   * `-rpcworkqueue` (see
+   * {@link https://github.com/Qbit-Org/qbit-rpc/blob/main/docs/rpc/errors.md#the-work-queue | the work queue}).
+   * Default 8.
    */
   readonly maxConcurrentRequests?: number
   /**
@@ -440,7 +446,9 @@ function checkInteger<F extends number | undefined>(
  * Every method is checked against an allowlist and the client's capabilities
  * before anything is sent, wallet-write, broadcast, mining and wallet-admin calls also need a
  * confirmed chain, and every typed result is validated before it is returned.
- * Amounts are `bigint` bits. See the package README for the failure model.
+ * Amounts are `bigint` bits. See
+ * {@link https://github.com/Qbit-Org/qbit-rpc/blob/main/docs/rpc/errors.md | Errors}
+ * for the failure model.
  *
  * Each typed method takes the arguments of the request builder of the same
  * name in {@link requests}, then {@link CallOptions} (`signal`, `timeoutMs`)
@@ -942,8 +950,8 @@ export class QbitRpcClient {
    * or `RpcChainGuardError` `check_failed` with one as its `cause`, and
    * nothing was sent. Every call on that
    * wallet waits for a first unlock, and the others keep the client's
-   * deadline, so one sent meanwhile can need a longer `timeoutMs`. See the
-   * package README.
+   * deadline, so one sent meanwhile can need a longer `timeoutMs`. See
+   * {@link https://github.com/Qbit-Org/qbit-rpc/blob/main/docs/rpc/wallet.md#unlocking-an-encrypted-wallet | Unlocking a wallet}.
    */
   walletPassphrase(passphrase: string, timeoutSeconds: number, callOptions?: CallOptions): Promise<void> {
     return this.#lazy(() => requests.walletPassphrase(passphrase, timeoutSeconds), callOptions).then(() => undefined)

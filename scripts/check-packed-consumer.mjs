@@ -12,7 +12,9 @@
 //    twice: with the workspace's TypeScript and `@types/node`, and at the
 //    floors the package READMEs state, TypeScript 5.0 and `@types/node`
 //    22.0.0 (the root `typescript-floor` and `types-node-floor` aliases), so a
-//    declaration that needs a newer version of either fails here.
+//    declaration that needs a newer version of either fails here. The same
+//    runs type-check the quick start of each packed README, and the example
+//    of the repository README, as written.
 // 2. Loads the CommonJS and the ESM build of each package side by side and
 //    checks that each error class's `is()` recognizes an error from the other
 //    build, where `instanceof` cannot, and that both builds work.
@@ -68,6 +70,13 @@ const TOOLCHAINS = [
 ]
 
 const PACKAGES = { rpc: '@qbit-oss/rpc', zmq: '@qbit-oss/zmq' }
+
+/** The first TypeScript code block of a README: its quick start. */
+function quickStart(readme) {
+  const block = readFileSync(readme, 'utf8').match(/^```ts\n([\s\S]*?)^```$/m)
+  if (!block) throw new Error(`${readme} has no ts code block`)
+  return block[1]
+}
 
 function run(cmd, args, opts = {}) {
   console.log(`+ ${cmd} ${args.join(' ')}${opts.cwd ? `  (cwd: ${opts.cwd})` : ''}`)
@@ -356,6 +365,13 @@ try {
   writeFileSync(join(consumerDir, 'package.json'), `${JSON.stringify({ private: true, type: 'module' }, null, 2)}\n`)
   writeFileSync(join(consumerDir, 'consumer.mts'), CONSUMER)
   writeFileSync(join(consumerDir, 'consumer.cts'), CONSUMER)
+  // ES modules, for their top-level await.
+  const quickStarts = {
+    'quickstart-rpc.mts': join(modules, '@qbit-oss', 'rpc', 'README.md'),
+    'quickstart-zmq.mts': join(modules, '@qbit-oss', 'zmq', 'README.md'),
+    'quickstart-root.mts': join(repoRoot, 'README.md'),
+  }
+  for (const [file, readme] of Object.entries(quickStarts)) writeFileSync(join(consumerDir, file), quickStart(readme))
   // Each toolchain's compiler options, with its @types/node linked in as <typeRoot>/node.
   const setups = TOOLCHAINS.map(toolchain => {
     const typeRoot = join(stage, `types-${toolchain.label}`)
@@ -381,7 +397,7 @@ try {
     const tsconfig = `tsconfig.${toolchain.label}.json`
     writeFileSync(
       join(consumerDir, tsconfig),
-      `${JSON.stringify({ compilerOptions, files: ['consumer.mts', 'consumer.cts'] }, null, 2)}\n`
+      `${JSON.stringify({ compilerOptions, files: ['consumer.mts', 'consumer.cts', ...Object.keys(quickStarts)] }, null, 2)}\n`
     )
     const listed = typeCheck(tscPath, tsconfig, consumerDir).split('\n')
     if (!listed.some(file => file.startsWith(`${realpathSync(toolchain.typesNode)}/`))) {
@@ -400,6 +416,7 @@ try {
       }
       console.log(`${name} consumer types (lib/${resolved.join(', lib/')}) with ${versions}: PASS`)
     }
+    console.log(`README quick starts (${Object.keys(quickStarts).join(', ')}) type-check with ${versions}: PASS`)
   }
 
   writeFileSync(join(consumerDir, 'brand-check.mjs'), BRAND_CHECK)

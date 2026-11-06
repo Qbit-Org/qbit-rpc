@@ -222,9 +222,9 @@ describe('capabilities', () => {
     expect(() => client(['admin' as Capability])).toThrow(TypeError)
   })
 
-  // The allowlist is not exported, so the README's table is its only public form.
-  it('lists every allowlisted method in the README table, under its capability, and no other', () => {
-    const readme = readFileSync(fileURLToPath(new URL('../README.md', import.meta.url)), 'utf8')
+  // The allowlist is not exported, so the docs table is its only public form.
+  it('lists every allowlisted method in the docs table, under its capability, and no other', () => {
+    const readme = readFileSync(fileURLToPath(new URL('../../../docs/rpc/capabilities.md', import.meta.url)), 'utf8')
     const lines = readme.split('\n')
     const head = lines.indexOf('| Capability | Methods |')
     expect(head).toBeGreaterThan(-1)
