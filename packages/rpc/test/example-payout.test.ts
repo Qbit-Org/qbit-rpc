@@ -18,7 +18,7 @@ interface Store {
   get(requestId: string): Promise<(Payout & { readonly state: string }) | undefined>
   saveSigned(payout: Payout): Promise<void>
   unsettled(): Promise<Payout[]>
-  settle(requestId: string, outcome: 'confirmed' | 'conflicted'): Promise<void>
+  settle(requestId: string, outcome: 'confirmed' | 'conflicted' | 'refused'): Promise<void>
 }
 const EXAMPLE: string = new URL('../../../examples/payout.ts', import.meta.url).href
 const { directoryStore } = (await import(EXAMPLE)) as { directoryStore: (dir: string) => Store }
@@ -58,5 +58,23 @@ describe('examples/payout.ts directoryStore', () => {
     expect((await store.get('invoice-42'))?.state).toBe('confirmed')
     // Written by rename: no temporary file is left behind.
     expect((await readdir(dir)).filter(name => name.endsWith('.tmp'))).toEqual([])
+  })
+
+  it('settles one record from two stores at once, each with a temporary file of its own', async () => {
+    await directoryStore(dir).saveSigned(payout)
+    await Promise.all([
+      directoryStore(dir).settle('invoice-42', 'confirmed'),
+      directoryStore(dir).settle('invoice-42', 'confirmed'),
+    ])
+    expect((await directoryStore(dir).get('invoice-42'))?.state).toBe('confirmed')
+    expect((await readdir(dir)).filter(name => name.endsWith('.tmp'))).toEqual([])
+  })
+
+  it('keeps request ids that differ only in case apart', async () => {
+    const store = directoryStore(dir)
+    expect(await store.claim('INV-1')).toBe(true)
+    expect(await store.claim('inv-1')).toBe(true)
+    await store.saveSigned({ ...payout, requestId: 'INV-1' })
+    expect(await store.get('inv-1')).toBeUndefined()
   })
 })

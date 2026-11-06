@@ -1,3 +1,6 @@
+// A minimal illustration of the calls a payout makes, not a payout system.
+// Idempotent payouts in production belong in `@qbit-oss/payments`.
+//
 // A payout from a testnet4 wallet: fund a PSBT, check the PQC signature budget
 // of every key it spends from, sign, store the signed transaction, and only then
 // broadcast it. Each payout is stored under the id of the payment request it
@@ -9,6 +12,8 @@
 //
 // See docs/rpc/payments.md. CI type-checks this file against the packed packages.
 import { mkdir, open, readdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
+import { realpathSync } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
@@ -26,7 +31,8 @@ export interface SignedPayout {
   readonly hex: string
 }
 
-export type PayoutState = 'signed' | 'confirmed' | 'conflicted'
+/** `refused`: the node refused the stored transaction and the wallet does not know it, so it paid nothing; a person decides. */
+export type PayoutState = 'signed' | 'confirmed' | 'conflicted' | 'refused'
 
 /** Where payouts are kept: implement it over your database. */
 export interface PayoutStore {
@@ -45,12 +51,13 @@ export interface PayoutStore {
    * Settle a payout: confirmed in a block, or conflicted (a transaction spending
    * the same coins was mined instead), each at FINAL confirmations.
    */
-  settle(requestId: string, outcome: 'confirmed' | 'conflicted'): Promise<void>
+  settle(requestId: string, outcome: Exclude<PayoutState, 'signed'>): Promise<void>
 }
 
 /** A {@link PayoutStore} in a directory, one JSON file per payment request: enough for this example. */
 export function directoryStore(dir: string): PayoutStore {
-  const file = (requestId: string): string => join(dir, `${encodeURIComponent(requestId)}.json`)
+  // Hex, so request ids that differ only in case stay apart on a case-insensitive file system.
+  const file = (requestId: string): string => join(dir, `${Buffer.from(requestId, 'utf8').toString('hex')}.json`)
   type Stored = Omit<SignedPayout, 'amountBits'> & { readonly amountBits: string; readonly state: PayoutState }
   const parse = (stored: Stored): SignedPayout & { readonly state: PayoutState } => ({
     ...stored,
@@ -60,8 +67,15 @@ export function directoryStore(dir: string): PayoutStore {
   // Written to a temporary file, flushed, then renamed over the record: a crash leaves the old record or the new one.
   const write = async (stored: Stored): Promise<void> => {
     const path = file(stored.requestId)
-    await writeFile(`${path}.tmp`, JSON.stringify(stored), { flush: true })
-    await rename(`${path}.tmp`, path)
+    // A temporary file of its own, so two runs writing one record at once do not take each other's.
+    const temporary = `${path}.${randomUUID()}.tmp`
+    await writeFile(temporary, JSON.stringify(stored), { flush: true })
+    await rename(temporary, path)
+    // The rename itself is durable once the directory is flushed; not every platform can open one.
+    await open(dir, 'r').then(
+      handle => handle.sync().finally(() => handle.close()),
+      () => undefined
+    )
   }
   return {
     async claim(requestId) {
@@ -105,7 +119,8 @@ async function prepare(
 ): Promise<SignedPayout> {
   const funded = await rpc.walletCreateFundedPsbt({
     outputs: [{ address, amountBits }],
-    options: { feeRateBitsPerKvB: 1_000n, changeType: 'p2mr' }, // 1 bit/vB
+    // Locked, so a run paying another request at the same time funds from other coins.
+    options: { feeRateBitsPerKvB: 1_000n, changeType: 'p2mr', lockUnspents: true }, // 1 bit/vB
   })
   // An exhausted PQC key signs nothing and raises no error, so count first what signing takes from each key.
   const plan = await rpc.checkPqcSigning(funded.psbt) // PqcSigningError if a PQC key cannot sign each input it holds
@@ -120,10 +135,18 @@ async function prepare(
   return payout
 }
 
-/** Send the stored hex again, which is harmless: the node keeps one copy, and refuses one it cannot accept. */
-async function resend(rpc: QbitRpcClient, payout: SignedPayout): Promise<void> {
-  // An unknown outcome again is reconciled on the next run; a refusal (RpcError) is for a person to look at.
-  await rpc.sendRawTransaction(payout.hex)
+/**
+ * Send the stored hex again, which is harmless: the node keeps one copy, and refuses one it cannot accept.
+ * Returns the node's refusal (RpcError); an unknown outcome again is reconciled on the next run.
+ */
+async function resend(rpc: QbitRpcClient, payout: SignedPayout): Promise<RpcError | undefined> {
+  return rpc.sendRawTransaction(payout.hex).then(
+    () => undefined,
+    (error: unknown) => {
+      if (RpcError.is(error)) return error
+      throw error
+    }
+  )
 }
 
 /**
@@ -137,14 +160,20 @@ async function reconcile(
   rpc: QbitRpcClient,
   store: PayoutStore,
   payout: SignedPayout
-): Promise<'pending' | 'confirmed' | 'conflicted'> {
+): Promise<Exclude<PayoutState, 'signed'> | 'pending'> {
   const known = await rpc.getTransaction(payout.txid).catch((error: unknown) => {
     if (RpcError.is(error) && error.rpcCode === -5) return undefined // not a transaction of this wallet
     throw error
   })
   if (known === undefined) {
-    await resend(rpc, payout)
-    return 'pending'
+    const refusal = await resend(rpc, payout)
+    if (refusal === undefined) return 'pending'
+    // The wallet never had it and the node will not take it: it paid nothing, and is not tried again.
+    console.error(
+      `${payout.requestId}: ${payout.txid} refused (${refusal.message}): check before paying this request another way`
+    )
+    await store.settle(payout.requestId, 'refused')
+    return 'refused'
   }
   if (known.confirmations >= FINAL) {
     await store.settle(payout.requestId, 'confirmed')
@@ -165,7 +194,11 @@ async function reconcile(
         throw error
       }
     )
-    if (!inMempool) await resend(rpc, payout)
+    if (!inMempool) {
+      const refusal = await resend(rpc, payout)
+      // The wallet has it: a refusal now (an input spent elsewhere) shows as negative confirmations later.
+      if (refusal !== undefined) console.warn(`${payout.requestId}: ${payout.txid} not taken back: ${refusal.message}`)
+    }
   }
   return 'pending'
 }
@@ -175,7 +208,7 @@ async function broadcast(
   rpc: QbitRpcClient,
   store: PayoutStore,
   payout: SignedPayout
-): Promise<'pending' | 'confirmed' | 'conflicted'> {
+): Promise<Exclude<PayoutState, 'signed'> | 'pending'> {
   try {
     await rpc.sendRawTransaction(payout.hex)
     return 'pending'
@@ -205,7 +238,13 @@ async function main(): Promise<void> {
 
   await rpc.confirmChain() // wallet-write and broadcast calls are refused until this matches
   // First what an earlier run left: stored, and perhaps never sent (a crash, a lost reply).
-  for (const payout of await store.unsettled()) console.log(payout.requestId, await reconcile(rpc, store, payout))
+  // One that fails is reported, and the others are still reconciled.
+  for (const payout of await store.unsettled()) {
+    await reconcile(rpc, store, payout).then(
+      outcome => console.log(payout.requestId, outcome),
+      (error: unknown) => console.error(`${payout.requestId}: not reconciled this time:`, error)
+    )
+  }
   // A request already paid, or being paid, is never funded again: the run above reconciled it.
   const existing = await store.get(requestId)
   if (existing !== undefined) {
@@ -228,4 +267,5 @@ async function main(): Promise<void> {
 }
 
 // Run when started as a program; a test imports the store without running it.
-if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) await main()
+// Node names the main module by its real path, so compare against the argument's, symlinks resolved.
+if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) await main()
