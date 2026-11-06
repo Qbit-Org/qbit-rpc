@@ -378,6 +378,90 @@ export class RpcResponseError extends QbitRpcError {
 }
 brand(RpcResponseError, 'RpcResponseError')
 
+/** Why {@link PqcSigningError} refused to sign a PSBT. */
+export type PqcSigningRefusal = 'no_address' | 'no_keys' | 'exhausted' | 'unknown_state' | 'would_run_out'
+
+/** A PQC state from the node, quoted in a message: a long one is cut short. */
+function stateText(state: string): string {
+  return state.length <= 40 ? state : `${state.slice(0, 40)}...`
+}
+
+/**
+ * The PQC check before signing refused a PSBT, and nothing was signed. An
+ * exhausted key signs nothing and raises no error, so `walletProcessPsbt`
+ * (by default) and `checkPqcSigning` count the signatures the PSBT needs from
+ * each of the wallet's PQC keys first, and refuse when an input names no
+ * address to count it by (`no_address`, see `inputIndex`), when the node
+ * reports an address's PQC state without its keys (`no_keys`), when a key is
+ * `exhausted` or in a state this version does not know (`exhausted`,
+ * `unknown_state`, see `state`), or when a key has fewer signatures left than
+ * the PSBT needs from it (`would_run_out`, see `needed` and `remaining`): it
+ * would run out partway, leaving the inputs after it unsigned. `method` is
+ * `walletprocesspsbt`, the call refused. The address is a property only: the
+ * message names the input and the key.
+ */
+export class PqcSigningError extends QbitRpcError {
+  readonly reason: PqcSigningRefusal
+  /** The input refused (`no_address`), or the first input spending from `address`. */
+  readonly inputIndex?: number
+  /** The input's address, for `no_keys`, `exhausted` and `unknown_state`. */
+  readonly address?: string
+  /** The key, for `would_run_out`, and for `exhausted` and `unknown_state` when a key's state was; absent when the address's overall state was. */
+  readonly pubkey?: string
+  /** The state the node reported, for `exhausted` and `unknown_state`. */
+  readonly state?: string
+  /** For `would_run_out`: the signatures the PSBT needs from the key, one per input whose address holds it. */
+  readonly needed?: number
+  /** For `would_run_out`: the key's `pqcSignaturesRemaining`. */
+  readonly remaining?: number
+
+  constructor(
+    reason: PqcSigningRefusal,
+    details: {
+      readonly inputIndex?: number
+      readonly address?: string
+      readonly pubkey?: string
+      readonly state?: string
+      readonly needed?: number
+      readonly remaining?: number
+    } = {}
+  ) {
+    const inputIndex = ownValue(details, 'inputIndex')
+    const address = ownValue(details, 'address')
+    const pubkey = ownValue(details, 'pubkey')
+    const state = ownValue(details, 'state')
+    const needed = ownValue(details, 'needed')
+    const remaining = ownValue(details, 'remaining')
+    const subject = pubkey === undefined ? `input ${inputIndex}'s address` : `PQC key ${pubkey} (input ${inputIndex})`
+    super(
+      `PQC signing refused, nothing signed: ${
+        reason === 'no_address'
+          ? `input ${inputIndex} names no output with an address (witness_utxo or non_witness_utxo), so the PQC signatures it needs cannot be counted`
+          : reason === 'no_keys'
+            ? `the node reports a PQC state for input ${inputIndex}'s address without its keys (pqc_key_states), so its signatures cannot be counted`
+            : reason === 'exhausted'
+              ? `${subject} is exhausted: it signs nothing more, and its inputs would stay unsigned; rotate to a new key`
+              : reason === 'unknown_state'
+                ? `${subject} is in PQC state '${stateText(state ?? '')}', which this version does not know`
+                : `PQC key ${pubkey} has ${remaining} signatures left and this PSBT needs ${needed}: it would run out partway, leaving inputs unsigned`
+      }`,
+      'walletprocesspsbt'
+    )
+    this.reason = reason
+    if (inputIndex !== undefined) this.inputIndex = inputIndex
+    if (address !== undefined) this.address = address
+    if (pubkey !== undefined) this.pubkey = pubkey
+    if (state !== undefined) this.state = state
+    if (needed !== undefined) this.needed = needed
+    if (remaining !== undefined) this.remaining = remaining
+  }
+
+  static override is(value: unknown): value is PqcSigningError {
+    return hasBrand(value, 'PqcSigningError')
+  }
+}
+brand(PqcSigningError, 'PqcSigningError')
+
 /**
  * A wallet-write, broadcast, mining or wallet-admin request may have been executed, but no valid
  * reply arrived: the deadline expired, the caller aborted, the connection

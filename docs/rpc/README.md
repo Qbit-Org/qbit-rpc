@@ -46,7 +46,8 @@ For the Node.js, platform and TypeScript versions, see
 | Validate an address | `rpc.validateAddress(address)` (P2MR: `witnessVersion: 2`) |
 | Wallet balance inputs | `rpc.listUnspent()`, `rpc.getWalletInfo()` |
 | Look up a wallet transaction | `rpc.getTransaction(txid)` |
-| Build, sign, finalize | `walletCreateFundedPsbt` → `walletProcessPsbt` → `finalizePsbt` |
+| Build, sign, finalize | `walletCreateFundedPsbt` → `walletProcessPsbt` (which checks the PQC keys' budgets first) → `finalizePsbt` |
+| Check PQC keys can sign a PSBT | `rpc.checkPqcSigning(psbt)` → each key's `needed`, `remaining` and `state`, and `warnings`; see [checking PQC keys before signing](payments.md#checking-pqc-keys-before-signing) |
 | Preflight and broadcast | `rpc.testMempoolAccept([hex])`, `rpc.sendRawTransaction(hex)` (the node's 0.10 QBT/kvB fee-rate cap, or `{ maxFeeRateBitsPerKvB }`) |
 | Keep coins out of coin selection | `rpc.lockUnspent(outputs, { persistent: true })`, `rpc.unlockUnspent(outputs)` |
 | Unlock an encrypted wallet | `rpc.walletPassphrase(passphrase, seconds)`, `rpc.walletLock()`; a new wallet's first unlock is slow, see [its deadline](wallet.md#unlocking-an-encrypted-wallet) |

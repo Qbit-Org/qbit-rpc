@@ -1,8 +1,6 @@
-import { readFileSync } from 'node:fs'
-
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { QbitRpcClient, requests, type PqcKeyState } from '../src'
+import { QbitRpcClient, type PqcKeyState } from '../src'
 import { chainResults, FakeNode } from './helpers/fake-node'
 
 // qbit Core v1.0.0's PQC signature budget (src/wallet/pqc_usage.{h,cpp},
@@ -94,7 +92,7 @@ afterEach(async () => {
 
 async function processReply(reply: Record<string, unknown>) {
   node.results({ walletprocesspsbt: JSON.stringify(reply) })
-  return rpc.walletProcessPsbt(PSBT)
+  return rpc.walletProcessPsbt(PSBT, { pqcCheck: false })
 }
 
 describe('walletprocesspsbt in each PQC budget state', () => {
@@ -186,11 +184,11 @@ describe('walletprocesspsbt in each PQC budget state', () => {
     node.results({
       walletprocesspsbt: JSON.stringify({ psbt: PSBT, complete: false, ...oneKey(LIMIT, 'depleted') }),
     })
-    expect(await rpc.walletProcessPsbt(PSBT)).toMatchObject(typedOneKey(LIMIT, 'depleted'))
+    expect(await rpc.walletProcessPsbt(PSBT, { pqcCheck: false })).toMatchObject(typedOneKey(LIMIT, 'depleted'))
     node.results({
       walletprocesspsbt: JSON.stringify({ psbt: PSBT, complete: false, ...oneKey(LIMIT, '') }),
     })
-    const error = await rpc.walletProcessPsbt(PSBT).catch((e: unknown) => e)
+    const error = await rpc.walletProcessPsbt(PSBT, { pqcCheck: false }).catch((e: unknown) => e)
     expect((error as Error).cause).toMatchObject({
       reason: 'validation',
       path: 'result.pqc_key_states[0].pqc_limit_state',
@@ -256,161 +254,5 @@ describe('getaddressinfo in each PQC budget state', () => {
     expect(result.pqcOverallLimitState).toBe('exhausted')
     expect(result.pqcKeyStates).toEqual([typedKey(OTHER_PUBKEY, LIMIT, 'exhausted'), typedKey(PUBKEY, 7, 'normal')])
     expect(result).not.toHaveProperty('pqcSignatureCount')
-  })
-})
-
-describe("the payout example's check before signing", () => {
-  const A = 'qbrt1zy4lcyrvkrz6xaqe8ra9wlkwc0ven0yla2zvzul608f4egqqmhflse3was7'
-  const B = 'qbrt1zst3uq7dclyhe3q93en60jn6v745gxecudfsa86fhxqm7hsrz244q6urs83'
-  const addressInfo = (address: string, fields: Record<string, unknown>): string =>
-    JSON.stringify({
-      address,
-      scriptPubKey: `5220${'00'.repeat(32)}`,
-      ismine: true,
-      solvable: true,
-      isscript: true,
-      iswitness: true,
-      witness_version: 2,
-      witness_program: '00'.repeat(32),
-      ischange: false,
-      labels: [''],
-      ...fields,
-    })
-
-  /** A node whose PSBT spends from `inputs` (an address, or none), each address's key in `states`. */
-  function answer(inputs: (string | undefined)[], states: Record<string, Record<string, unknown> | 'error'>): void {
-    node.rpc(call => {
-      if (call.method === 'decodepsbt') {
-        const decoded = inputs.map(address =>
-          address === undefined ? {} : { witness_utxo: { amount: 1, scriptPubKey: { address } } }
-        )
-        return { result: JSON.stringify({ tx: {}, inputs: decoded, outputs: [], fee: 0.0001 }) }
-      }
-      if (call.method === 'getaddressinfo') {
-        const address = call.params[0] as string
-        const fields = states[address]!
-        if (fields === 'error') return { error: { code: -5, message: 'Invalid address' } }
-        return { result: addressInfo(address, fields) }
-      }
-      return { error: { code: -32601, message: 'Method not found' } }
-    })
-  }
-
-  /** The example's lines, as written: returns what it warned. */
-  async function check(funded: { psbt: string }): Promise<string[]> {
-    const warned: string[] = []
-    const console = { warn: (line: string) => void warned.push(line) }
-    // From here to the end of the loop, as in docs/rpc/payments.md.
-    const { inputs } = (await rpc.call('decodepsbt', [funded.psbt])) as {
-      inputs: { witness_utxo?: { scriptPubKey: { address?: string } } }[]
-    }
-    const addresses = inputs.map(input => input.witness_utxo?.scriptPubKey.address)
-    if (!addresses.every(address => address !== undefined)) throw new Error('an input without an address')
-    const spent = [...new Set(addresses)]
-    const budgets = await rpc.batch(spent.map(address => requests.getAddressInfo(address)))
-    const signing = new Map<string, number>() // signatures each PQC key makes here, one per input
-    for (const [i, info] of budgets.entries()) {
-      if (!info.ok) throw info.error
-      const state = info.value.pqcOverallLimitState // undefined: no PQC key of this wallet
-      if (state === undefined) continue
-      const known = state === 'normal' || state === 'warning' || state === 'critical'
-      if (!known) throw new Error(`${spent[i]}: PQC key ${state}, rotate first`) // exhausted, or unknown
-      const keys = info.value.pqcKeyStates ?? []
-      if (keys.length === 0) throw new Error(`${spent[i]}: a PQC state without its keys`)
-      const inputsHere = addresses.filter(address => address === spent[i]).length
-      for (const { pubkey, pqcSignaturesRemaining: left } of keys) {
-        const signs = (signing.get(pubkey) ?? 0) + inputsHere
-        signing.set(pubkey, signs)
-        // Signing must not run a key out halfway: the inputs after it would stay unsigned.
-        if (left < signs) throw new Error(`PQC key ${pubkey}: ${left} signatures left, ${signs} inputs to sign`)
-      }
-      if (state !== 'critical') continue
-      console.warn(`${spent[i]}: PQC key critical: stop using it, and spend its coins to a new address now`)
-    }
-    return warned
-  }
-
-  it('is the docs text, line for line', () => {
-    const readme = readFileSync(new URL('../../../docs/rpc/payments.md', import.meta.url), 'utf8')
-    const source = readFileSync(new URL(import.meta.url), 'utf8').split('\n')
-    const from = source.findIndex(line => line.includes('// From here to the end of the loop')) + 1
-    const to = source.findIndex((line, i) => i > from && line.trim() === 'return warned')
-    expect(from, 'the marker comment').toBeGreaterThan(0)
-    expect(to, 'the end of the block').toBeGreaterThan(from)
-    const block = source.slice(from, to).map(line => line.slice(4))
-    expect(block.length).toBeGreaterThan(10)
-    expect(readme).toContain(block.join('\n'))
-  })
-
-  it('reads each address once, in one batch, and lets normal, warning and keyless inputs through', async () => {
-    answer([A, B, A], { [A]: oneKey(5, 'normal'), [B]: oneKey(WARNING_FROM, 'warning') })
-    node.requests.length = 0
-    expect(await check({ psbt: PSBT })).toEqual([])
-    const [decode, batch] = node.requests.map(request => JSON.parse(request.body) as unknown)
-    expect(node.requests).toHaveLength(2)
-    expect(decode).toMatchObject({ method: 'decodepsbt', params: [PSBT] })
-    expect(batch).toMatchObject([
-      { method: 'getaddressinfo', params: [A] },
-      { method: 'getaddressinfo', params: [B] },
-    ])
-    answer([A], { [A]: {} })
-    expect(await check({ psbt: PSBT })).toEqual([])
-  })
-
-  it('lets a critical key sign, with a warning to rotate now', async () => {
-    answer([A, B], { [A]: oneKey(5, 'normal'), [B]: oneKey(CRITICAL_FROM, 'critical') })
-    expect(await check({ psbt: PSBT })).toEqual([
-      `${B}: PQC key critical: stop using it, and spend its coins to a new address now`,
-    ])
-  })
-
-  it('refuses a key with fewer signatures left than the inputs it signs, with one key or several', async () => {
-    answer([A, B, B, B], { [A]: oneKey(5, 'normal'), [B]: oneKey(LIMIT - 2, 'critical', OTHER_PUBKEY) })
-    await expect(check({ psbt: PSBT })).rejects.toThrow(`PQC key ${OTHER_PUBKEY}: 2 signatures left, 3 inputs to sign`)
-    answer([A, B, B], { [A]: oneKey(5, 'normal'), [B]: oneKey(LIMIT - 2, 'critical', OTHER_PUBKEY) })
-    expect(await check({ psbt: PSBT })).toEqual([
-      `${B}: PQC key critical: stop using it, and spend its coins to a new address now`,
-    ])
-    const twoKeys = {
-      pqc_key_states: [nodeKey(PUBKEY, 5, 'normal'), nodeKey(OTHER_PUBKEY, LIMIT - 1, 'critical')],
-      pqc_overall_limit_state: 'critical',
-    }
-    answer([A, A], { [A]: twoKeys })
-    await expect(check({ psbt: PSBT })).rejects.toThrow(`PQC key ${OTHER_PUBKEY}: 1 signatures left, 2 inputs to sign`)
-  })
-
-  it('counts the inputs of every address a key signs for against that key', async () => {
-    answer([A, B], { [A]: oneKey(LIMIT - 1, 'critical'), [B]: oneKey(LIMIT - 1, 'critical') })
-    await expect(check({ psbt: PSBT })).rejects.toThrow(`PQC key ${PUBKEY}: 1 signatures left, 2 inputs to sign`)
-    answer([A, B], { [A]: oneKey(LIMIT - 1, 'critical'), [B]: oneKey(LIMIT - 1, 'critical', OTHER_PUBKEY) })
-    expect(await check({ psbt: PSBT })).toEqual([
-      `${A}: PQC key critical: stop using it, and spend its coins to a new address now`,
-      `${B}: PQC key critical: stop using it, and spend its coins to a new address now`,
-    ])
-  })
-
-  it('refuses a state reported without its keys', async () => {
-    for (const fields of [
-      { pqc_overall_limit_state: 'normal' },
-      { pqc_overall_limit_state: 'normal', pqc_key_states: [] },
-    ]) {
-      answer([A], { [A]: fields })
-      await expect(check({ psbt: PSBT })).rejects.toThrow(`${A}: a PQC state without its keys`)
-    }
-  })
-
-  it.each([
-    ['exhausted', oneKey(LIMIT, 'exhausted')],
-    ['a state qbit Core does not name', oneKey(LIMIT, 'depleted')],
-  ])('refuses %s', async (_name, fields) => {
-    answer([A, B], { [A]: oneKey(5, 'normal'), [B]: fields })
-    await expect(check({ psbt: PSBT })).rejects.toThrow(`${B}: PQC key ${String(fields['pqc_overall_limit_state'])}`)
-  })
-
-  it('refuses an input without an address, and an address it cannot read', async () => {
-    answer([A, undefined], { [A]: oneKey(5, 'normal') })
-    await expect(check({ psbt: PSBT })).rejects.toThrow('an input without an address')
-    answer([A], { [A]: 'error' })
-    await expect(check({ psbt: PSBT })).rejects.toMatchObject({ name: 'RpcError', rpcCode: -5 })
   })
 })

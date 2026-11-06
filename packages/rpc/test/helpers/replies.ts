@@ -99,6 +99,17 @@ export function loadFixtures(): Fixture[] {
 }
 
 /** A deep copy of a reply value: JsonNumbers are immutable and shared. */
+/**
+ * The client method's arguments for a fixture: its builder's, and for
+ * `walletProcessPsbt` with `pqcCheck: false`, since a node answering only the
+ * captured call answers none of the PQC check's.
+ */
+export function clientArgs(f: Fixture): unknown[] {
+  if (f.builder !== 'walletProcessPsbt') return [...f.args]
+  const [psbt, options] = f.args
+  return [psbt, { ...(options as object | undefined), pqcCheck: false }]
+}
+
 export function clone(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(clone)
   if (typeof value === 'object' && value !== null && !(value instanceof JsonNumber)) {

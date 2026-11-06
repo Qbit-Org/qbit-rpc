@@ -11,11 +11,13 @@ txid to reconcile by.
 ## Paying out from a wallet
 
 Pay out from a testnet4 wallet, saving the signed transaction before it is
-broadcast. Before signing, it reads the [PQC signature budget](wallet.md#pqc-signature-budgets)
-of every key the PSBT spends from; a test runs those lines as written.
+broadcast. Before signing, it counts what signing takes from the
+[PQC signature budget](wallet.md#pqc-signature-budgets) of each key the PSBT
+spends from (see [checking PQC keys before signing](#checking-pqc-keys-before-signing));
+a test runs those lines as written.
 
 ```ts
-import { QbitRpcClient, requests, RpcUnknownOutcomeError } from '@qbit-oss/rpc'
+import { QbitRpcClient, RpcUnknownOutcomeError } from '@qbit-oss/rpc'
 
 const rpc = new QbitRpcClient({
   url: 'http://127.0.0.1:48352/',
@@ -31,35 +33,10 @@ const funded = await rpc.walletCreateFundedPsbt({
   outputs: [{ address: 'tq1...', amountBits: 150_000_000n }], // 1.5 QBT
   options: { feeRateBitsPerKvB: 1_000n, changeType: 'p2mr' },
 })
-// An exhausted PQC key signs nothing and raises no error: before signing, read
-// the budget of each key this PSBT spends from, unconfirmed change included.
-const { inputs } = (await rpc.call('decodepsbt', [funded.psbt])) as {
-  inputs: { witness_utxo?: { scriptPubKey: { address?: string } } }[]
-}
-const addresses = inputs.map(input => input.witness_utxo?.scriptPubKey.address)
-if (!addresses.every(address => address !== undefined)) throw new Error('an input without an address')
-const spent = [...new Set(addresses)]
-const budgets = await rpc.batch(spent.map(address => requests.getAddressInfo(address)))
-const signing = new Map<string, number>() // signatures each PQC key makes here, one per input
-for (const [i, info] of budgets.entries()) {
-  if (!info.ok) throw info.error
-  const state = info.value.pqcOverallLimitState // undefined: no PQC key of this wallet
-  if (state === undefined) continue
-  const known = state === 'normal' || state === 'warning' || state === 'critical'
-  if (!known) throw new Error(`${spent[i]}: PQC key ${state}, rotate first`) // exhausted, or unknown
-  const keys = info.value.pqcKeyStates ?? []
-  if (keys.length === 0) throw new Error(`${spent[i]}: a PQC state without its keys`)
-  const inputsHere = addresses.filter(address => address === spent[i]).length
-  for (const { pubkey, pqcSignaturesRemaining: left } of keys) {
-    const signs = (signing.get(pubkey) ?? 0) + inputsHere
-    signing.set(pubkey, signs)
-    // Signing must not run a key out halfway: the inputs after it would stay unsigned.
-    if (left < signs) throw new Error(`PQC key ${pubkey}: ${left} signatures left, ${signs} inputs to sign`)
-  }
-  if (state !== 'critical') continue
-  console.warn(`${spent[i]}: PQC key critical: stop using it, and spend its coins to a new address now`)
-}
-const signed = await rpc.walletProcessPsbt(funded.psbt)
+// An exhausted PQC key signs nothing and raises no error, so count first what signing takes from each key.
+const plan = await rpc.checkPqcSigning(funded.psbt) // PqcSigningError if a PQC key cannot sign each input it holds
+for (const warning of plan.warnings) console.warn(warning) // a critical key: move its coins on now
+const signed = await rpc.walletProcessPsbt(funded.psbt) // checks again first, by default
 if (!signed.complete || signed.hex === undefined) throw new Error('not fully signed')
 const budget = signed.pqcOverallLimitState
 if (budget !== undefined && budget !== 'normal' && budget !== 'warning') {
@@ -80,6 +57,72 @@ try {
   throw error
 }
 ```
+
+## Checking PQC keys before signing
+
+An exhausted PQC key signs nothing and raises no error: `walletProcessPsbt`
+resolves with `complete: false` and leaves that key's inputs unsigned, and a
+key with one signature left signs the first of its inputs and not the next
+(see [PQC signature budgets](wallet.md#pqc-signature-budgets)).
+`checkPqcSigning(psbt)` counts, before anything is signed, what signing would
+take from each of the wallet's PQC keys. It needs `wallet-read`.
+
+- `decodepsbt` gives the output each input spends: the output of its
+  `non_witness_utxo`, the previous transaction, when it has one (the node
+  checks it against the input's txid, and the wallet signs by it), else its
+  `witness_utxo`.
+- `getaddressinfo`, for each of those addresses once, in one batch (of up to
+  1,000 addresses), gives the address's PQC keys, their signatures left and
+  their states.
+- Each input needs one signature from each key its address holds: a key needs
+  one per input of each address that holds it, and an address with several
+  keys needs one from each. An address without PQC fields holds no PQC key of
+  this wallet and needs none, so a wallet without PQC keys passes.
+
+It resolves with a `PqcSigningPlan`: `keys`, each with its `pubkey`, the
+input `addresses` that hold it, `needed`, `remaining` and `state`, in the
+order of the first input that needs each; `state`, the worst of them and of
+their addresses (`normal` with none); and `warnings`, one line per `critical`
+key. It rejects with `PqcSigningError` when signing could leave inputs
+unsigned or the counts cannot be trusted:
+
+| `reason` | When |
+| --- | --- |
+| `no_address` | An input names no output with an address (`inputIndex`). A PSBT from `createpsbt` names none: `walletProcessPsbt(psbt, { sign: false })` fills in the wallet's own inputs, and signs nothing. |
+| `no_keys` | The node reports a PQC state for an input's address without its keys (`address`). |
+| `exhausted` | A key (`pubkey`) or an address's overall state is `exhausted`. |
+| `unknown_state` | A key or address is in a state this version does not know (`state`): refused, not guessed. |
+| `would_run_out` | A key has fewer signatures left (`remaining`) than the PSBT needs from it (`needed`). |
+
+They are checked address by address in input order, then key by key. A reply
+that does not validate, a `getaddressinfo` error (-5 for an address that is
+not valid on the node's chain) and a timeout are thrown as they are, with the
+`method` of the call that failed.
+
+**`walletProcessPsbt` runs the same check first** whenever it signs, and sends
+nothing to sign when it refuses or fails. So it needs `wallet-read` as well as
+`wallet-write`. The check's `decodepsbt`, its batches and the signing share one
+deadline, the call's (`timeoutMs` from when it starts), and its signal: a
+deadline or abort during the check, or one the check used up before the
+signing went out, is an `RpcTimeoutError` or `RpcAbortedError` with nothing
+signed; once `walletprocesspsbt` is sent, it is an `RpcUnknownOutcomeError`, as
+for any signing. With `sign: false` nothing is signed and nothing is checked.
+`{ pqcCheck: false }` skips the check. That is unsafe: it is for a caller that
+counts the budgets itself. `call('walletprocesspsbt', ...)` is never checked.
+
+What the check cannot see:
+
+- It reads the counts just before signing. Signatures made meanwhile with the
+  same keys, by another client or another call on this one, are not in them:
+  close to a key's limit, sign one PSBT at a time.
+- It reads each input as the PSBT describes it. A PSBT built elsewhere can give
+  an input a `witness_utxo` that is not the output it spends, and the wallet
+  signs for the output it spends. The check is for PSBTs this wallet built
+  (`walletCreateFundedPsbt`, `psbtBumpFee`), or filled in with `sign: false`.
+- It counts every input, also one already signed and finalized, which the
+  wallet skips: at worst it refuses a PSBT the wallet could finish.
+- The counts are the wallet's: a wallet restored from a backup counts from the
+  backup's (see [PQC signature budgets](wallet.md#pqc-signature-budgets)).
 
 ## Fee-rate caps
 

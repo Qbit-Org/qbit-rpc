@@ -831,6 +831,48 @@ export interface PqcKeyState {
 export type PqcLimitState = 'normal' | 'warning' | 'critical' | 'exhausted' | (string & {});
 
 // @public
+export class PqcSigningError extends QbitRpcError {
+    constructor(reason: PqcSigningRefusal, details?: {
+        readonly inputIndex?: number;
+        readonly address?: string;
+        readonly pubkey?: string;
+        readonly state?: string;
+        readonly needed?: number;
+        readonly remaining?: number;
+    });
+    readonly address?: string;
+    readonly inputIndex?: number;
+    // (undocumented)
+    static is(value: unknown): value is PqcSigningError;
+    readonly needed?: number;
+    readonly pubkey?: string;
+    // (undocumented)
+    readonly reason: PqcSigningRefusal;
+    readonly remaining?: number;
+    readonly state?: string;
+}
+
+// @public
+export interface PqcSigningKey {
+    readonly addresses: readonly string[];
+    readonly needed: number;
+    // (undocumented)
+    readonly pubkey: string;
+    readonly remaining: number;
+    readonly state: 'normal' | 'warning' | 'critical';
+}
+
+// @public
+export interface PqcSigningPlan {
+    readonly keys: readonly PqcSigningKey[];
+    readonly state: 'normal' | 'warning' | 'critical';
+    readonly warnings: readonly string[];
+}
+
+// @public
+export type PqcSigningRefusal = 'no_address' | 'no_keys' | 'exhausted' | 'unknown_state' | 'would_run_out';
+
+// @public
 export interface PqcUsage {
     // (undocumented)
     readonly pqcKeyStates?: readonly PqcKeyState[];
@@ -880,6 +922,7 @@ export class QbitRpcClient {
     call(method: string, params?: readonly unknown[], callOptions?: CallOptions): Promise<unknown>;
     get chainStatus(): ChainStatus;
     checkBlockProposal(blockHex: string, callOptions?: CallOptions): Promise<BlockSubmissionResult>;
+    checkPqcSigning(psbt: string, callOptions?: CallOptions): Promise<PqcSigningPlan>;
     close(): void;
     confirmChain(callOptions?: CallOptions): Promise<BlockchainInfo>;
     createAuxBlock(payoutAddress: string, callOptions?: CallOptions): Promise<AuxBlock>;
@@ -1025,6 +1068,7 @@ export class QbitRpcClient {
         readonly sighashType?: SighashType;
         readonly bip32derivs?: boolean;
         readonly finalize?: boolean;
+        readonly pqcCheck?: boolean;
     }, callOptions?: CallOptions): Promise<ProcessedPsbt>;
 }
 

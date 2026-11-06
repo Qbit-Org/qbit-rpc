@@ -109,7 +109,8 @@ import {
 } from './methods'
 import { argArray, argOptions, CALL_OPTION_KEYS, keysOf, ownElements, ownValue, plainOptions } from './own'
 import { ExchangeFailure, HttpTransport, prototypePollution } from './transport'
-import { ResultIssue } from './validate'
+import { inputAddresses, planPqcSigning, psbtInputAddresses, type PqcSigningPlan } from './pqc-signing'
+import { compact, ResultIssue } from './validate'
 import { nodeVersionRequest, type NodeVersion } from './version'
 
 /** How the client treats a method opened with `extraMethods`, as it treats an allowlisted one with the same policy. */
@@ -396,6 +397,8 @@ const CLIENT_OPTIONS = keysOf<QbitRpcClientOptions>({
   directNode: true,
   allowUnsupportedNodeVersion: true,
 })
+/** The options `walletProcessPsbt` takes: the builder's, and `pqcCheck`. */
+const PROCESS_PSBT_OPTIONS = ['sign', 'sighashType', 'bip32derivs', 'finalize', 'pqcCheck'] as const
 /** What `batch()` reads of an entry: `waitMs` only to refuse a long poll. */
 const BATCH_ENTRY = ['method', 'params', 'parse', 'waitMs'] as const
 
@@ -912,7 +915,17 @@ export class QbitRpcClient {
   walletCreateFundedPsbt(args: WalletCreateFundedPsbtArgs, callOptions?: CallOptions): Promise<FundedPsbt> {
     return this.#lazy(() => requests.walletCreateFundedPsbt(args), callOptions)
   }
-  /** See {@link requests.walletProcessPsbt}. */
+  /**
+   * See {@link requests.walletProcessPsbt}. When it signs (`sign` is not
+   * false), it first runs {@link QbitRpcClient.checkPqcSigning} on `psbt` and
+   * sends nothing to sign when that refuses: an exhausted PQC key signs nothing
+   * and raises no error, and one that runs out partway leaves the inputs after
+   * it unsigned. So it needs `wallet-read` too. The check's `decodepsbt`,
+   * `getaddressinfo` batch and the signing share one deadline, the call's, and
+   * its signal; a failure of the check is thrown as it is, with nothing signed.
+   * `pqcCheck: false` skips the check, which is unsafe: only for a caller that
+   * counts the budgets itself, or knows the wallet has no PQC key.
+   */
   walletProcessPsbt(
     psbt: string,
     options?: {
@@ -920,10 +933,27 @@ export class QbitRpcClient {
       readonly sighashType?: SighashType
       readonly bip32derivs?: boolean
       readonly finalize?: boolean
+      readonly pqcCheck?: boolean
     },
     callOptions?: CallOptions
   ): Promise<ProcessedPsbt> {
-    return this.#lazy(() => requests.walletProcessPsbt(psbt, options), callOptions)
+    return this.#processPsbt(psbt, options, callOptions)
+  }
+  /**
+   * Count the PQC signatures signing `psbt` with this wallet would take from
+   * each of its keys, before signing: `decodepsbt` gives the address of the
+   * output each input spends, and `getaddressinfo`, for each address once in
+   * one batch, its keys' states and signatures left. Each input needs one
+   * signature from each key its address holds. Rejects with `PqcSigningError`
+   * when an input names no address, a PQC state comes without its keys, a key
+   * is `exhausted` or in a state this version does not know, or a key has
+   * fewer signatures left than it needs. Resolves with each key's count, the
+   * worst state, and a warning per `critical` key; an input whose address
+   * holds no PQC key of this wallet needs none. Needs `wallet-read`; nothing is
+   * signed. `walletProcessPsbt` runs it by default.
+   */
+  checkPqcSigning(psbt: string, callOptions?: CallOptions): Promise<PqcSigningPlan> {
+    return this.#checkPqcSigning(psbt, callOptions)
   }
   /** See {@link requests.finalizePsbt}. */
   finalizePsbt(
@@ -1107,6 +1137,64 @@ export class QbitRpcClient {
   /** Build the request inside the promise, so an invalid argument rejects instead of throwing. */
   async #lazy<T>(build: () => RpcRequest<T>, callOptions?: CallOptions): Promise<T> {
     return this.#single(build(), callOptions)
+  }
+
+  async #checkPqcSigning(psbt: string, callOptions: CallOptions | undefined): Promise<PqcSigningPlan> {
+    const decode = psbtInputAddresses(psbt)
+    refusePollution(decode.method)
+    return this.#planPqcSigning(decode, sharedDeadline(this.#callSettings(callOptions)))
+  }
+
+  /**
+   * `walletprocesspsbt`, after the PQC check unless it signs nothing or
+   * `pqcCheck` is false. The check's calls and the signing run under one
+   * deadline, and the signing is sent only once the check has passed.
+   */
+  async #processPsbt(psbt: string, options: unknown, callOptions: CallOptions | undefined): Promise<ProcessedPsbt> {
+    const own = argOptions(options, 'options', PROCESS_PSBT_OPTIONS, { callOptions: true })
+    const pqcCheck = own['pqcCheck']
+    if (pqcCheck !== undefined && typeof pqcCheck !== 'boolean')
+      throw new TypeError('options.pqcCheck must be a boolean')
+    // The rest is the builder's to check, on an object without a prototype, as own is.
+    const forwarded = compact<Record<string, unknown>>({
+      sign: own['sign'],
+      sighashType: own['sighashType'],
+      bip32derivs: own['bip32derivs'],
+      finalize: own['finalize'],
+    })
+    const request = requests.walletProcessPsbt(psbt, forwarded as Parameters<typeof requests.walletProcessPsbt>[1])
+    // With sign false the wallet fills in what it knows and signs nothing, so no key's budget is spent.
+    if (pqcCheck === false || own['sign'] === false) return this.#single(request, callOptions)
+    const method = request.method
+    refusePollution(method)
+    // Refused before the check sends anything: the call's own capability and the guard's first decision, then the check's.
+    this.#authorize(method, false)
+    if (!this.#capabilities.has('wallet-read')) throw new RpcCapabilityError(method, 'not_enabled', 'wallet-read')
+    const settings = sharedDeadline(this.#callSettings(callOptions))
+    await this.#planPqcSigning(psbtInputAddresses(psbt), settings)
+    return this.#single(request, undefined, settings)
+  }
+
+  /** The PQC check: `decode`, then each input address's `getaddressinfo`, in batches, under `settings`. */
+  async #planPqcSigning(decode: RpcRequest<(string | undefined)[]>, settings: CallSettings): Promise<PqcSigningPlan> {
+    // getaddressinfo's wallet-read, checked before decodepsbt is sent.
+    this.#authorize('getaddressinfo', true)
+    const spent = inputAddresses(await this.#single(decode, undefined, settings))
+    const unique = [...new Set(spent)]
+    const infos = new Map<string, AddressInfo>()
+    for (let from = 0; from < unique.length; from += MAX_BATCH) {
+      const addresses = unique.slice(from, from + MAX_BATCH)
+      const replies = await this.#batch(
+        addresses.map(address => requests.getAddressInfo(address)),
+        undefined,
+        settings
+      )
+      replies.forEach((reply, index) => {
+        if (!reply.ok) throw reply.error
+        infos.set(addresses[index]!, reply.value as AddressInfo)
+      })
+    }
+    return planPqcSigning(spent, infos)
   }
 
   #chainExpired(at: number): boolean {
@@ -1449,14 +1537,15 @@ export class QbitRpcClient {
     return policy
   }
 
-  async #single<T>(request: RpcRequest<T>, callOptions?: CallOptions): Promise<T> {
+  /** `shared`: the settings of an operation this call is part of, with its deadline, in place of `callOptions`. */
+  async #single<T>(request: RpcRequest<T>, callOptions?: CallOptions, shared?: CallSettings): Promise<T> {
     const { method } = request
     refusePollution(method)
     const policy = this.#authorize(method, false)
     const id = this.#nextId++
     const { waitMs } = request
     // A long poll's deadline is at least its wait plus the margin, checked before anything is sent.
-    const settings = this.#callSettings(callOptions, ownValue(policy, 'timeoutMs'), waitMs)
+    const settings = shared ?? this.#callSettings(callOptions, ownValue(policy, 'timeoutMs'), waitMs)
     // Sent at most once: a call with side effects, and a long poll a retry would not repeat.
     const once = policy.sideEffects || (waitMs !== undefined && !longPollRetryable(request))
     // Serialized once: what the node receives is what the checks below read.
@@ -1532,10 +1621,14 @@ export class QbitRpcClient {
     })
   }
 
-  async #batch(entries: readonly RpcRequest<unknown>[], callOptions: unknown): Promise<BatchItem<unknown>[]> {
+  async #batch(
+    entries: readonly RpcRequest<unknown>[],
+    callOptions: unknown,
+    shared?: CallSettings
+  ): Promise<BatchItem<unknown>[]> {
     if (!Array.isArray(entries)) throw new TypeError('batch takes an array of requests')
     refusePollution(`batch(${entries.length})`)
-    const settings = this.#callSettings(callOptions)
+    const settings = shared ?? this.#callSettings(callOptions)
     // Refused from the length before anything is copied, and again on the copy, which is what is sent.
     const tooMany = (length: number): void => {
       if (length > MAX_BATCH) throw new RangeError(`a batch holds at most ${MAX_BATCH} requests`)
@@ -1633,9 +1726,13 @@ export class QbitRpcClient {
     const retries = once ? 0 : this.#readRetries
     const { timeoutMs, signal: callerSignal } = settings
     if (callerSignal?.aborted) throw new RpcAbortedError(label, callerSignal.reason)
-    const deadline = performance.now() + timeoutMs
+    const shared = settings.deadline
+    const deadline = shared ?? performance.now() + timeoutMs
+    // A deadline shared with the calls before this one may have passed: then nothing is sent.
+    const left = shared === undefined ? timeoutMs : shared - performance.now()
+    if (left <= 0) throw new RpcTimeoutError(label, timeoutMs)
     const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(TIMEOUT), timeoutMs)
+    const timer = setTimeout(() => controller.abort(TIMEOUT), left)
     const onAbort = (): void => controller.abort(callerSignal!.reason)
     callerSignal?.addEventListener('abort', onAbort, { once: true })
     const context = { signal: controller.signal, deadline, timeoutMs, maxResponseBytes: this.#maxResponseBytes }
@@ -1969,6 +2066,17 @@ interface Authorization {
 interface CallSettings {
   readonly timeoutMs: number
   readonly signal: AbortSignal | undefined
+  /**
+   * The deadline on the `performance.now()` clock, when the call is part of an
+   * operation that set it: dependent calls share one. Else `timeoutMs` from
+   * when the call starts.
+   */
+  readonly deadline?: number
+}
+
+/** `settings` with its deadline set from now, for an operation of several calls. */
+function sharedDeadline(settings: CallSettings): CallSettings {
+  return { ...settings, deadline: performance.now() + settings.timeoutMs }
 }
 
 interface AttemptContext {

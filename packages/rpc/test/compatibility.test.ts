@@ -674,14 +674,14 @@ describe('values a later qbit Core may add', () => {
     const rpc = client()
     await rpc.confirmChain()
     node.results({ walletprocesspsbt: processed('depleted') })
-    expect(await rpc.walletProcessPsbt('cHNidP8=')).toMatchObject({
+    expect(await rpc.walletProcessPsbt('cHNidP8=', { pqcCheck: false })).toMatchObject({
       pqcOverallLimitState: 'depleted',
       pqcLimitState: 'depleted',
       pqcKeyStates: [{ pubkey: HASH_A, pqcLimitState: 'depleted' }],
     })
     // A state that is not a string still fails; after signing that is an unknown outcome.
     node.results({ walletprocesspsbt: processed(3) })
-    const error = await rejection(rpc.walletProcessPsbt('cHNidP8='))
+    const error = await rejection(rpc.walletProcessPsbt('cHNidP8=', { pqcCheck: false }))
     expect(RpcUnknownOutcomeError.is(error)).toBe(true)
     expect((error as Error).cause).toMatchObject({
       reason: 'validation',

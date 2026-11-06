@@ -21,6 +21,7 @@ import {
   RpcResponseTooLargeError,
   RpcTimeoutError,
   RpcUnknownOutcomeError,
+  PqcSigningError,
   type Outpoint,
   type QbitRpcClientOptions,
 } from '../../src'
@@ -810,7 +811,7 @@ describe.runIf(enabled)('qbit Core v1.0.0 regtest', () => {
     // A deposit from another wallet: unconfirmed and untrusted, then mined.
     // sendrawtransaction returns once the wallets have seen the transaction;
     // the CLI's sendtoaddress does not wait for that.
-    const funder = client({ wallet: 'smoke', capabilities: ['wallet-write', 'broadcast'] })
+    const funder = client({ wallet: 'smoke', capabilities: ['wallet-read', 'wallet-write', 'broadcast'] })
     await funder.confirmChain()
     const funding = await funder.walletCreateFundedPsbt({ outputs: [{ address: deposit, amountBits: 2_000_000_000n }] })
     const fundTxid = await funder.sendRawTransaction((await funder.walletProcessPsbt(funding.psbt)).hex!)
@@ -1022,7 +1023,7 @@ describe.runIf(enabled)('qbit Core v1.0.0 regtest', () => {
       tx.vout.find(output => output.scriptPubKey.address === address)!.value.toBits()
 
     // Six confirmed coins of 10 QBT.
-    const funder = client({ wallet: 'smoke', capabilities: ['wallet-write', 'broadcast'] })
+    const funder = client({ wallet: 'smoke', capabilities: ['wallet-read', 'wallet-write', 'broadcast'] })
     await funder.confirmChain()
     const coins: { address: string; amountBits: bigint }[] = []
     for (let i = 0; i < 6; i++) {
@@ -1523,13 +1524,19 @@ describe.runIf(enabled)('qbit Core v1.0.0 regtest', () => {
 
       const line = (key: Key, text: string, count: number) =>
         `PQC key ${keys[key].pubkey} ${text} (${count} of ${LIMIT} signatures used, ${LIMIT - count} remaining)`
-      const sign = async (key: Key, inputs = keys[key].coins.slice(0, 1)) => {
-        const funded = await wallet.walletCreateFundedPsbt({
+      const fund = (inputs: Outpoint[]) =>
+        wallet.walletCreateFundedPsbt({
           inputs,
           outputs: [{ address: destination, amountBits: 10_000_000n }],
           options: { addInputs: false, feeRateBitsPerKvB: 2000n },
         })
-        return wallet.walletProcessPsbt(funded.psbt)
+      // Through the PQC check before signing, unless pqcCheck is false.
+      const sign = async (key: Key, inputs = keys[key].coins.slice(0, 1), pqcCheck = true) =>
+        wallet.walletProcessPsbt((await fund(inputs)).psbt, { pqcCheck })
+      const refused = async (promise: Promise<unknown>) => {
+        const error = await promise.catch((e: unknown) => e)
+        expect(PqcSigningError.is(error), String(error)).toBe(true)
+        return error
       }
       // [key, the count after one more signature, its warning lines]
       const steps: [Key, number, string[] | undefined][] = [
@@ -1554,9 +1561,18 @@ describe.runIf(enabled)('qbit Core v1.0.0 regtest', () => {
         expect(processed.hex).toMatch(/^[0-9a-f]+$/)
       }
 
-      // One signature left and two inputs of the key: the first input is signed,
-      // the second is not, and the node answers without an error.
-      const last = await sign('last', keys.last.coins)
+      // One signature left and two inputs of the key. The check refuses it before
+      // signing, and the count reads back unchanged: nothing was signed.
+      expect(await refused(sign('last', keys.last.coins))).toMatchObject({
+        reason: 'would_run_out',
+        pubkey: keys.last.pubkey,
+        needed: 2,
+        remaining: 1,
+      })
+      expect(await wallet.getAddressInfo(keys.last.address)).toMatchObject(oneKey('last', LIMIT - 1))
+      // Without the check, the first input is signed, the second is not, and the
+      // node answers without an error.
+      const last = await sign('last', keys.last.coins, false)
       expect(last).toMatchObject({
         complete: false,
         ...oneKey('last', LIMIT),
@@ -1564,38 +1580,57 @@ describe.runIf(enabled)('qbit Core v1.0.0 regtest', () => {
       })
       expect(last).not.toHaveProperty('hex')
       expect(await wallet.getAddressInfo(keys.last.address)).toMatchObject(oneKey('last', LIMIT))
-      // Exhausted: the key no longer signs, so it takes no part in the response.
-      expect(await sign('last')).toEqual({ psbt: expect.any(String), complete: false })
-      // Beside a key that can sign, only that one is reported, and as normal.
-      const mixed = await sign('last', [keys.last.coins[0]!, keys.normal.coins[0]!])
+      // Exhausted: the check refuses it. Without the check, the key no longer
+      // signs, so it takes no part in the response.
+      expect(await refused(sign('last'))).toMatchObject({
+        reason: 'exhausted',
+        pubkey: keys.last.pubkey,
+        address: keys.last.address,
+        state: 'exhausted',
+      })
+      expect(await sign('last', undefined, false)).toEqual({ psbt: expect.any(String), complete: false })
+      // Beside a key that can sign: refused too, and without the check only the
+      // key that signs is reported, and as normal.
+      const both = [keys.last.coins[0]!, keys.normal.coins[0]!]
+      expect(await refused(sign('last', both))).toMatchObject({ reason: 'exhausted', pubkey: keys.last.pubkey })
+      expect(await wallet.getAddressInfo(keys.normal.address)).toMatchObject(oneKey('normal', 0))
+      const mixed = await sign('last', both, false)
       expect(mixed).toMatchObject({ complete: false, ...oneKey('normal', 1) })
       expect(mixed).not.toHaveProperty('warnings')
 
-      // What the payout example in docs/rpc/payments.md reads before signing: decodepsbt
-      // gives each input's address, and getaddressinfo in one batch its key's state.
-      const funded = await wallet.walletCreateFundedPsbt({
-        inputs: [keys.last.coins[1]!, keys.critical.coins[0]!, keys.normal.coins[0]!],
-        outputs: [{ address: destination, amountBits: 10_000_000n }],
-        options: { addInputs: false, feeRateBitsPerKvB: 2000n },
+      // What the payout example in docs/rpc/payments.md checks before signing,
+      // read from decodepsbt and getaddressinfo: each key's count, and a
+      // warning for the critical one.
+      const funded = await fund([keys.critical.coins[0]!, keys.normal.coins[0]!])
+      const plan = await wallet.checkPqcSigning(funded.psbt)
+      const planned = (key: Key, count: number, state: string) => ({
+        pubkey: keys[key].pubkey,
+        addresses: [keys[key].address],
+        needed: 1,
+        remaining: LIMIT - count,
+        state,
       })
-      const { inputs } = (await wallet.call('decodepsbt', [funded.psbt])) as {
-        inputs: { witness_utxo?: { scriptPubKey: { address?: string } } }[]
-      }
-      const spent = inputs.map(input => input.witness_utxo?.scriptPubKey.address)
-      expect(new Set(spent)).toEqual(new Set([keys.last.address, keys.critical.address, keys.normal.address]))
-      const budgets = await wallet.batch(spent.map(address => requests.getAddressInfo(address!)))
-      expect(
-        Object.fromEntries(budgets.map((info, i) => [spent[i], info.ok ? info.value.pqcOverallLimitState : info.error]))
-      ).toEqual({
-        [keys.last.address]: 'exhausted',
-        [keys.critical.address]: 'critical',
-        [keys.normal.address]: 'normal',
-      })
-      // And each key's signatures left, which it compares with the inputs it signs.
-      const left = (info: (typeof budgets)[number]) =>
-        info.ok ? Math.min(...(info.value.pqcKeyStates ?? []).map(key => key.pqcSignaturesRemaining)) : -1
-      expect(left(budgets[spent.indexOf(keys.last.address)]!)).toBe(0)
-      expect(left(budgets[spent.indexOf(keys.critical.address)]!)).toBeGreaterThan(0)
+      expect(plan.keys).toHaveLength(2)
+      expect(plan.keys).toEqual(
+        expect.arrayContaining([planned('critical', CRITICAL_FROM, 'critical'), planned('normal', 1, 'normal')])
+      )
+      expect(plan.state).toBe('critical')
+      expect(plan.warnings).toEqual([expect.stringContaining(`PQC key ${keys.critical.pubkey} is critical`)])
+      // A PSBT that names no previous outputs (createpsbt) cannot be counted;
+      // filled in by the wallet with sign: false, which is not checked, it can.
+      const bare = cli(
+        'createpsbt',
+        JSON.stringify([keys.critical.coins[0]!, keys.normal.coins[0]!]),
+        JSON.stringify([{ [destination]: 0.1 }])
+      )
+      expect(await refused(wallet.checkPqcSigning(bare))).toMatchObject({ reason: 'no_address', inputIndex: 0 })
+      const filled = await wallet.walletProcessPsbt(bare, { sign: false, finalize: false })
+      expect((await wallet.checkPqcSigning(filled.psbt)).keys).toEqual(expect.arrayContaining([...plan.keys]))
+      // A wallet with PQC keys signs through the check, one signature from each key.
+      const signed = await wallet.walletProcessPsbt(funded.psbt)
+      expect(signed).toMatchObject({ complete: true, pqcOverallLimitState: 'critical' })
+      expect(await wallet.getAddressInfo(keys.critical.address)).toMatchObject(oneKey('critical', CRITICAL_FROM + 1))
+      expect(await wallet.getAddressInfo(keys.normal.address)).toMatchObject(oneKey('normal', 2))
       finished = true
     } finally {
       // An unload that fails after the test already failed does not hide that failure.

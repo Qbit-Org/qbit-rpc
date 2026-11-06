@@ -34,6 +34,11 @@ you made, or in `cause` the request that failed. Every error has its own
 | `RpcChainGuardError` | `reason: 'unsupported_version'` | A chain check found a qbit Core version outside 1.0.x releases; `nodeVersion` says which. | Not sent | Run a supported qbit Core, or a release of this package that supports the node's, then call `confirmChain()`; or accept the risk with `allowUnsupportedNodeVersion`. |
 | `RpcChainGuardError` | `reason: 'stale'` | Every chain check the call ran was overtaken by a connection error, an HTTP 401 or another check. | Not sent | Try again later. |
 | `RpcChainGuardError` | `reason: 'check_failed'` | The chain re-check before the call failed; `cause` is the failure. | Not sent | Safe to call again; `cause` tells whether soon is any use. |
+| `PqcSigningError` | `reason: 'no_address'` | The PQC check before signing (`walletProcessPsbt`, by default, or `checkPqcSigning`) found an input, `inputIndex`, that names no output with an address, so the signatures it needs cannot be counted. See [checking PQC keys before signing](payments.md#checking-pqc-keys-before-signing). | Not sent: nothing signed | Fill in the wallet's own inputs first with `walletProcessPsbt(psbt, { sign: false })`, which signs nothing. |
+| `PqcSigningError` | `reason: 'no_keys'` | The node reported a PQC state for an input's address, `address`, without its keys. | Not sent: nothing signed | Treat the node as misbehaving; do not sign without the counts. |
+| `PqcSigningError` | `reason: 'exhausted'` | A key, `pubkey`, or the address's overall state, is `exhausted`: it signs nothing more, and its inputs would stay unsigned. | Not sent: nothing signed | Rotate to a new key, and keep the address's coins out of coin selection (see [PQC signature budgets](wallet.md#pqc-signature-budgets)). |
+| `PqcSigningError` | `reason: 'unknown_state'` | A key or address is in a PQC state this version does not know, `state`: refused, as it may not sign. | Not sent: nothing signed | Check what the qbit Core release says of the state, and update this package. |
+| `PqcSigningError` | `reason: 'would_run_out'` | A key, `pubkey`, has fewer signatures left (`remaining`) than the PSBT needs from it (`needed`), so it would run out partway, leaving the inputs after it unsigned. | Not sent: nothing signed | Spend fewer of its inputs in one PSBT, and move its coins to a new address. |
 | `RpcError` | | The node answered with an error, under HTTP 200, 400, 404 or 500: `rpcCode` and `message` are the node's. | The node's answer: not an unknown outcome | Handle by `rpcCode`, for example -26 rejected, -25 missing inputs, -27 already confirmed, -14 wrong passphrase, -28 node warming up. |
 | `RpcTransportError` | `reason: 'network'` | The connection failed; `code` is the system's, such as `ECONNREFUSED`, or the error's of a [`connect` function](remote-nodes.md#proxies-connect). | Not sent when no connection was made (refused, DNS, a reset during the TLS handshake, `connect` failing); once one exists, an unknown outcome | Retry reads later. |
 | `RpcTransportError` | `reason: 'tls'` | The TLS handshake failed or was refused: the node's certificate is not trusted (`code` such as `UNABLE_TO_VERIFY_LEAF_SIGNATURE` or `CERT_HAS_EXPIRED`), names another host (`ERR_TLS_CERT_ALTNAME_INVALID`) or carries a key no `tls.pinSha256` names (`EPINMISMATCH`, this package's); a handshake resumed a TLS session, which the client never offers (`ESESSIONRESUMED`, this package's); or the terminator refused the handshake with an alert, such as for a client certificate missing or not trusted (`ERR_SSL_TLSV13_ALERT_CERTIFICATE_REQUIRED`, `ERR_SSL_SSL/TLS_ALERT_BAD_CERTIFICATE`, `ERR_SSL_TLSV1_ALERT_UNKNOWN_CA`, `EPROTO` before TLS 1.3). See [Remote nodes](remote-nodes.md). | Not sent when the handshake failed before the request was written, as it does under TLS 1.2 and for the client's own checks; an alert after that, under TLS 1.3, is the `cause` of an `RpcUnknownOutcomeError` for a side-effecting call | Fix the `tls` settings or the terminator's. Not retried. A key no pin names can be an attack. |
@@ -59,6 +64,12 @@ node's `RpcError` means it did not run:
 - the capability check: `RpcCapabilityError`;
 - the guard's first decision, and its last after any wait: `RpcChainGuardError`
   `unconfirmed`, `mismatch` or `unsupported_version`;
+- for `walletprocesspsbt`, the PQC check before signing: `PqcSigningError`,
+  an `RpcCapabilityError` for `wallet-read`, or the check's own failure, whose
+  `method` is `decodepsbt`, `getaddressinfo` or the batch's (an `RpcError`
+  among them is the node's answer to the check, not to the signing), and an
+  `RpcTimeoutError` about `walletprocesspsbt` when the check used up the
+  deadline;
 - a signal already aborted: `RpcAbortedError`;
 - the wait for a request slot: `RpcTimeoutError` or `RpcAbortedError`;
 - the cookie read: `RpcTransportError` `credentials`, or `RpcTimeoutError` or
@@ -88,7 +99,9 @@ Retries, deadlines and connections work like this:
   gets the same refusal on each of its retries, unsent.
 - **Deadline.** `timeoutMs` covers the whole operation: any wait for a request
   slot, cookie read, every attempt, every backoff and every item of a batch. On
-  expiry the request is destroyed and its socket released.
+  expiry the request is destroyed and its socket released. `walletProcessPsbt`'s operation includes its
+  PQC check: its `decodepsbt`, its `getaddressinfo` batches and the signing
+  share one deadline, from when the call starts, and the caller's signal.
 - **Keep-alive.** Methods without side effects, batches and the chain re-check
   share a pool of keep-alive connections sized to `maxConcurrentRequests`
   (default 8), plus one spare for a connection still closing; open requests

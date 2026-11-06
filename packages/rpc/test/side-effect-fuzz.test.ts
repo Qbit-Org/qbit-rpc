@@ -7,7 +7,7 @@ import { parseJsonLossless } from '../src/json'
 import { ResultIssue } from '../src/validate'
 import { FakeNode, type RpcCall } from './helpers/fake-node'
 import { fuzz, FUZZ_TIMEOUT_MS } from './helpers/fuzz'
-import { clone, loadFixtures, mutate, paths, REMOVE, replyValue, type Fixture } from './helpers/replies'
+import { clientArgs, clone, loadFixtures, mutate, paths, REMOVE, replyValue, type Fixture } from './helpers/replies'
 
 // The side-effecting payment steps, end to end through a fake node whose
 // replies are mutated: the node has acted by the time a reply arrives, so a
@@ -71,7 +71,7 @@ const envelope = (resultText: string) => (id: unknown) =>
 
 async function send(f: Fixture): Promise<{ value: unknown } | { error: unknown }> {
   const method = (rpc as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>)[f.builder]!
-  return method.apply(rpc, [...f.args]).then(
+  return method.apply(rpc, clientArgs(f)).then(
     value => ({ value }),
     (error: unknown) => ({ error })
   )
