@@ -46,7 +46,7 @@ const RESULTS: Record<string, string> = {
   getblockcount: '7',
   keypoolrefill: 'null',
   utxoupdatepsbt: '"cHNidP8="',
-  submitpackage: '{"package_msg":"success"}',
+  prioritisetransaction: '{"package_msg":"success"}',
   setban: 'null',
   ping: 'null',
   stop: '"qbit server stopping"',
@@ -195,7 +195,7 @@ describe('extraMethods at construction', () => {
         /^extraMethods\.getbalance needs the 'wallet-read' capability, which this client does not enable$/,
       ],
       [{ keypoolrefill: WALLET_WRITE }, ['wallet-read', 'broadcast'], /needs the 'wallet-write' capability/],
-      [{ submitpackage: BROADCAST }, ['wallet-read', 'wallet-write'], /needs the 'broadcast' capability/],
+      [{ prioritisetransaction: BROADCAST }, ['wallet-read', 'wallet-write'], /needs the 'broadcast' capability/],
       // One bad entry fails the whole option.
       [
         { getchaintxstats: READ, getblockstats: { capability: 'read' } },
@@ -490,11 +490,11 @@ describe('extraMethods calls', () => {
       {
         keypoolrefill: WALLET_WRITE,
         utxoupdatepsbt: { capability: 'wallet-write', sideEffects: false },
-        submitpackage: BROADCAST,
+        prioritisetransaction: BROADCAST,
       },
       { capabilities: ['wallet-write', 'broadcast'], chainCheckMaxAgeMs: 0 }
     )
-    for (const method of ['keypoolrefill', 'utxoupdatepsbt', 'submitpackage']) {
+    for (const method of ['keypoolrefill', 'utxoupdatepsbt', 'prioritisetransaction']) {
       const error = await failure(rpc.call(method))
       expect(RpcChainGuardError.is(error)).toBe(true)
       expect(error).toMatchObject({ reason: 'unconfirmed', method })
@@ -504,14 +504,14 @@ describe('extraMethods calls', () => {
     await rpc.confirmChain()
     // chainCheckMaxAgeMs 0: each call checks the chain again first.
     await rpc.call('keypoolrefill', [100])
-    await rpc.call('submitpackage', [[]])
+    await rpc.call('prioritisetransaction', [[]])
     await rpc.call('utxoupdatepsbt', ['cHNidP8='])
     expect(node.calls().map(call => call.method)).toEqual([
       ...CHECK,
       ...CHECK,
       'keypoolrefill',
       ...CHECK,
-      'submitpackage',
+      'prioritisetransaction',
       ...CHECK,
       'utxoupdatepsbt',
     ])
@@ -527,7 +527,7 @@ describe('extraMethods calls', () => {
     // Another chain: refused until confirmChain() matches again.
     node.results(chainResults('main'))
     await failure(rpc.confirmChain())
-    for (const method of ['keypoolrefill', 'submitpackage']) {
+    for (const method of ['keypoolrefill', 'prioritisetransaction']) {
       expect(await failure(rpc.call(method))).toMatchObject({ reason: 'mismatch', method, actualChain: 'main' })
     }
     expect(singles()).toHaveLength(before)
@@ -535,7 +535,7 @@ describe('extraMethods calls', () => {
 
   it('treats an extra call with side effects as an allowlisted one: a fresh connection, never retried, an unknown outcome', async () => {
     const rpc = client(
-      { keypoolrefill: WALLET_WRITE, submitpackage: BROADCAST },
+      { keypoolrefill: WALLET_WRITE, prioritisetransaction: BROADCAST },
       { capabilities: ['wallet-write', 'broadcast'], readRetries: 3, retryDelayMs: 0 }
     )
     await rpc.confirmChain()
@@ -543,7 +543,7 @@ describe('extraMethods calls', () => {
     await rpc.getBlockCount()
     await rpc.getBlockCount()
     await rpc.call('keypoolrefill')
-    await rpc.call('submitpackage', [[]])
+    await rpc.call('prioritisetransaction', [[]])
     const [read1, read2, write1, write2] = node.requests
     expect(read1!.remotePort).toBe(read2!.remotePort)
     expect(new Set([read1!.remotePort, write1!.remotePort, write2!.remotePort]).size).toBe(3)
@@ -562,7 +562,7 @@ describe('extraMethods calls', () => {
       ],
       ['a malformed reply', (_request, response) => response.end('{"jsonrpc"'), RpcResponseError.is],
     ]
-    for (const method of ['keypoolrefill', 'submitpackage']) {
+    for (const method of ['keypoolrefill', 'prioritisetransaction']) {
       for (const [, fail, cause] of outcomes) {
         failSingles(fail)
         const before = singles().length
@@ -597,13 +597,13 @@ describe('extraMethods calls', () => {
         getbalance: WALLET_READ,
         keypoolrefill: WALLET_WRITE,
         utxoupdatepsbt: { capability: 'wallet-write', sideEffects: false },
-        submitpackage: BROADCAST,
+        prioritisetransaction: BROADCAST,
       },
       { capabilities: ALL }
     )
     await rpc.confirmChain()
     const before = node.requests.length
-    for (const method of ['keypoolrefill', 'utxoupdatepsbt', 'submitpackage']) {
+    for (const method of ['keypoolrefill', 'utxoupdatepsbt', 'prioritisetransaction']) {
       const error = await refusal(rpc.batch([requests.raw('getchaintxstats'), requests.raw(method)]))
       expect(error).toMatchObject({ reason: 'not_batchable', method })
     }

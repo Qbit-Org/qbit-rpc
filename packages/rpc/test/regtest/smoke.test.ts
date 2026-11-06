@@ -8,12 +8,15 @@ import { createServer as createTlsServer } from 'node:tls'
 import { describe, expect, it } from 'vitest'
 
 import {
+  formatQbt,
   JsonNumber,
   QbitRpcClient,
   requests,
   RpcCapabilityError,
   RpcChainGuardError,
   RpcError,
+  RpcResponseTooLargeError,
+  RpcTimeoutError,
   type Outpoint,
   type QbitRpcClientOptions,
 } from '../../src'
@@ -1537,4 +1540,310 @@ describe.runIf(enabled)('qbit Core v1.0.0 regtest', () => {
       }
     }
   }, 600_000)
+
+  describe('chain scanner, mempool and package methods', () => {
+    const mineOne = (): string => {
+      const to = cli('-rpcwallet=smoke', 'getnewaddress', '', 'p2mr')
+      return (JSON.parse(cli('generatetoaddress', '1', to)) as string[])[0]!
+    }
+    const pay = (): string =>
+      cli('-rpcwallet=smoke', 'sendtoaddress', cli('-rpcwallet=smoke', 'getnewaddress', '', 'p2mr'), '0.1')
+
+    it('reads a block at each verbosity, checked against getblockheader and the transaction', async () => {
+      const rpc = client({ maxResponseBytes: 16 * 1024 * 1024 })
+      const txid = pay()
+      const blockHash = mineOne()
+      const header = await rpc.getBlockHeader(blockHash)
+      const block = await rpc.getBlock(blockHash)
+      expect(block).toMatchObject(header)
+      expect(block.nTx).toBe(2)
+      expect(block.tx[1]).toBe(txid)
+      expect(block.size).toBeGreaterThan(block.strippedSize)
+
+      const full = await rpc.getBlockWithTransactions(blockHash)
+      const { tx: _txids, ...fields } = block
+      expect(full).toMatchObject(fields)
+      expect(full.tx.map(tx => tx.txid)).toEqual(block.tx)
+      expect(full.tx[0]!.vin[0]).toHaveProperty('coinbase')
+      expect(full.tx[0]).not.toHaveProperty('feeBits')
+      const decoded = await rpc.getRawTransactionVerbose(txid, { blockHash })
+      expect(full.tx[1]).toMatchObject({
+        txid,
+        hash: decoded.hash,
+        vin: decoded.vin,
+        vout: decoded.vout,
+        hex: decoded.hex,
+      })
+      const fee = (JSON.parse(cli('-rpcwallet=smoke', 'gettransaction', txid)) as { fee: number }).fee
+      expect(full.tx[1]!.feeBits).toBe(BigInt(Math.round(-fee * 1e8)))
+
+      const blockHex = await rpc.getBlockHex(blockHash)
+      expect(blockHex).toBe(cli('getblock', blockHash, '0'))
+      expect(blockHex).toContain(decoded.hex)
+
+      // The genesis block at each verbosity: no parent, no undo data, an output with no address.
+      const genesis = await rpc.getBlockWithTransactions(REGTEST_GENESIS)
+      expect(genesis).not.toHaveProperty('previousBlockHash')
+      expect(genesis.tx[0]).not.toHaveProperty('feeBits')
+      expect((await rpc.getBlock(REGTEST_GENESIS)).tx).toEqual([genesis.tx[0]!.txid])
+      expect(await rpc.getBlockHex(REGTEST_GENESIS)).toContain(genesis.tx[0]!.hex)
+
+      // As reads they go in a batch, and an unknown block is that entry's -5.
+      const [one, two, zero, missing] = await rpc.batch([
+        requests.getBlock(blockHash),
+        requests.getBlockWithTransactions(blockHash),
+        requests.getBlockHex(blockHash),
+        requests.getBlock('00'.repeat(32)),
+      ])
+      expect(one.ok && one.value.hash).toBe(blockHash)
+      expect(two.ok && two.value.tx[1]!.txid).toBe(txid)
+      expect(zero.ok && zero.value).toBe(blockHex)
+      expect(!missing.ok && RpcError.is(missing.error) && missing.error.rpcCode).toBe(-5)
+      await expect(rpc.getBlock('00'.repeat(32))).rejects.toSatisfy(
+        (error: unknown) => RpcError.is(error) && error.rpcCode === -5
+      )
+
+      // One P2MR spend's signature already passes a small cap; the short form still fits it.
+      const small = client({ maxResponseBytes: 4096 })
+      await expect(small.getBlockWithTransactions(blockHash)).rejects.toSatisfy(RpcResponseTooLargeError.is)
+      expect((await small.getBlock(blockHash)).hash).toBe(blockHash)
+    })
+
+    it('follows a reorg through getChainTips', async () => {
+      const rpc = client()
+      const stale = mineOne()
+      const staleHeight = (await rpc.getBlockHeader(stale)).height
+      const tipOf = async (hash: string) => (await rpc.getChainTips()).find(tip => tip.hash === hash)
+      expect(await tipOf(stale)).toEqual({ height: staleHeight, hash: stale, branchLen: 0, status: 'active' })
+
+      cli('invalidateblock', stale)
+      expect(await tipOf(stale)).toEqual({ height: staleHeight, hash: stale, branchLen: 1, status: 'invalid' })
+      const previous = await rpc.getBestBlockHash()
+      expect(await tipOf(previous)).toMatchObject({ height: staleHeight - 1, branchLen: 0, status: 'active' })
+
+      // Two blocks on the other branch: more work than the stale one, which a tie would leave active.
+      expect(mineOne()).not.toBe(stale)
+      const replacement = mineOne()
+      expect(await tipOf(replacement)).toMatchObject({ height: staleHeight + 1, branchLen: 0, status: 'active' })
+
+      cli('reconsiderblock', stale)
+      expect(await tipOf(stale)).toEqual({ height: staleHeight, hash: stale, branchLen: 1, status: 'valid-fork' })
+      expect(await rpc.getBestBlockHash()).toBe(replacement)
+      expect((await rpc.getChainTips()).filter(tip => tip.status === 'active')).toHaveLength(1)
+      expect((await rpc.getBlock(stale)).confirmations).toBe(-1)
+      expect((await rpc.getBlock(stale)).hash).toBe(stale)
+    })
+
+    it('reads the fee floor and the mempool with a transaction in it', async () => {
+      const rpc = client()
+      const before = await rpc.getMempoolInfo()
+      expect(before.size).toBe(0)
+      expect(before.minRelayTxFeeBitsPerKvB).toBe(250n)
+      expect(before.mempoolMinFeeBitsPerKvB).toBe(250n)
+      expect(before.fullRbf).toBe(true)
+      const start = await rpc.getRawMempoolSequence()
+      expect(start.txids).toEqual([])
+
+      const txid = pay()
+      const entry = await rpc.getMempoolEntry(txid)
+      const info = await rpc.getMempoolInfo()
+      expect(info).toMatchObject({ size: 1, bytes: entry.vsize, totalFeeBits: entry.fees.baseBits })
+      expect(await rpc.getRawMempool()).toEqual([txid])
+      expect(await rpc.getRawMempoolVerbose()).toEqual({ [txid]: entry })
+      const snapshot = await rpc.getRawMempoolSequence()
+      expect(snapshot.txids).toEqual([txid])
+      expect(snapshot.mempoolSequence).toBe(start.mempoolSequence + 1n)
+
+      mineOne()
+      expect(await rpc.getRawMempool()).toEqual([])
+      expect(await rpc.getRawMempoolVerbose()).toEqual({})
+      expect((await rpc.getMempoolInfo()).size).toBe(0)
+    })
+
+    it('finds the mempool spender of a spent output, and none for an unspent one', async () => {
+      const rpc = client()
+      const txid = pay()
+      const { vin } = await rpc.getRawTransactionVerbose(txid)
+      const spent = vin[0] as Outpoint
+      const unspent = { txid, vout: 0 }
+      expect(await rpc.getTxSpendingPrevout([spent, unspent])).toEqual([
+        { txid: spent.txid, vout: spent.vout, spendingTxid: txid },
+        unspent,
+      ])
+      // Further than the transaction has outputs, up to the bound qbit Core reads.
+      const far = { txid, vout: 0x7fff_ffff }
+      expect(await rpc.getTxSpendingPrevout([far])).toEqual([far])
+      await expect(rpc.getTxSpendingPrevout([{ txid, vout: 0x8000_0000 }])).rejects.toThrow(RangeError)
+      await expect(rpc.call('gettxspendingprevout', [[{ txid, vout: 0x8000_0000 }]])).rejects.toSatisfy(RpcError.is)
+      await expect(rpc.getTxSpendingPrevout([])).rejects.toThrow(RangeError)
+      await expect(rpc.call('gettxspendingprevout', [[]])).rejects.toSatisfy(
+        (error: unknown) => RpcError.is(error) && error.rpcCode === -8
+      )
+
+      mineOne()
+      expect(await rpc.getTxSpendingPrevout([spent])).toEqual([{ txid: spent.txid, vout: spent.vout }])
+    })
+
+    it('long-polls for a block past the client’s deadline, beside other calls', { timeout: 60_000 }, async () => {
+      // The client's own deadline is shorter than these waits, which set their own.
+      const rpc = client({ timeoutMs: 2_000 })
+      const start = await rpc.getBlockchainInfo()
+      const tip = { hash: start.bestBlockHash, height: start.blocks }
+
+      // The wait ran out: the tip as it stands, below the height asked for, and not an error.
+      expect(await rpc.waitForBlockHeight(tip.height + 1000, 100)).toEqual(tip)
+      expect(await rpc.waitForNewBlock(100, { currentTip: tip.hash })).toEqual(tip)
+      // Already there, or a tip that is not the node's: at once.
+      // A call's own deadline must outlast the wait by the 10 s margin.
+      expect(await rpc.waitForBlockHeight(tip.height, 30_000, { timeoutMs: 40_000 })).toEqual(tip)
+      await expect(rpc.waitForBlockHeight(tip.height, 30_000, { timeoutMs: 39_999 })).rejects.toThrow(RangeError)
+      expect(await rpc.waitForNewBlock(30_000, { currentTip: '00'.repeat(32) })).toEqual(tip)
+
+      // Past the transport's 15 s idle timer, with another call beside it, and a block ends it early.
+      const waited = performance.now()
+      const byHeight = rpc.waitForBlockHeight(tip.height + 1, 40_000)
+      const byTip = rpc.waitForNewBlock(40_000, { currentTip: tip.hash })
+      await new Promise(resolve => setTimeout(resolve, 16_000))
+      expect(await rpc.getBlockCount()).toBe(tip.height)
+      const hash = mineOne()
+      const next = { hash, height: tip.height + 1 }
+      expect(await byHeight).toEqual(next)
+      expect(await byTip).toEqual(next)
+      expect(performance.now() - waited).toBeLessThan(35_000)
+
+      // A deadline that cannot outlast the wait is refused, and a slot held by a wait queues other calls.
+      await expect(rpc.waitForNewBlock(1000, undefined, { timeoutMs: 1000 })).rejects.toThrow(RangeError)
+      const one = client({ maxConcurrentRequests: 1 })
+      const holding = one.waitForNewBlock(1000, { currentTip: hash })
+      await expect(one.getBlockCount({ timeoutMs: 100 })).rejects.toSatisfy(RpcTimeoutError.is)
+      expect(await holding).toEqual(next)
+      expect(await one.getBlockCount()).toBe(next.height)
+
+      await expect(rpc.batch([requests.waitForNewBlock(100)])).rejects.toMatchObject({ reason: 'not_batchable' })
+    })
+
+    it('submits a parent and a CPFP child as a package', async () => {
+      const wallet = client({ wallet: 'smoke', capabilities: ['wallet-read', 'broadcast'] })
+      const coins = (await wallet.listUnspent()).filter(coin => coin.amountBits > 100_000_000n)
+      const address = (): string => cli('-rpcwallet=smoke', 'getnewaddress', '', 'p2mr')
+      type Signed = { hex: string; complete: boolean }
+      /** A signed transaction spending `input` to one new address; `scriptPubKey` for an input not yet in the mempool. */
+      const spend = (
+        input: { txid: string; vout: number; amountBits: bigint; scriptPubKey?: string },
+        feeBits: bigint,
+        amountBits = input.amountBits - feeBits
+      ): {
+        hex: string
+        txid: string
+        output: { txid: string; vout: number; amountBits: bigint; scriptPubKey: string }
+      } => {
+        const raw = cli(
+          'createrawtransaction',
+          JSON.stringify([{ txid: input.txid, vout: input.vout }]),
+          `[{"${address()}":${formatQbt(amountBits)}}]`
+        )
+        const prev =
+          input.scriptPubKey === undefined
+            ? []
+            : [
+                JSON.stringify([
+                  {
+                    txid: input.txid,
+                    vout: input.vout,
+                    scriptPubKey: input.scriptPubKey,
+                    amount: Number(formatQbt(input.amountBits)),
+                  },
+                ]),
+              ]
+        const signed = JSON.parse(cli('-rpcwallet=smoke', 'signrawtransactionwithwallet', raw, ...prev)) as Signed
+        expect(signed.complete).toBe(true)
+        const decoded = JSON.parse(cli('decoderawtransaction', signed.hex)) as {
+          txid: string
+          vout: { scriptPubKey: { hex: string } }[]
+        }
+        return {
+          hex: signed.hex,
+          txid: decoded.txid,
+          output: { txid: decoded.txid, vout: 0, amountBits, scriptPubKey: decoded.vout[0]!.scriptPubKey.hex },
+        }
+      }
+
+      // A parent at the fee floor (about 3,817 vB at 250 bits/kvB), and a child paying for both.
+      const parent = spend(coins[0]!, 1_000n)
+      const child = spend(parent.output, 10_000_000n)
+      const pair = [parent.hex, child.hex]
+
+      await expect(client({ capabilities: [] }).submitPackage(pair)).rejects.toSatisfy(RpcCapabilityError.is)
+      await expect(wallet.submitPackage(pair)).rejects.toSatisfy(RpcChainGuardError.is)
+      await wallet.confirmChain()
+      await expect(wallet.submitPackage(pair, { maxFeeRateBitsPerKvB: 0n })).rejects.toThrow(RangeError)
+      await expect(wallet.submitPackage([])).rejects.toThrow(RangeError)
+
+      // The child first: the node's own refusal, before anything is accepted, so
+      // a definite RpcError with the text the client tells such a refusal by.
+      const refused = (code: number, message: string) => (error: unknown) =>
+        RpcError.is(error) && error.rpcCode === code && error.message === message
+      await expect(wallet.submitPackage([child.hex, parent.hex])).rejects.toSatisfy(
+        refused(-25, 'package topology disallowed. not child-with-parents or parents depend on each other.')
+      )
+      await expect(wallet.call('submitpackage', [['aabb']])).rejects.toSatisfy(
+        refused(-22, 'TX decode failed: aabb Make sure the tx has at least one input.')
+      )
+      await expect(wallet.call('submitpackage', [[]])).rejects.toSatisfy(
+        refused(-8, 'Array must contain between 1 and 25 transactions.')
+      )
+      expect(await wallet.getRawMempool()).toEqual([])
+
+      // A cap between the two fee rates: a partial result, the parent in the mempool and the child refused.
+      const capped = await wallet.submitPackage(pair, { maxFeeRateBitsPerKvB: 5_000n })
+      expect(capped.packageMsg).toBe('transaction failed')
+      const cappedResults = Object.values(capped.txResults)
+      expect(cappedResults.map(result => result.txid)).toEqual([parent.txid, child.txid])
+      expect(cappedResults[0]!.error).toBeUndefined()
+      expect(cappedResults[1]!.error).toBe('max feerate exceeded')
+      expect(await wallet.getRawMempool()).toEqual([parent.txid])
+
+      const accepted = await wallet.submitPackage(pair, { maxFeeRateBitsPerKvB: 99_999_999n })
+      expect(accepted.packageMsg).toBe('success')
+      expect(accepted.replacedTransactions).toEqual([])
+      const [parentResult, childResult] = Object.values(accepted.txResults)
+      expect(parentResult).toMatchObject({ txid: parent.txid, fees: { baseBits: 1_000n } })
+      expect(parentResult!.fees).not.toHaveProperty('effectiveFeeRateBitsPerKvB')
+      expect(childResult).toMatchObject({ txid: child.txid, fees: { baseBits: 10_000_000n } })
+      expect(childResult!.fees!.effectiveFeeRateBitsPerKvB).toBeGreaterThan(0n)
+      const entry = await wallet.getMempoolEntry(child.txid)
+      expect(entry).toMatchObject({ ancestorCount: 2, depends: [parent.txid], fees: { ancestorBits: 10_001_000n } })
+      expect(await wallet.getTxSpendingPrevout([parent.output])).toEqual([
+        { txid: parent.txid, vout: 0, spendingTxid: child.txid },
+      ])
+
+      // Sent again: nothing changes, and it is still a success, which is how to reconcile an unknown outcome.
+      const again = await wallet.submitPackage(pair)
+      expect(again.packageMsg).toBe('success')
+      expect(Object.values(again.txResults).map(result => result.txid)).toEqual([parent.txid, child.txid])
+
+      // A parent below the relay floor is refused even with a child paying for it, in a result and not as an error.
+      const lowParent = spend(coins[1]!, 100n)
+      const lowChild = spend(lowParent.output, 10_000_000n)
+      const low = await wallet.submitPackage([lowParent.hex, lowChild.hex])
+      expect(low.packageMsg).toBe('transaction failed')
+      expect(Object.values(low.txResults)[0]!.error).toMatch(/min relay fee not met/)
+      expect(await wallet.getRawMempool()).not.toContain(lowParent.txid)
+
+      // maxburnamount: the check runs when the hex is decoded, so this needs no signature or coin.
+      const burn = `0200000001${'00'.repeat(32)}0000000000ffffffff01e803000000000000016a00000000`
+      await expect(wallet.submitPackage([burn])).rejects.toSatisfy(
+        refused(-25, 'Unspendable output exceeds maximum configured by user (maxburnamount)')
+      )
+      const allowed = await wallet.submitPackage([burn], { maxBurnAmountBits: 1000n })
+      expect(allowed.packageMsg).not.toBe('success')
+
+      // Through call(), and with the node's reply unvalidated.
+      const raw = (await wallet.call('submitpackage', [pair])) as { package_msg: string }
+      expect(raw.package_msg).toBe('success')
+
+      mineOne()
+      expect(await wallet.getRawMempool()).toEqual([])
+    })
+  })
 })

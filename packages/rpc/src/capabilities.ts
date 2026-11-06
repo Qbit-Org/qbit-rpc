@@ -33,7 +33,7 @@ export const QBIT_DEFAULT_SIGNET_CHALLENGE = '51'
  * - `wallet-read`: read wallet state (`getwalletinfo`, `gettransaction`, `listunspent`, ...).
  * - `wallet-write`: change wallet state or sign (`walletcreatefundedpsbt`,
  *   `walletprocesspsbt`, `walletpassphrase`, `walletlock`, ...).
- * - `broadcast`: `testmempoolaccept` and `sendrawtransaction`.
+ * - `broadcast`: `testmempoolaccept`, `sendrawtransaction` and `submitpackage`.
  * - `node-admin`: node administration (`stop`, `setban`, `addnode`,
  *   `pruneblockchain`, `savemempool`, `ping`, ...). No allowlisted method needs
  *   it: a client opens these through `extraMethods` only. Its calls do not
@@ -59,11 +59,17 @@ export interface MethodPolicy {
    * Set only where qbit Core was measured to need longer.
    */
   readonly timeoutMs?: number
+  /**
+   * The node holds the request for a wait the caller chose. It is refused in
+   * a batch: the batch's other calls would wait behind it, under one deadline.
+   */
+  readonly longPoll?: boolean
 }
 
 const READ: MethodPolicy = { capability: 'read', sideEffects: false }
 const WALLET_READ: MethodPolicy = { capability: 'wallet-read', sideEffects: false }
 const WALLET_WRITE: MethodPolicy = { capability: 'wallet-write', sideEffects: true }
+const LONG_POLL: MethodPolicy = { capability: 'read', sideEffects: false, longPoll: true }
 
 /**
  * The default deadline of `walletpassphrase` and `walletlock`. qbit Core v1.0.0
@@ -109,11 +115,14 @@ export const METHOD_POLICIES: Readonly<Record<string, MethodPolicy>> = Object.fr
   getblockcount: READ,
   getmempoolentry: READ,
   gettxout: READ,
-  // Further reads, untyped: use call().
   getblock: READ,
   getchaintips: READ,
   getmempoolinfo: READ,
   getrawmempool: READ,
+  gettxspendingprevout: READ,
+  waitfornewblock: LONG_POLL,
+  waitforblockheight: LONG_POLL,
+  // Further reads, untyped: use call().
   decoderawtransaction: READ,
   decodepsbt: READ,
   analyzepsbt: READ,
@@ -127,6 +136,7 @@ export const METHOD_POLICIES: Readonly<Record<string, MethodPolicy>> = Object.fr
   // as the broadcast step's preflight.
   testmempoolaccept: { capability: 'broadcast', sideEffects: false },
   sendrawtransaction: { capability: 'broadcast', sideEffects: true },
+  submitpackage: { capability: 'broadcast', sideEffects: true },
 
   getwalletinfo: WALLET_READ,
   gettransaction: WALLET_READ,

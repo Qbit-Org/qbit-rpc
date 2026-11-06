@@ -30,6 +30,21 @@ import {
 // other exception is a validator bug.
 
 const fixtures = loadFixtures()
+// Typed methods with no captured reply yet; #44 captures them. Only ever removed from.
+const NOT_YET_CAPTURED: readonly string[] = [
+  'getBlock',
+  'getBlockHex',
+  'getBlockWithTransactions',
+  'getChainTips',
+  'getMempoolInfo',
+  'getRawMempool',
+  'getRawMempoolSequence',
+  'getRawMempoolVerbose',
+  'getTxSpendingPrevout',
+  'submitPackage',
+  'waitForBlockHeight',
+  'waitForNewBlock',
+]
 const byName = new Map(fixtures.map(f => [f.name, f]))
 type Builder = (...args: unknown[]) => RpcRequest<unknown>
 const build = (f: Fixture): RpcRequest<unknown> =>
@@ -105,7 +120,12 @@ function refusals(f: Fixture): { mutated: string; issue: string; where: ReturnTy
 describe('captured regtest replies', () => {
   it('cover every typed method', () => {
     const typed = Object.keys(requests).filter(name => name !== 'raw')
-    expect([...new Set(fixtures.map(f => f.builder))].sort()).toEqual(typed.sort())
+    const captured = new Set(fixtures.map(f => f.builder))
+    for (const name of NOT_YET_CAPTURED) {
+      expect(typed, `${name} is not a builder`).toContain(name)
+      expect(captured.has(name), `${name} is captured: drop it from NOT_YET_CAPTURED`).toBe(false)
+    }
+    expect([...captured].sort()).toEqual(typed.filter(name => !NOT_YET_CAPTURED.includes(name)).sort())
     expect(fixtures.length).toBeGreaterThanOrEqual(40)
     for (const name of [
       'gettransaction-send',

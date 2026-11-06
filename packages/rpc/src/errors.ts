@@ -1,5 +1,5 @@
 import type { Capability, QbitChain } from './capabilities'
-import { ownValue } from './own'
+import { ownElements, ownValue } from './own'
 import { SUPPORTED_NODE_VERSIONS, type NodeVersion } from './version'
 
 // Every error class carries a brand, `Symbol.for('qbit-rpc.<ClassName>')`, on
@@ -70,7 +70,7 @@ export class RpcCapabilityError extends QbitRpcError {
         ? `needs the '${required}' capability, which this client does not enable`
         : reason === 'unknown_method'
           ? 'is not on the allowlist'
-          : 'cannot be sent in a batch (batches carry read methods only)'
+          : 'cannot be sent in a batch (batches carry reads that answer at once, without side effects)'
     super(`RPC method ${method} refused: it ${detail}`, method)
     this.reason = reason
     if (required !== undefined) this.required = required
@@ -384,18 +384,31 @@ brand(RpcResponseError, 'RpcResponseError')
  * dropped, the reply was too large or malformed, or a proxy answered with a
  * 5xx status, or a JSON-RPC error under a status qbitd does not use for one,
  * after the request was sent. The client never retries such a call.
- * Reconcile before trying again: for `sendrawtransaction`, look the `txid` up
- * (`getrawtransaction`, `gettransaction`, `getmempoolentry`); resubmitting the
- * same hex is harmless, but never rebuild the payment with different inputs.
- * The underlying error is the `cause`.
+ * For `submitpackage` it is also an `RpcError` from the node that can follow
+ * the acceptance of part of the package (a failed broadcast, a mempool error):
+ * then the `cause` is that `RpcError`. Reconcile before trying again: for
+ * `sendrawtransaction`, look the `txid` up, and for `submitpackage`, each of
+ * `txids` (`getrawtransaction`, `gettransaction`, `getmempoolentry`), as any
+ * part of a package may have been accepted; resubmitting the same hex is
+ * harmless, but never rebuild the payment with different inputs. The
+ * underlying error is the `cause`.
  */
 export class RpcUnknownOutcomeError extends QbitRpcError {
   /** For `sendrawtransaction`, the txid computed from the submitted hex, when it parses. */
   readonly txid?: string
+  /**
+   * For `submitpackage`, which leaves `txid` unset even for one transaction:
+   * one entry per transaction, in package order, the txid computed from its
+   * hex, or `null` where the hex does not parse here. Also set when the node
+   * answered with an error it can raise after accepting part of the package.
+   */
+  readonly txids?: readonly (string | null)[]
 
-  constructor(method: string, cause: QbitRpcError, txid?: string) {
+  constructor(method: string, cause: QbitRpcError, txid?: string, txids?: readonly (string | null)[]) {
     super(`RPC ${method} outcome is unknown: the node may have executed it (${cause.message})`, method, { cause })
     if (txid !== undefined) this.txid = txid
+    // Its own elements: a hole is refused, never read from Array.prototype.
+    if (txids !== undefined) this.txids = Object.freeze(ownElements(txids, 'txids') as (string | null)[])
   }
 
   static override is(value: unknown): value is RpcUnknownOutcomeError {
