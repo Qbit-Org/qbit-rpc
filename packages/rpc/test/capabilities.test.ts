@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url'
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { METHOD_POLICIES } from '../src/capabilities'
+import { CAPABILITIES, GUARDED_CAPABILITIES, guarded, METHOD_POLICIES } from '../src/capabilities'
 import { QbitRpcClient, requests, RpcCapabilityError, RpcChainGuardError, type Capability } from '../src'
 import { chainResults, CHECK, FakeNode, HASH_A, TX_HEX } from './helpers/fake-node'
 
@@ -57,6 +57,11 @@ describe('capabilities', () => {
       [rpc.psbtBumpFee(HASH_A), 'wallet-write'],
       [rpc.sendRawTransaction(TX_HEX), 'broadcast'],
       [rpc.testMempoolAccept([TX_HEX]), 'broadcast'],
+      [rpc.getBlockTemplate(), 'mining'],
+      [rpc.checkBlockProposal(TX_HEX), 'mining'],
+      [rpc.submitBlock(TX_HEX), 'mining'],
+      [rpc.createAuxBlock('qbrt1zaddress'), 'mining'],
+      [rpc.submitAuxBlock(HASH_A, TX_HEX), 'mining'],
     ]
     for (const [promise, capability] of cases) {
       const error = await refusal(promise)
@@ -101,6 +106,32 @@ describe('capabilities', () => {
       'not_enabled'
     )
     expect(node.requests).toHaveLength(before)
+  })
+
+  it('refuses in a batch exactly what waits for the chain guard: one list of capabilities for both', async () => {
+    // A method of each capability, without side effects, opened through extraMethods.
+    const unlisted = Object.fromEntries(
+      CAPABILITIES.map((capability, i) => [`futuremethod${i}`, { capability, sideEffects: false }])
+    )
+    const rpc = new QbitRpcClient({
+      url: node.url,
+      auth: { username: 'u', password: 'p' },
+      expectedChain: 'regtest',
+      capabilities: [...CAPABILITIES],
+      extraMethods: unlisted,
+    })
+    for (const [i, capability] of CAPABILITIES.entries()) {
+      const method = `futuremethod${i}`
+      const waits = guarded({ capability, sideEffects: false })
+      expect(waits, capability).toBe(GUARDED_CAPABILITIES.has(capability))
+      // Before confirmChain(): a guarded call is refused unsent, and so is a batch holding it.
+      const single = await rpc.call(method).catch((e: unknown) => e)
+      expect(RpcChainGuardError.is(single), capability).toBe(waits)
+      const batch = await rpc.batch([requests.raw(method)]).catch((e: unknown) => e)
+      expect(RpcCapabilityError.is(batch) && batch.reason === 'not_batchable', capability).toBe(waits)
+    }
+    // Every capability but wallet-read changes state, node-admin included, and waits for the guard.
+    expect([...GUARDED_CAPABILITIES].sort()).toEqual(CAPABILITIES.filter(c => c !== 'wallet-read').sort())
   })
 
   it('allows reads without capabilities and enabled wallet reads without a chain check', async () => {

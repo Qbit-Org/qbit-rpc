@@ -60,6 +60,11 @@ export interface RpcRequest<T> {
    */
   readonly txids?: readonly (string | null)[]
   /**
+   * For `submitblock` and `submitheader`: the hash of the header the hex starts
+   * with, when it holds one. For `submitauxblock`: the hash submitted.
+   */
+  readonly blockHash?: string
+  /**
    * For a long poll (`waitfornewblock`, `waitforblockheight`, `waitforblock`):
    * how long the node holds the request before it answers, in milliseconds.
    * The client's deadline must be at least this plus `LONG_POLL_MARGIN_MS`.
@@ -71,7 +76,7 @@ function request<T>(
   method: string,
   params: readonly unknown[],
   parse: (result: unknown) => T,
-  extras: Pick<RpcRequest<T>, 'txid' | 'txids' | 'waitMs'> = {}
+  extras: Pick<RpcRequest<T>, 'txid' | 'txids' | 'blockHash' | 'waitMs'> = {}
 ): RpcRequest<T> {
   // Trailing omitted arguments are dropped; omitted ones in between become
   // null, which qbit Core reads as "use the default".
@@ -607,10 +612,11 @@ function parseBlockTransaction(value: unknown, path: string): BlockTransaction {
 
 /** A serialized block's header. Its hash is what `getblock` looks the block up by; an AuxPoW proof follows it. */
 const BLOCK_HEADER_BYTES = 80
+const BLOCK_HEADER_HEX = new RegExp(`^[0-9a-fA-F]{${BLOCK_HEADER_BYTES * 2}}`)
 
 /** The hash of a serialized block's header, in display byte order, or undefined when the hex is too short to hold one. */
 function serializedBlockHash(blockHex: string): string | undefined {
-  if (blockHex.length < BLOCK_HEADER_BYTES * 2) return undefined
+  if (!BLOCK_HEADER_HEX.test(blockHex)) return undefined
   return displayHash(Buffer.from(blockHex.slice(0, BLOCK_HEADER_BYTES * 2), 'hex'))
 }
 
@@ -1295,6 +1301,334 @@ export function refusedBeforeActing(method: string, code: number, message: strin
   return SUBMIT_PACKAGE_REFUSALS.some(
     refusal => refusal.code === code && (refusal.message === undefined || refusal.message === message)
   )
+}
+
+// ---------------------------------------------------------------------------
+// Mining
+// ---------------------------------------------------------------------------
+
+/** `getmininginfo`. */
+export interface MiningInfo {
+  /** The active chain's height. */
+  readonly blocks: number
+  /** Of the last block the node assembled; absent until it has assembled one. */
+  readonly currentBlockWeight?: number
+  /** Of the last block the node assembled, without its coinbase; absent until it has assembled one. */
+  readonly currentBlockTx?: number
+  /** The tip's compact target. */
+  readonly bits: string
+  readonly difficulty: number
+  /** The tip's target: `bits` expanded. */
+  readonly target: string
+  readonly networkHashPs: number
+  readonly pooledTx: number
+  readonly blockMinTxFeeBitsPerKvB: bigint
+  readonly chain: QbitChain | (string & {})
+  /** On signet only. */
+  readonly signetChallenge?: string
+  /** The next permissionless block's candidate. */
+  readonly next: {
+    readonly height: number
+    readonly bits: string
+    readonly difficulty: number
+    readonly target: string
+  }
+  /** Node warnings; a single string under `-deprecatedrpc=warnings` becomes a one-element array. */
+  readonly warnings: readonly string[]
+}
+
+/** A compact target (`bits`) expanded, as qbit Core's `SetCompact` does, without its sign bit. */
+function compactTarget(bits: string): bigint {
+  const compact = Number.parseInt(bits, 16)
+  const exponent = compact >>> 24
+  const mantissa = BigInt(compact & 0x007f_ffff)
+  return exponent <= 3 ? mantissa >> BigInt(8 * (3 - exponent)) : mantissa << BigInt(8 * (exponent - 3))
+}
+
+/**
+ * An object of the node's own keys (rule names, coinbase flags), each value
+ * parsed, without a prototype like every object a result holds, so no key
+ * reaches `Object.prototype` and an absent one reads as undefined.
+ */
+function keyed<T>(value: unknown, path: string, parse: (value: unknown, path: string) => T): Record<string, T> {
+  const out = Object.create(null) as Record<string, T>
+  for (const [key, entry] of Object.entries(object(value, path))) out[key] = parse(entry, `${path}.${key}`)
+  return out
+}
+
+/** A `bits` and `target` printed together: one is the other's form, and a pool compares its shares with `target`. */
+function compactTargetFields(o: JsonObject, path: string): { readonly bits: string; readonly target: string } {
+  const bits = field(o, 'bits', path, hex(4))
+  const target = field(o, 'target', path, hex(32))
+  if (BigInt(`0x${target}`) !== compactTarget(bits)) {
+    throw new ResultIssue(`${path}.target`, `the target of bits ${bits}`)
+  }
+  return { bits, target }
+}
+
+function parseMiningInfo(value: unknown): MiningInfo {
+  const o = object(value, R)
+  const next = field(o, 'next', R, object)
+  const np = `${R}.next`
+  return compact<MiningInfo>({
+    blocks: field(o, 'blocks', R, nonNegativeInteger),
+    currentBlockWeight: optional(o, 'currentblockweight', R, nonNegativeInteger),
+    currentBlockTx: optional(o, 'currentblocktx', R, nonNegativeInteger),
+    ...compactTargetFields(o, R),
+    difficulty: field(o, 'difficulty', R, finite(0)),
+    networkHashPs: field(o, 'networkhashps', R, finite(0)),
+    pooledTx: field(o, 'pooledtx', R, nonNegativeInteger),
+    blockMinTxFeeBitsPerKvB: field(o, 'blockmintxfee', R, amount),
+    chain: field(o, 'chain', R, openOneOf(QBIT_CHAINS)),
+    signetChallenge: optional(o, 'signet_challenge', R, hex()),
+    next: compact<MiningInfo['next']>({
+      height: field(next, 'height', np, nonNegativeInteger),
+      ...compactTargetFields(next, np),
+      difficulty: field(next, 'difficulty', np, finite(0)),
+    }),
+    warnings: field(o, 'warnings', R, warnings),
+  })
+}
+
+/** How much a block's P2MR signature operations weigh at a template's or candidate's height. */
+export interface P2mrValidationWeightRule {
+  readonly perSigop: number
+  readonly v2Active: boolean
+  readonly v2ActivationHeight: number
+}
+
+function parseP2mrValidationWeightRule(value: unknown, path: string): P2mrValidationWeightRule {
+  const o = object(value, path)
+  return compact<P2mrValidationWeightRule>({
+    perSigop: field(o, 'per_sigop', path, nonNegativeInteger),
+    v2Active: field(o, 'v2_active', path, boolean),
+    v2ActivationHeight: field(o, 'v2_activation_height', path, nonNegativeInteger),
+  })
+}
+
+/** How far a template's or candidate's timestamp may pass the node's clock. */
+export interface FutureBlockTimeRule {
+  readonly limitSeconds: number
+  readonly v2Active: boolean
+  readonly v2ActivationHeight: number
+}
+
+function parseFutureBlockTimeRule(value: unknown, path: string): FutureBlockTimeRule {
+  const o = object(value, path)
+  return compact<FutureBlockTimeRule>({
+    limitSeconds: field(o, 'limit_seconds', path, nonNegativeInteger),
+    v2Active: field(o, 'v2_active', path, boolean),
+    v2ActivationHeight: field(o, 'v2_activation_height', path, nonNegativeInteger),
+  })
+}
+
+/** One transaction of a {@link BlockTemplate}, for a block to include as it is. */
+export interface BlockTemplateTransaction {
+  /** The transaction's hex, with its witness. */
+  readonly data: string
+  readonly txid: string
+  /** The wtxid. */
+  readonly hash: string
+  /** The transactions this one needs before it, by their 1-based place in `transactions`. */
+  readonly depends: readonly number[]
+  readonly feeBits: bigint
+  readonly sigops: number
+  readonly weight: number
+}
+
+/**
+ * `getblocktemplate`: the data to build the next block from. Permissionless
+ * work only: `version` never signals AuxPoW, and no AuxPoW field is printed.
+ * Merge mining goes through {@link AuxBlock}.
+ */
+export interface BlockTemplate {
+  readonly version: number
+  /** The rules the block must follow; a `!` prefix marks one the miner must understand. */
+  readonly rules: readonly string[]
+  readonly vbAvailable: Readonly<Record<string, number>>
+  readonly capabilities: readonly string[]
+  readonly vbRequired: number
+  /** The BIP310 version-rolling mask for this work, `00000000` when rolling is off. */
+  readonly versionRollingMask: string
+  readonly previousBlockHash: string
+  /** Without the coinbase, which the miner builds. */
+  readonly transactions: readonly BlockTemplateTransaction[]
+  /** Data for the coinbase's scriptSig. */
+  readonly coinbaseAux: Readonly<Record<string, string>>
+  /** What the coinbase may pay at most: the subsidy and every transaction's fee. */
+  readonly coinbaseValueBits: bigint
+  /** Passed to `getblocktemplate` through `call()`, it holds the reply: see the package README's mining section. */
+  readonly longPollId: string
+  /** `bits` expanded. */
+  readonly target: string
+  readonly minTime: number
+  readonly mutable: readonly string[]
+  readonly nonceRange: string
+  readonly sigOpLimit: number
+  readonly sizeLimit: number
+  /** Absent before segwit's activation. */
+  readonly weightLimit?: number
+  readonly curTime: number
+  readonly bits: string
+  readonly height: number
+  readonly p2mrValidationWeight: P2mrValidationWeightRule
+  readonly futureBlockTime: FutureBlockTimeRule
+  /** On signet only. */
+  readonly signetChallenge?: string
+  /** The coinbase output to commit to the witnesses, as long as the coinbase's witness is 32 zero bytes and `transactions` stands. */
+  readonly defaultWitnessCommitment?: string
+}
+
+function parseBlockTemplateTransaction(value: unknown, path: string, place: number): BlockTemplateTransaction {
+  const o = object(value, path)
+  const tx = compact<BlockTemplateTransaction>({
+    data: field(o, 'data', path, hex()),
+    txid: field(o, 'txid', path, hash),
+    hash: field(o, 'hash', path, hash),
+    depends: field(o, 'depends', path, (v, p) => array(v, p, integer(1, place - 1))),
+    feeBits: field(o, 'fee', path, bitsInteger),
+    sigops: field(o, 'sigops', path, nonNegativeInteger),
+    weight: field(o, 'weight', path, nonNegativeInteger),
+  })
+  // A miner builds the block from data: it must be a transaction, whose txid
+  // and wtxid are the ones the template names.
+  const txid = rawTransactionTxid(tx.data)
+  if (txid === undefined) throw new ResultIssue(`${path}.data`, 'a serialized transaction')
+  if (txid !== tx.txid) throw new ResultIssue(`${path}.txid`, 'the txid of data')
+  if (displayHash(Buffer.from(tx.data, 'hex')) !== tx.hash) throw new ResultIssue(`${path}.hash`, 'the wtxid of data')
+  return tx
+}
+
+function parseBlockTemplate(value: unknown): BlockTemplate {
+  const o = object(value, R)
+  const strings = (v: unknown, p: string): string[] => array(v, p, string)
+  return compact<BlockTemplate>({
+    version: field(o, 'version', R, int32),
+    rules: field(o, 'rules', R, strings),
+    vbAvailable: field(o, 'vbavailable', R, (v, p) => keyed(v, p, nonNegativeInteger)),
+    capabilities: field(o, 'capabilities', R, strings),
+    vbRequired: field(o, 'vbrequired', R, nonNegativeInteger),
+    versionRollingMask: field(o, 'versionrollingmask', R, hex(4)),
+    previousBlockHash: field(o, 'previousblockhash', R, hash),
+    transactions: field(o, 'transactions', R, (v, p) => {
+      let place = 1 // The coinbase is 0.
+      return array(v, p, (entry, path) => parseBlockTemplateTransaction(entry, path, place++))
+    }),
+    coinbaseAux: field(o, 'coinbaseaux', R, (v, p) => keyed(v, p, hex())),
+    coinbaseValueBits: field(o, 'coinbasevalue', R, bitsInteger),
+    longPollId: field(o, 'longpollid', R, string),
+    ...compactTargetFields(o, R),
+    minTime: field(o, 'mintime', R, nonNegativeInteger),
+    mutable: field(o, 'mutable', R, strings),
+    nonceRange: field(o, 'noncerange', R, hex(8)),
+    sigOpLimit: field(o, 'sigoplimit', R, nonNegativeInteger),
+    sizeLimit: field(o, 'sizelimit', R, nonNegativeInteger),
+    weightLimit: optional(o, 'weightlimit', R, nonNegativeInteger),
+    curTime: field(o, 'curtime', R, nonNegativeInteger),
+    height: field(o, 'height', R, integer(1, 0x7fff_ffff)),
+    p2mrValidationWeight: field(o, 'p2mr_validation_weight', R, parseP2mrValidationWeightRule),
+    futureBlockTime: field(o, 'future_block_time', R, parseFutureBlockTimeRule),
+    signetChallenge: optional(o, 'signet_challenge', R, hex()),
+    defaultWitnessCommitment: optional(o, 'default_witness_commitment', R, hex()),
+  })
+}
+
+/**
+ * `createauxblock`: a merge-mining candidate the node holds in its cache. The
+ * parent chain's coinbase commits to `hash`, in the byte order
+ * `commitmentOrder` names, and its header must meet `target`.
+ */
+export interface AuxBlock {
+  /** The candidate's block hash, for `submitAuxBlock` and, once accepted, `getBlockHeader`. */
+  readonly hash: string
+  /** This chain's AuxPoW chain id: 47 on main, 31430 on the test chains and regtest. */
+  readonly chainId: number
+  readonly previousBlockHash: string
+  readonly coinbaseValueBits: bigint
+  readonly bits: string
+  readonly height: number
+  /** `bits` expanded. */
+  readonly target: string
+  readonly p2mrValidationWeight: P2mrValidationWeightRule
+  readonly futureBlockTime: FutureBlockTimeRule
+  /** The byte order the commitment must use. */
+  readonly commitmentOrder: 'internal' | 'display'
+  /** The height from which the order is `display`. */
+  readonly commitmentActivationHeight: number
+}
+
+function parseAuxBlock(value: unknown): AuxBlock {
+  const o = object(value, R)
+  return compact<AuxBlock>({
+    hash: field(o, 'hash', R, hash),
+    chainId: field(o, 'chainid', R, integer(0, 0xffff)),
+    previousBlockHash: field(o, 'previousblockhash', R, hash),
+    coinbaseValueBits: field(o, 'coinbasevalue', R, bitsInteger),
+    ...compactTargetFields(o, R),
+    height: field(o, 'height', R, integer(1, 0x7fff_ffff)),
+    p2mrValidationWeight: field(o, 'p2mr_validation_weight', R, parseP2mrValidationWeightRule),
+    futureBlockTime: field(o, 'future_block_time', R, parseFutureBlockTimeRule),
+    commitmentOrder: field(o, 'commitmentorder', R, oneOf(['internal', 'display'] as const)),
+    commitmentActivationHeight: field(o, 'commitmentactivationheight', R, nonNegativeInteger),
+  })
+}
+
+/**
+ * Why qbit Core did not answer null to a block. Not every one is a refusal:
+ *
+ * - `duplicate`: the node has the block already, accepted or stored before; it
+ *   says nothing of the tip.
+ * - `inconclusive`: it was stored but not connected, as it is not on the best
+ *   chain; no refusal, and nothing says it will win.
+ * - `duplicate-invalid`: it is known and invalid.
+ * - `duplicate-inconclusive`: from a proposal, known and not fully checked.
+ * - `inconclusive-not-best-prevblk`: from a proposal, its parent is not the tip.
+ * - `stale-prevblk`: from `submitauxblock`, no candidate is cached under the
+ *   hash: its parent left the tip, it expired or was evicted, or it was accepted.
+ * - `rejected`: refused without a reason.
+ *
+ * Any other is the consensus check that failed (`high-hash`, `bad-txnmrklroot`,
+ * `bad-cb-amount`, `bad-auxpow-commitment`, `time-too-new` and so on) or one a
+ * later qbit Core adds: open, as it says why, and the result keeps its meaning.
+ */
+export type BlockSubmissionReason =
+  | 'duplicate'
+  | 'duplicate-invalid'
+  | 'duplicate-inconclusive'
+  | 'inconclusive'
+  | 'inconclusive-not-best-prevblk'
+  | 'stale-prevblk'
+  | 'rejected'
+  | 'high-hash'
+  | (string & {})
+const BLOCK_SUBMISSION_REASONS: readonly BlockSubmissionReason[] = [
+  'duplicate',
+  'duplicate-invalid',
+  'duplicate-inconclusive',
+  'inconclusive',
+  'inconclusive-not-best-prevblk',
+  'stale-prevblk',
+  'rejected',
+  'high-hash',
+]
+
+/** Null for a block accepted (BIP22), or {@link BlockSubmissionReason}. Null does not say it became the tip. */
+export type BlockSubmissionResult = null | BlockSubmissionReason
+
+function parseBlockSubmission(value: unknown): BlockSubmissionResult {
+  return value === null ? null : openOneOf(BLOCK_SUBMISSION_REASONS)(value, R)
+}
+
+/** What an unknown outcome names for a `call()`: the block submitted. */
+function submittedBlockHash(method: string, first: string): string | undefined {
+  // submitheader's hex is the 80-byte header alone; submitblock's starts with it.
+  if (method === 'submitblock' || method === 'submitheader') return serializedBlockHash(first)
+  return method === 'submitauxblock' && /^[0-9a-fA-F]{64}$/.test(first) ? first.toLowerCase() : undefined
+}
+
+function stringListParam(value: unknown, name: string): string[] {
+  if (!Array.isArray(value)) throw new TypeError(`${name} must be an array of strings`)
+  return ownElements(value, name).map((entry, i) => argString(entry, `${name}[${i}]`, { nonEmpty: true }))
 }
 
 // ---------------------------------------------------------------------------
@@ -2333,8 +2667,9 @@ export const requests = {
   /**
    * Any allowlisted method, untyped: the result keeps every number as a
    * `JsonNumber`. For `sendrawtransaction` and `submitpackage` the txids are
-   * computed from the hex, as the typed methods do, so an unknown outcome still
-   * names them. For a long poll (`waitfornewblock`, `waitforblockheight`,
+   * computed from the hex, as the typed methods do, and for `submitblock`,
+   * `submitheader` (opened with `extraMethods`) and `submitauxblock` the block
+   * hash, so an unknown outcome still names them. For a long poll (`waitfornewblock`, `waitforblockheight`,
    * `waitforblock`) the wait is read from its timeout parameter, which must be
    * 1 to 3,590,000 ms: absent or 0, the node would wait with no end, so it is a
    * `RangeError`. The call's deadline is then at least the wait plus 10 s, as
@@ -2383,6 +2718,14 @@ export const requests = {
       }
       waitMs = argWaitMs(wait, `params[${waitParam}] (${method}'s timeout)`)
     }
+    // BIP22's long poll has no timeout at all: the node holds the request, and its worker, until the tip or mempool changes.
+    const template = method === 'getblocktemplate' ? list[0] : undefined
+    if (typeof template === 'object' && template !== null && Object.hasOwn(template, 'longpollid')) {
+      throw new TypeError(
+        'getblocktemplate with longpollid waits with no end and holds a qbitd worker meanwhile: wait for a block with the ZMQ hashblock topic or waitfornewblock, then ask again'
+      )
+    }
+    const blockHash = typeof hexTx === 'string' ? submittedBlockHash(method, hexTx) : undefined
     return Object.freeze(
       compact<RpcRequest<unknown>>({
         method,
@@ -2391,6 +2734,7 @@ export const requests = {
         txid,
         txids: txids === undefined ? undefined : Object.freeze(txids),
         waitMs,
+        blockHash,
       })
     )
   },
@@ -2662,6 +3006,79 @@ export const requests = {
       parsePackageSubmission(txs, txids),
       { txids: Object.freeze(txids) }
     )
+  },
+
+  getMiningInfo: (): RpcRequest<MiningInfo> => request('getmininginfo', [], parseMiningInfo),
+  /**
+   * The data to build the next permissionless block from. `rules` are those the
+   * miner understands, `['segwit']` by default (`QbitRpcClient.getBlockTemplate`
+   * adds `signet` on signet); it must hold `segwit`, which qbit Core requires,
+   * and on signet also `signet`. qbit Core v1.0.0 does not
+   * read `capabilities`. On main, `RpcError` -9 with no peers and -10 while the
+   * node syncs. See the package README's mining section.
+   */
+  getBlockTemplate(options?: {
+    readonly rules?: readonly string[]
+    readonly capabilities?: readonly string[]
+  }): RpcRequest<BlockTemplate> {
+    const o = methodOptions(options, ['rules', 'capabilities'])
+    const rules = o['rules'] === undefined ? ['segwit'] : stringListParam(o['rules'], 'options.rules')
+    if (!rules.includes('segwit')) throw new RangeError("options.rules must hold 'segwit', which qbit Core requires")
+    const capabilities = opt(o['capabilities'], v => stringListParam(v, 'options.capabilities'))
+    return request(
+      'getblocktemplate',
+      [compact<Record<string, unknown>>({ mode: 'template', rules, capabilities })],
+      parseBlockTemplate
+    )
+  },
+  /**
+   * `getblocktemplate` in `proposal` mode (BIP23): check a block before hashing
+   * it, everything but its proof of work. Nothing changes at the node. Null if
+   * it would be accepted on the tip, or the reason it would not.
+   */
+  checkBlockProposal(blockHex: string): RpcRequest<BlockSubmissionResult> {
+    const data = argHex(blockHex, 'blockHex')
+    return request('getblocktemplate', [{ mode: 'proposal', data }], parseBlockSubmission)
+  },
+  /**
+   * Submit a solved block, whole, as hex. Null if it was accepted, or a
+   * {@link BlockSubmissionReason}: `duplicate` and `inconclusive` are no
+   * refusals. `RpcError` -22 for hex that does not decode as a block. A failure
+   * after the request may have reached the node is an `RpcUnknownOutcomeError`
+   * naming the block in `blockHash`, the hash of the hex's 80-byte header, when
+   * it holds one. Look it up with `getBlockHeader`, or submit it again: a block
+   * the node has answers `duplicate`.
+   */
+  submitBlock(blockHex: string): RpcRequest<BlockSubmissionResult> {
+    const block = argHex(blockHex, 'blockHex')
+    const blockHash = serializedBlockHash(block)
+    return request('submitblock', [block], parseBlockSubmission, blockHash === undefined ? {} : { blockHash })
+  },
+  /**
+   * Ask for a merge-mining candidate paying its coinbase to `payoutAddress`,
+   * which must be a P2MR address (`RpcError` -5 otherwise). The reply does not
+   * name the address, so nothing can check it against the request: the coinbase
+   * shows it once the block is accepted. The node holds the candidate in a cache
+   * until its parent leaves the tip, `-auxpowtemplateexpiry` or
+   * `-auxpowtemplatecachelimit`. An unknown outcome names nothing: ask again.
+   */
+  createAuxBlock(payoutAddress: string): RpcRequest<AuxBlock> {
+    return request('createauxblock', [argString(payoutAddress, 'payoutAddress', { nonEmpty: true })], parseAuxBlock)
+  },
+  /**
+   * Submit the AuxPoW proof for a candidate of {@link requests.createAuxBlock},
+   * by its `hash`. Null if the block was accepted, or a
+   * {@link BlockSubmissionReason}. `RpcError` -22 for a proof that does not
+   * decode. A failure after the request may have reached the node is an
+   * `RpcUnknownOutcomeError` naming `blockHash`. Look it up with
+   * `getBlockHeader`, and do not submit it again to find out: the node forgets
+   * an accepted candidate, so that answers `stale-prevblk`.
+   */
+  submitAuxBlock(blockHash: string, auxpowHex: string): RpcRequest<BlockSubmissionResult> {
+    const candidate = argHash(blockHash, 'blockHash')
+    return request('submitauxblock', [candidate, argHex(auxpowHex, 'auxpowHex')], parseBlockSubmission, {
+      blockHash: candidate,
+    })
   },
 
   getWalletInfo: (): RpcRequest<WalletInfo> => request('getwalletinfo', [], parseWalletInfo),

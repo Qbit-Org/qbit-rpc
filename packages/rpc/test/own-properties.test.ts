@@ -138,6 +138,12 @@ const CASES: { readonly [K in keyof Builders]: readonly (() => Parameters<Builde
   getNewAddress: [() => [], () => [{}]],
   lockUnspent: [() => [[{ txid: HASH_A, vout: 0 }]], () => [[{ txid: HASH_A, vout: 0 }], {}]],
   unlockUnspent: [() => [[{ txid: HASH_A, vout: 0 }]]],
+  getMiningInfo: [() => []],
+  getBlockTemplate: [() => [], () => [{}], () => [{ rules: ['segwit'], capabilities: ['proposal'] }]],
+  checkBlockProposal: [() => ['00'.repeat(80)]],
+  submitBlock: [() => ['00'.repeat(80)]],
+  createAuxBlock: [() => ['rq1a']],
+  submitAuxBlock: [() => [HASH_A, 'cafe']],
 }
 const NAMES = Object.keys(CASES) as (keyof Builders)[]
 
@@ -154,6 +160,8 @@ const aborted = (): AbortSignal => {
 const SAMPLES: Readonly<Record<string, unknown>> = {
   blockHash: HASH_B,
   currentTip: HASH_B,
+  rules: ['segwit', 'signet'],
+  capabilities: ['proposal', 'coinbasetxn'],
   includeMempool: false,
   securityLevel: 'maximum',
   mergeMiningPct: 0.5,
@@ -464,7 +472,7 @@ describe('call options under a polluted Object.prototype', () => {
       url: node.url,
       auth: { username: 'u', password: 'p' },
       expectedChain: 'regtest',
-      capabilities: ['wallet-read', 'wallet-write', 'broadcast'],
+      capabilities: ['wallet-read', 'wallet-write', 'broadcast', 'mining'],
       chainCheckMaxAgeMs: 86_400_000,
     })
     await rpc.confirmChain()

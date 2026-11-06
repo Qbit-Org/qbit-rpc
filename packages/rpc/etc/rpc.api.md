@@ -52,6 +52,27 @@ export type AddressValidation = {
 };
 
 // @public
+export interface AuxBlock {
+    // (undocumented)
+    readonly bits: string;
+    readonly chainId: number;
+    // (undocumented)
+    readonly coinbaseValueBits: bigint;
+    readonly commitmentActivationHeight: number;
+    readonly commitmentOrder: 'internal' | 'display';
+    // (undocumented)
+    readonly futureBlockTime: FutureBlockTimeRule;
+    readonly hash: string;
+    // (undocumented)
+    readonly height: number;
+    // (undocumented)
+    readonly p2mrValidationWeight: P2mrValidationWeightRule;
+    // (undocumented)
+    readonly previousBlockHash: string;
+    readonly target: string;
+}
+
+// @public
 export type BatchItem<T> = {
     readonly ok: true;
     readonly value: T;
@@ -182,6 +203,71 @@ export interface BlockRef {
 }
 
 // @public
+export type BlockSubmissionReason = 'duplicate' | 'duplicate-invalid' | 'duplicate-inconclusive' | 'inconclusive' | 'inconclusive-not-best-prevblk' | 'stale-prevblk' | 'rejected' | 'high-hash' | (string & {});
+
+// @public
+export type BlockSubmissionResult = null | BlockSubmissionReason;
+
+// @public
+export interface BlockTemplate {
+    // (undocumented)
+    readonly bits: string;
+    // (undocumented)
+    readonly capabilities: readonly string[];
+    readonly coinbaseAux: Readonly<Record<string, string>>;
+    readonly coinbaseValueBits: bigint;
+    // (undocumented)
+    readonly curTime: number;
+    readonly defaultWitnessCommitment?: string;
+    // (undocumented)
+    readonly futureBlockTime: FutureBlockTimeRule;
+    // (undocumented)
+    readonly height: number;
+    readonly longPollId: string;
+    // (undocumented)
+    readonly minTime: number;
+    // (undocumented)
+    readonly mutable: readonly string[];
+    // (undocumented)
+    readonly nonceRange: string;
+    // (undocumented)
+    readonly p2mrValidationWeight: P2mrValidationWeightRule;
+    // (undocumented)
+    readonly previousBlockHash: string;
+    readonly rules: readonly string[];
+    readonly signetChallenge?: string;
+    // (undocumented)
+    readonly sigOpLimit: number;
+    // (undocumented)
+    readonly sizeLimit: number;
+    readonly target: string;
+    readonly transactions: readonly BlockTemplateTransaction[];
+    // (undocumented)
+    readonly vbAvailable: Readonly<Record<string, number>>;
+    // (undocumented)
+    readonly vbRequired: number;
+    // (undocumented)
+    readonly version: number;
+    readonly versionRollingMask: string;
+    readonly weightLimit?: number;
+}
+
+// @public
+export interface BlockTemplateTransaction {
+    readonly data: string;
+    readonly depends: readonly number[];
+    // (undocumented)
+    readonly feeBits: bigint;
+    readonly hash: string;
+    // (undocumented)
+    readonly sigops: number;
+    // (undocumented)
+    readonly txid: string;
+    // (undocumented)
+    readonly weight: number;
+}
+
+// @public
 export interface BlockTransaction extends Omit<DecodedTransaction, 'blockHash' | 'confirmations' | 'blockTime' | 'time' | 'inActiveChain'> {
     readonly feeBits?: bigint;
 }
@@ -207,7 +293,7 @@ export interface CallOptions {
 }
 
 // @public
-export type Capability = 'wallet-read' | 'wallet-write' | 'broadcast' | 'node-admin';
+export type Capability = 'wallet-read' | 'wallet-write' | 'broadcast' | 'mining' | 'node-admin';
 
 // @public
 export type ChainCheck = 'chain' | 'genesis_hash' | 'signet_challenge';
@@ -383,6 +469,16 @@ export type FundedPsbtOutput = {
 };
 
 // @public
+export interface FutureBlockTimeRule {
+    // (undocumented)
+    readonly limitSeconds: number;
+    // (undocumented)
+    readonly v2ActivationHeight: number;
+    // (undocumented)
+    readonly v2Active: boolean;
+}
+
+// @public
 export class JsonNumber {
     // (undocumented)
     [inspect.custom](): string;
@@ -532,6 +628,33 @@ export interface MempoolSnapshot {
 }
 
 // @public
+export interface MiningInfo {
+    readonly bits: string;
+    // (undocumented)
+    readonly blockMinTxFeeBitsPerKvB: bigint;
+    readonly blocks: number;
+    // (undocumented)
+    readonly chain: QbitChain | (string & {});
+    readonly currentBlockTx?: number;
+    readonly currentBlockWeight?: number;
+    // (undocumented)
+    readonly difficulty: number;
+    // (undocumented)
+    readonly networkHashPs: number;
+    readonly next: {
+        readonly height: number;
+        readonly bits: string;
+        readonly difficulty: number;
+        readonly target: string;
+    };
+    // (undocumented)
+    readonly pooledTx: number;
+    readonly signetChallenge?: string;
+    readonly target: string;
+    readonly warnings: readonly string[];
+}
+
+// @public
 export interface NetworkInfo {
     // (undocumented)
     readonly connections?: number;
@@ -593,6 +716,16 @@ export interface Outpoint {
     readonly txid: string;
     // (undocumented)
     readonly vout: number;
+}
+
+// @public
+export interface P2mrValidationWeightRule {
+    // (undocumented)
+    readonly perSigop: number;
+    // (undocumented)
+    readonly v2ActivationHeight: number;
+    // (undocumented)
+    readonly v2Active: boolean;
 }
 
 // @public
@@ -688,8 +821,10 @@ export class QbitRpcClient {
     batch<const T extends readonly RpcRequest<unknown>[]>(entries: T, callOptions?: CallOptions): Promise<BatchResults<T>>;
     call(method: string, params?: readonly unknown[], callOptions?: CallOptions): Promise<unknown>;
     get chainStatus(): ChainStatus;
+    checkBlockProposal(blockHex: string, callOptions?: CallOptions): Promise<BlockSubmissionResult>;
     close(): void;
     confirmChain(callOptions?: CallOptions): Promise<BlockchainInfo>;
+    createAuxBlock(payoutAddress: string, callOptions?: CallOptions): Promise<AuxBlock>;
     estimateSmartFee(confTarget: number, options?: {
         readonly mode?: FeeEstimateMode;
     }, callOptions?: CallOptions): Promise<SmartFeeEstimate>;
@@ -712,6 +847,10 @@ export class QbitRpcClient {
     // (undocumented)
     getBlockHeader(blockHash: string, callOptions?: CallOptions): Promise<BlockHeader>;
     getBlockHex(blockHash: string, callOptions?: CallOptions): Promise<string>;
+    getBlockTemplate(options?: {
+        readonly rules?: readonly string[];
+        readonly capabilities?: readonly string[];
+    }, callOptions?: CallOptions): Promise<BlockTemplate>;
     getBlockWithTransactions(blockHash: string, callOptions?: CallOptions): Promise<BlockWithTransactions>;
     // (undocumented)
     getChainTips(callOptions?: CallOptions): Promise<ChainTip[]>;
@@ -724,6 +863,8 @@ export class QbitRpcClient {
     getMempoolEntry(txid: string, callOptions?: CallOptions): Promise<MempoolEntry>;
     // (undocumented)
     getMempoolInfo(callOptions?: CallOptions): Promise<MempoolInfo>;
+    // (undocumented)
+    getMiningInfo(callOptions?: CallOptions): Promise<MiningInfo>;
     // (undocumented)
     getNetworkInfo(callOptions?: CallOptions): Promise<NetworkInfo>;
     getNewAddress(options?: {
@@ -765,6 +906,8 @@ export class QbitRpcClient {
         readonly maxFeeRateBitsPerKvB?: bigint;
         readonly maxBurnAmountBits?: bigint;
     }, callOptions?: CallOptions): Promise<string>;
+    submitAuxBlock(blockHash: string, auxpowHex: string, callOptions?: CallOptions): Promise<BlockSubmissionResult>;
+    submitBlock(blockHex: string, callOptions?: CallOptions): Promise<BlockSubmissionResult>;
     submitPackage(rawTxs: readonly string[], options?: {
         readonly maxFeeRateBitsPerKvB?: bigint;
         readonly maxBurnAmountBits?: bigint;
@@ -879,6 +1022,15 @@ export const requests: {
         readonly maxFeeRateBitsPerKvB?: bigint;
         readonly maxBurnAmountBits?: bigint;
     }): RpcRequest<PackageSubmission>;
+    getMiningInfo: () => RpcRequest<MiningInfo>;
+    getBlockTemplate(options?: {
+        readonly rules?: readonly string[];
+        readonly capabilities?: readonly string[];
+    }): RpcRequest<BlockTemplate>;
+    checkBlockProposal(blockHex: string): RpcRequest<BlockSubmissionResult>;
+    submitBlock(blockHex: string): RpcRequest<BlockSubmissionResult>;
+    createAuxBlock(payoutAddress: string): RpcRequest<AuxBlock>;
+    submitAuxBlock(blockHash: string, auxpowHex: string): RpcRequest<BlockSubmissionResult>;
     getWalletInfo: () => RpcRequest<WalletInfo>;
     getTransaction(txid: string): RpcRequest<WalletTransaction>;
     listUnspent(options?: ListUnspentOptions): RpcRequest<UnspentOutput[]>;
@@ -986,6 +1138,7 @@ export class RpcError extends QbitRpcError {
 
 // @public
 export interface RpcRequest<T> {
+    readonly blockHash?: string;
     // (undocumented)
     readonly method: string;
     // (undocumented)
@@ -1054,7 +1207,8 @@ export class RpcTransportError extends QbitRpcError {
 
 // @public
 export class RpcUnknownOutcomeError extends QbitRpcError {
-    constructor(method: string, cause: QbitRpcError, txid?: string, txids?: readonly (string | null)[]);
+    constructor(method: string, cause: QbitRpcError, txid?: string, txids?: readonly (string | null)[], blockHash?: string);
+    readonly blockHash?: string;
     // (undocumented)
     static is(value: unknown): value is RpcUnknownOutcomeError;
     readonly txid?: string;

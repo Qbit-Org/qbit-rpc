@@ -32,15 +32,21 @@ import {
 const fixtures = loadFixtures()
 // Typed methods with no captured reply yet; #44 captures them. Only ever removed from.
 const NOT_YET_CAPTURED: readonly string[] = [
+  'checkBlockProposal',
+  'createAuxBlock',
   'getBlock',
   'getBlockHex',
+  'getBlockTemplate',
   'getBlockWithTransactions',
   'getChainTips',
   'getMempoolInfo',
+  'getMiningInfo',
   'getRawMempool',
   'getRawMempoolSequence',
   'getRawMempoolVerbose',
   'getTxSpendingPrevout',
+  'submitAuxBlock',
+  'submitBlock',
   'submitPackage',
   'waitForBlockHeight',
   'waitForNewBlock',

@@ -34,14 +34,15 @@ export const QBIT_DEFAULT_SIGNET_CHALLENGE = '51'
  * - `wallet-write`: change wallet state or sign (`walletcreatefundedpsbt`,
  *   `walletprocesspsbt`, `walletpassphrase`, `walletlock`, ...).
  * - `broadcast`: `testmempoolaccept`, `sendrawtransaction` and `submitpackage`.
+ * - `mining`: `getblocktemplate`, `submitblock`, `createauxblock` and `submitauxblock`.
  * - `node-admin`: node administration (`stop`, `setban`, `addnode`,
  *   `pruneblockchain`, `savemempool`, `ping`, ...). No allowlisted method needs
- *   it: a client opens these through `extraMethods` only. Its calls do not
- *   wait for the chain guard, and none goes in a batch.
+ *   it: a client opens these through `extraMethods` only. Its calls wait for
+ *   the chain guard, by the chain's identity only, and none goes in a batch.
  */
-export type Capability = 'wallet-read' | 'wallet-write' | 'broadcast' | 'node-admin'
+export type Capability = 'wallet-read' | 'wallet-write' | 'broadcast' | 'mining' | 'node-admin'
 
-export const CAPABILITIES: readonly Capability[] = ['wallet-read', 'wallet-write', 'broadcast', 'node-admin']
+export const CAPABILITIES: readonly Capability[] = ['wallet-read', 'wallet-write', 'broadcast', 'mining', 'node-admin']
 
 /** How the client treats a method: what it needs, and whether a call can change node or wallet state. */
 export interface MethodPolicy {
@@ -70,6 +71,7 @@ const READ: MethodPolicy = { capability: 'read', sideEffects: false }
 const WALLET_READ: MethodPolicy = { capability: 'wallet-read', sideEffects: false }
 const WALLET_WRITE: MethodPolicy = { capability: 'wallet-write', sideEffects: true }
 const LONG_POLL: MethodPolicy = { capability: 'read', sideEffects: false, longPoll: true }
+const MINING_WRITE: MethodPolicy = { capability: 'mining', sideEffects: true }
 
 /**
  * The default deadline of `walletpassphrase` and `walletlock`. qbit Core v1.0.0
@@ -122,6 +124,7 @@ export const METHOD_POLICIES: Readonly<Record<string, MethodPolicy>> = Object.fr
   gettxspendingprevout: READ,
   waitfornewblock: LONG_POLL,
   waitforblockheight: LONG_POLL,
+  getmininginfo: READ,
   // Further reads, untyped: use call().
   decoderawtransaction: READ,
   decodepsbt: READ,
@@ -137,6 +140,15 @@ export const METHOD_POLICIES: Readonly<Record<string, MethodPolicy>> = Object.fr
   testmempoolaccept: { capability: 'broadcast', sideEffects: false },
   sendrawtransaction: { capability: 'broadcast', sideEffects: true },
   submitpackage: { capability: 'broadcast', sideEffects: true },
+
+  // getblocktemplate changes nothing, but it is gated with the submission it
+  // leads to: hashing a template from the wrong chain is wasted work, and it
+  // assembles a block under the node's main lock.
+  getblocktemplate: { capability: 'mining', sideEffects: false },
+  submitblock: MINING_WRITE,
+  // createauxblock holds its candidate in the node's cache, for submitauxblock.
+  createauxblock: MINING_WRITE,
+  submitauxblock: MINING_WRITE,
 
   getwalletinfo: WALLET_READ,
   gettransaction: WALLET_READ,
@@ -184,10 +196,10 @@ const POLICY_KEYS = ['capability', 'sideEffects'] as const
  * be restated) nor in SIGN_AND_BROADCAST. Each entry is a plain object holding,
  * as its own properties, exactly a known `capability`, which the client
  * enables unless it is `read`, and an explicit `sideEffects`; one with side
- * effects needs `wallet-write` or `broadcast`, so a client without them stays
- * unable to change state, and the chain guard covers every such call, or
- * `node-admin`, which administers the node, behind the chain guard too, and
- * is never batched. A method
+ * effects needs a capability of GUARDED_CAPABILITIES, so a client without them
+ * stays unable to change state, and the chain guard covers every such call;
+ * `node-admin`, which administers the node, is behind the guard too, by the
+ * chain's identity only, and is never batched. A method
  * qbit Core v1.0.0 has, listed by `help` or hidden, must not be declared below
  * what it does (METHOD_CLASSES, HIDDEN_METHOD_CLASSES): a wallet method needs a wallet capability, and one that
  * changes state needs side effects under its own kind's capability. Throws a
@@ -245,14 +257,9 @@ export function extraMethodPolicies(value: unknown, enabled: ReadonlySet<Capabil
     // What a method help lists does decides first, so a node method's message names node-admin.
     const below = belowClass(name, policy)
     if (below !== undefined) throw new TypeError(`${path}: ${below}`)
-    if (
-      sideEffects &&
-      policy.capability !== 'wallet-write' &&
-      policy.capability !== 'broadcast' &&
-      policy.capability !== 'node-admin'
-    ) {
+    if (sideEffects && !guarded(policy)) {
       throw new TypeError(
-        `${path}: a method with side effects needs the wallet-write or broadcast capability, which puts it behind the chain guard, or node-admin to administer the node`
+        `${path}: a method with side effects needs the ${guardedList()} capability, which puts it behind the chain guard, or node-admin to administer the node`
       )
     }
     // Restated or not: an entry no call can use is a mistake either way.
@@ -281,6 +288,34 @@ export const IGNORED_OPTIONS: Readonly<
     keys: { subtract_fee_from_outputs: 'subtractFeeFromOutputs' },
   },
 })
+
+/**
+ * The capabilities whose calls wait for the chain guard: the one list the
+ * guard, the batch rule and `extraMethods` read. `mining` is here because a
+ * block on the wrong chain is wasted work, and a pool's payouts depend on its
+ * blocks being on the right one. `node-admin` too, by the chain's identity
+ * only (no qbit Core version refuses it): a client that expects regtest never
+ * stops, bans or invalidates on a mainnet node it was pointed at by mistake.
+ * A batch is sent as a read, without the guard, so it carries no call needing
+ * one of these.
+ */
+export const GUARDED_CAPABILITIES: ReadonlySet<Capability> = new Set<Capability>([
+  'wallet-write',
+  'broadcast',
+  'mining',
+  'node-admin',
+])
+
+/** Whether a call waits for the chain guard: its capability is one of GUARDED_CAPABILITIES. */
+export function guarded(policy: MethodPolicy): boolean {
+  return policy.capability !== 'read' && GUARDED_CAPABILITIES.has(policy.capability)
+}
+
+/** The capabilities that change a wallet, the mempool or blocks, as a message lists them: `wallet-write, broadcast or mining`. */
+function guardedList(): string {
+  const names = [...GUARDED_CAPABILITIES].filter(name => name !== 'node-admin')
+  return `${names.slice(0, -1).join(', ')} or ${names.at(-1)!}`
+}
 
 export function methodPolicy(method: string): MethodPolicy | undefined {
   return Object.hasOwn(METHOD_POLICIES, method) ? METHOD_POLICIES[method] : undefined

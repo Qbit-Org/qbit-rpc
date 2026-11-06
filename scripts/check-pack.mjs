@@ -39,11 +39,11 @@ const FILES = [
 // merges into its own exports without any code of the file's.
 const MAPS = { 'lib/index.js.map': [], 'lib/index.mjs.map': ['../src/index.ts'] }
 
-// Unpacked bytes, about a quarter above the size when the ceiling was set
-// (1,452,000 and 168,000; zmq raised at 224,000, when heartbeats and the
-// subscriber's own reconnect came in). Raise one deliberately, in the pull
+// Unpacked bytes, about a quarter above the size when the ceiling was last set
+// (rpc at 1,817,000, when mining came in; zmq at 224,000, when heartbeats and
+// the subscriber's own reconnect came in). Raise one deliberately, in the pull
 // request that needs it.
-const CEILINGS = { rpc: 1_815_000, zmq: 280_000 }
+const CEILINGS = { rpc: 2_270_000, zmq: 280_000 }
 
 const packages = ['rpc', 'zmq']
 const rootLicense = readFileSync(join(repoRoot, 'LICENSE'), 'utf8')
