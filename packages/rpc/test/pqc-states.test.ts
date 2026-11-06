@@ -259,7 +259,7 @@ describe('getaddressinfo in each PQC budget state', () => {
   })
 })
 
-describe("the root README's quick-start check before signing", () => {
+describe("the payout example's check before signing", () => {
   const A = 'qbrt1zy4lcyrvkrz6xaqe8ra9wlkwc0ven0yla2zvzul608f4egqqmhflse3was7'
   const B = 'qbrt1zst3uq7dclyhe3q93en60jn6v745gxecudfsa86fhxqm7hsrz244q6urs83'
   const addressInfo = (address: string, fields: Record<string, unknown>): string =>
@@ -296,11 +296,11 @@ describe("the root README's quick-start check before signing", () => {
     })
   }
 
-  /** The README's lines, as written: returns what it warned. */
+  /** The example's lines, as written: returns what it warned. */
   async function check(funded: { psbt: string }): Promise<string[]> {
     const warned: string[] = []
     const console = { warn: (line: string) => void warned.push(line) }
-    // From here to the end of the loop, as in README.md.
+    // From here to the end of the loop, as in docs/rpc/payments.md.
     const { inputs } = (await rpc.call('decodepsbt', [funded.psbt])) as {
       inputs: { witness_utxo?: { scriptPubKey: { address?: string } } }[]
     }
@@ -330,8 +330,8 @@ describe("the root README's quick-start check before signing", () => {
     return warned
   }
 
-  it('is the README text, line for line', () => {
-    const readme = readFileSync(new URL('../../../README.md', import.meta.url), 'utf8')
+  it('is the docs text, line for line', () => {
+    const readme = readFileSync(new URL('../../../docs/rpc/payments.md', import.meta.url), 'utf8')
     const source = readFileSync(new URL(import.meta.url), 'utf8').split('\n')
     const from = source.findIndex(line => line.includes('// From here to the end of the loop')) + 1
     const to = source.findIndex((line, i) => i > from && line.trim() === 'return warned')

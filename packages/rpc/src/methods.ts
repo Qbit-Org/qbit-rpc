@@ -1800,7 +1800,10 @@ export interface BlockTemplate {
   readonly coinbaseAux: Readonly<Record<string, string>>
   /** What the coinbase may pay at most: the subsidy and every transaction's fee. */
   readonly coinbaseValueBits: bigint
-  /** Passed to `getblocktemplate` through `call()`, it holds the reply: see the package README's mining section. */
+  /**
+   * Passed to `getblocktemplate` through `call()`, it holds the reply: see
+   * {@link https://github.com/Qbit-Org/qbit-rpc/blob/main/docs/rpc/mining.md | Mining}.
+   */
   readonly longPollId: string
   /** `bits` expanded. */
   readonly target: string
@@ -2924,7 +2927,10 @@ function parseWalletDir(value: unknown): WalletDirEntry[] {
 
 /** One descriptor for `importDescriptors`. */
 export interface DescriptorImport {
-  /** The descriptor, with its checksum. It can hold private keys: see the package README. */
+  /**
+   * The descriptor, with its checksum. It can hold private keys: see
+   * {@link https://github.com/Qbit-Org/qbit-rpc/blob/main/docs/rpc/wallet-admin.md#descriptors | Descriptors}.
+   */
   readonly desc: string
   /**
    * Unix time in seconds from which to rescan for the descriptor's
@@ -3340,7 +3346,7 @@ export const requests = {
   /**
    * `getblock` at verbosity 2: as {@link requests.getBlock}, each transaction
    * decoded. A full block's reply can pass the client's `maxResponseBytes`; see
-   * the package README.
+   * {@link https://github.com/Qbit-Org/qbit-rpc/blob/main/docs/rpc/reading-the-chain.md#large-replies | Large replies}.
    */
   getBlockWithTransactions(blockHash: string): RpcRequest<BlockWithTransactions> {
     const requested = argHash(blockHash, 'blockHash')
@@ -3367,7 +3373,7 @@ export const requests = {
    * is missed, and the client does not retry it) or `waitMs` (1 to 3,590,000)
    * has passed, then return the tip. A returned tip equal to the one passed
    * means the wait ran out. A tip that is not the node's returns at once. See
-   * the package README's long polls.
+   * {@link https://github.com/Qbit-Org/qbit-rpc/blob/main/docs/rpc/reading-the-chain.md#long-polls | Long polls}.
    */
   waitForNewBlock(waitMs: number, options?: { readonly currentTip?: string }): RpcRequest<BlockRef> {
     const o = methodOptions(options, ['currentTip'])
@@ -3384,8 +3390,8 @@ export const requests = {
   /**
    * Hold the request until the tip reaches `height` or `waitMs` (1 to
    * 3,590,000) has passed, then return the tip. A returned height below
-   * `height` means the wait ran out, so it is not refused. See the package
-   * README's long polls.
+   * `height` means the wait ran out, so it is not refused. See
+   * {@link https://github.com/Qbit-Org/qbit-rpc/blob/main/docs/rpc/reading-the-chain.md#long-polls | Long polls}.
    */
   waitForBlockHeight(height: number, waitMs: number): RpcRequest<BlockRef> {
     const wait = argWaitMs(waitMs)
@@ -3637,7 +3643,7 @@ export const requests = {
    * adds `signet` on signet); it must hold `segwit`, which qbit Core requires,
    * and on signet also `signet`. qbit Core v1.0.0 does not
    * read `capabilities`. On main, `RpcError` -9 with no peers and -10 while the
-   * node syncs. See the package README's mining section.
+   * node syncs. See {@link https://github.com/Qbit-Org/qbit-rpc/blob/main/docs/rpc/mining.md | Mining}.
    */
   getBlockTemplate(options?: {
     readonly rules?: readonly string[]
@@ -4103,8 +4109,9 @@ export const requests = {
    * {@link DescriptorImport}), with its checksum. Descriptors can hold private
    * keys: they travel only in the request body, and the node's messages,
    * which can quote a descriptor in full, are redacted. The default deadline
-   * is 120 s: see the package README. Needs the wallet unlocked (`RpcError`
-   * -13).
+   * is 120 s: see
+   * {@link https://github.com/Qbit-Org/qbit-rpc/blob/main/docs/rpc/wallet-admin.md | Wallet administration}.
+   * Needs the wallet unlocked (`RpcError` -13).
    */
   importDescriptors(descriptors: readonly DescriptorImport[]): RpcRequest<DescriptorImportResult[]> {
     // Frozen, so what is sent is what the result's messages are redacted of.
@@ -4115,7 +4122,9 @@ export const requests = {
   /**
    * Rescan the chain from `startHeight` (default 0) to `stopHeight` (default
    * the tip) for the wallet's transactions. The default deadline is 120 s:
-   * see the package README. Rejects with `RpcError` -8 for a height past the
+   * see
+   * {@link https://github.com/Qbit-Org/qbit-rpc/blob/main/docs/rpc/wallet-admin.md | Wallet administration}.
+   * Rejects with `RpcError` -8 for a height past the
    * wallet's tip, -4 while a rescan runs, and -13 while the wallet is locked.
    */
   rescanBlockchain(options?: {
@@ -4154,8 +4163,9 @@ export const requests = {
     ),
   /**
    * Derive keys until each active descriptor's keypool holds `newSize`
-   * (default `-keypool`, 1,000). The default deadline is 120 s: see the
-   * package README. Needs the wallet unlocked (`RpcError` -13).
+   * (default `-keypool`, 1,000). The default deadline is 120 s: see
+   * {@link https://github.com/Qbit-Org/qbit-rpc/blob/main/docs/rpc/wallet-admin.md | Wallet administration}.
+   * Needs the wallet unlocked (`RpcError` -13).
    */
   keypoolRefill(options?: { readonly newSize?: number }): RpcRequest<null> {
     const o = methodOptions(options, ['newSize'])

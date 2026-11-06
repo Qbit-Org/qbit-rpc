@@ -76,7 +76,8 @@ export function oneOf<T extends string>(values: readonly T[]): (value: unknown, 
 /**
  * A value of an enum a later qbit Core may extend: one of `values`, or any
  * other non-empty string, returned as it is, never dropped or coerced. Which
- * enums are open, and why, is in the README's "Versions and compatibility".
+ * enums are open, and why, is in
+ * {@link https://github.com/Qbit-Org/qbit-rpc/blob/main/docs/rpc/versions.md | Versions and compatibility}.
  */
 export function openOneOf<T extends string>(values: readonly T[]): (value: unknown, path: string) => T | (string & {}) {
   const expected = `one of ${values.map(v => `'${v}'`).join(', ')}, or another non-empty string`

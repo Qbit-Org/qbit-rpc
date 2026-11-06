@@ -4,9 +4,10 @@ import { compact, field, integer, object, ResultIssue, string, type JsonObject }
 /**
  * The qbit Core releases this package supports: 1.0.x, any patch release of
  * 1.0 and no pre-release. This is the one place the range is defined; the
- * READMEs state it. A minor version is added only once the regtest smoke test
- * (CI's `regtest smoke`, against the release scripts/qbit-core-release.mjs
- * names) passes against it.
+ * root README, docs/compatibility.md and docs/rpc/versions.md state it. A
+ * minor version is added only once the regtest smoke test (CI's `regtest
+ * smoke`, against the release scripts/qbit-core-release.mjs names) passes
+ * against it.
  */
 const SUPPORTED = { name: 'qbit', major: 1, minor: 0 } as const
 

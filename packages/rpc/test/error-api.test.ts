@@ -249,7 +249,7 @@ describe('the error API, read from the source', () => {
     })
   }
 
-  /** The first two cells of each row of the one table a README may have headed `| Error |`. */
+  /** The first two cells of each row of the one table a page may have headed `| Error |`. */
   function rowsFromTable(markdown: string): string[] {
     const lines = markdown.split('\n')
     const heads = lines.flatMap((line, index) => (line.startsWith('| Error |') ? [index] : []))
@@ -276,20 +276,20 @@ describe('the error API, read from the source', () => {
       })
   }
 
+  it.each(['rpc', 'zmq'] as const)('finds every error class and reason of %s in its docs table, and no other', pkg => {
+    const expected = rowsFromCode(described[pkg]).sort()
+    expect(rowsFromTable(readme(`docs/${pkg}/errors.md`)).sort()).toEqual(expected)
+  })
+
   it.each(['rpc', 'zmq'] as const)(
-    'finds every error class and reason of %s in its README table, and no other',
+    'keeps the %s table in docs, one only, and links it from the package README',
     pkg => {
-      const expected = rowsFromCode(described[pkg]).sort()
-      expect(rowsFromTable(readme(`packages/${pkg}/README.md`)).sort()).toEqual(expected)
+      expect(readme('README.md')).not.toMatch(/^\| Error \|/m)
+      const packageReadme = readme(`packages/${pkg}/README.md`)
+      expect(packageReadme).not.toMatch(/^\| Error \|/m)
+      expect(packageReadme).toContain(`](https://github.com/Qbit-Org/qbit-rpc/blob/main/docs/${pkg}/errors.md)`)
     }
   )
-
-  it('keeps the tables in the package READMEs, one each, and links them from the repository README', () => {
-    const root = readme('README.md')
-    expect(root).not.toMatch(/^\| Error \|/m)
-    expect(root).toContain('packages/rpc/README.md#failure-model')
-    expect(root).toContain('packages/zmq/README.md#errors')
-  })
 
   it('gives each property one type across both packages’ error classes and zmq events', () => {
     const types = new Map<string, Set<string>>()

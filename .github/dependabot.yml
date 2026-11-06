@@ -1,5 +1,5 @@
-# Version update pull requests, every Monday at 06:00 UTC. See the root
-# README's "Packaging and dependencies" for the policy they are reviewed
+# Version update pull requests, every Monday at 06:00 UTC. See
+# CONTRIBUTING.md's "Dependency policy" for the policy they are reviewed
 # against.
 version: 2
 updates:

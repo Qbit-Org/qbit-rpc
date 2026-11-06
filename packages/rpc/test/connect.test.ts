@@ -99,7 +99,7 @@ class Proxy {
   }
 }
 
-/** The README's connect function: a tunnel through an HTTP CONNECT proxy. */
+/** The connect function in docs/rpc/remote-nodes.md: a tunnel through an HTTP CONNECT proxy. */
 function viaProxy(proxyHost: string, proxyPort: number): RpcConnect {
   return ({ host, port, signal }) =>
     new Promise((resolve, reject) => {
@@ -1537,7 +1537,7 @@ describe('connect', () => {
     })
 
     it('fails the call, with no crash, when the stream errors on its signal after Node failed to build TLS over it', async () => {
-      // As the README asks: the stream is destroyed when the signal fires, here with an error.
+      // As the docs ask: the stream is destroyed when the signal fires, here with an error.
       const connect: RpcConnect = ({ signal }) => {
         const socket = netConnect(node.port, '127.0.0.1')
         signal.addEventListener(
@@ -1608,13 +1608,13 @@ describe('connect', () => {
     expect(methods()).toEqual([...CHECK])
   })
 
-  it('is the README’s example, word for word', () => {
+  it('is the docs’ example, word for word', () => {
     const source = (path: string): string => {
       const text = readFileSync(fileURLToPath(new URL(path, import.meta.url)), 'utf8')
       const start = text.indexOf('function viaProxy(')
       return text.slice(start, text.indexOf('\n}\n', start))
     }
-    expect(source('../README.md')).toBe(source('./connect.test.ts'))
+    expect(source('../../../docs/rpc/remote-nodes.md')).toBe(source('./connect.test.ts'))
   })
 
   it('needs an https url and Basic credentials, and a function', () => {
