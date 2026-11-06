@@ -42,9 +42,16 @@
     "qbit",
     "json-rpc",
     "qbitd",
-    "wallet"
+    "wallet",
+    "qbit-core",
+    "rpc-client",
+    "psbt",
+    "typescript"
   ],
-  "author": "Qbit",
+  "author": {
+    "name": "Qbit",
+    "url": "https://github.com/Qbit-Org"
+  },
   "license": "MIT",
   "repository": {
     "type": "git",

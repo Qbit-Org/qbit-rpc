@@ -42,9 +42,16 @@
     "qbit",
     "zmq",
     "zeromq",
-    "qbitd"
+    "qbitd",
+    "qbit-core",
+    "notifications",
+    "subscriber",
+    "typescript"
   ],
-  "author": "Qbit",
+  "author": {
+    "name": "Qbit",
+    "url": "https://github.com/Qbit-Org"
+  },
   "license": "MIT",
   "repository": {
     "type": "git",

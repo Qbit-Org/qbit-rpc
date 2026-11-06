@@ -1,0 +1,17 @@
+# Changes to the release path need a review from its owner: the workflows,
+# the scripts CI and pack checks run, the manifests and the lockfile, the
+# workspace, build and TypeScript configuration, and RELEASING.md itself. This
+# takes effect once the `main` rules in RELEASING.md are on, with code-owner
+# review required; rulesets are refused while the repository is private (see
+# RELEASING.md's Gaps), so until then nothing here is enforced.
+/.github/ @kiwidream
+/scripts/ @kiwidream
+/package.json @kiwidream
+/packages/*/package.json @kiwidream
+/pnpm-lock.yaml @kiwidream
+/pnpm-workspace.yaml @kiwidream
+/packages/*/tsup.config.ts @kiwidream
+/tsconfig.json @kiwidream
+/packages/*/tsconfig.json @kiwidream
+/packages/*/test/tsconfig.json @kiwidream
+/RELEASING.md @kiwidream

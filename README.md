@@ -1,5 +1,10 @@
 # qbit-rpc
 
+[![npm: @qbit-oss/rpc](https://img.shields.io/npm/v/@qbit-oss/rpc)](https://www.npmjs.com/package/@qbit-oss/rpc)
+[![npm: @qbit-oss/zmq](https://img.shields.io/npm/v/@qbit-oss/zmq)](https://www.npmjs.com/package/@qbit-oss/zmq)
+[![CI](https://github.com/Qbit-Org/qbit-rpc/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Qbit-Org/qbit-rpc/actions/workflows/ci.yml?query=branch%3Amain)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](https://github.com/Qbit-Org/qbit-rpc/blob/main/LICENSE)
+
 Node.js clients for a qbit Core node you run: JSON-RPC (`@qbit-oss/rpc`) and
 ZMQ notifications (`@qbit-oss/zmq`). They complement the official SDK:
 [`@qbit-oss/api`](https://github.com/Qbit-Org/qbit-js/tree/main/packages/api)
@@ -24,21 +29,18 @@ application.
 
 ## Install
 
-The packages are not on npm (both are `0.0.0` and `"private": true`). Build and
-pack them from this repository, then install the tarballs:
-
 ```sh
-corepack pnpm install --frozen-lockfile
-corepack pnpm build
-(cd packages/rpc && npm pack)   # qbit-oss-rpc-0.0.0.tgz
-(cd packages/zmq && npm pack)   # qbit-oss-zmq-0.0.0.tgz
-npm install /path/to/qbit-oss-rpc-0.0.0.tgz /path/to/qbit-oss-zmq-0.0.0.tgz zeromq@^6.5.0
+npm install @qbit-oss/rpc
+npm install @qbit-oss/zmq zeromq@^6.5.0
 ```
 
-`zeromq` is needed only for `QbitZmqSubscriber`'s default socket; see
-[Packaging and dependencies](#packaging-and-dependencies). Both packages ship
-CommonJS and ESM builds with type declarations. For the qbit Core versions,
-Node.js versions and platforms they support, see below.
+Both packages ship CommonJS and ESM builds with type declarations. `zeromq`,
+an optional peer dependency of `@qbit-oss/zmq`, is needed only for
+`QbitZmqSubscriber`'s default socket, and ships prebuilt binaries; see
+[Packaging and dependencies](#packaging-and-dependencies). For the qbit Core
+versions, Node.js versions and platforms the packages support, see below. To
+build and pack them from this repository instead, see
+[Development](#development).
 
 ## Supported qbit Core versions
 
@@ -94,6 +96,26 @@ pull requests or pushes: macOS minutes are billed at a multiple for this
 private repository, and the arm64 runners must first be available to it. On a
 platform not in the table above, `zeromq`'s install script builds libzmq from
 source, which needs CMake, Ninja and vcpkg and is not tested here.
+
+## TypeScript
+
+The packed declarations need TypeScript 5.0 or later (`QbitRpcClient.batch`
+has a `const` type parameter, which TypeScript 4.9 cannot parse) and
+`@types/node` 22.0.0 or later (`@qbit-oss/rpc`'s declarations import
+`node:stream` and `node:util`). Use the `@types/node` major of the Node.js
+line you run.
+
+`@types/node` is not a dependency or a peer dependency of either package, on
+purpose: a TypeScript project for Node.js already has it, at the major of its
+own Node.js line, and a peer range here would have to follow every Node.js
+major the packages accept. JavaScript users never need it.
+
+`consumer:check` type-checks the packed declarations with `skipLibCheck: false`
+twice: with the TypeScript and `@types/node` this repository builds with, and
+at the floors, TypeScript 5.0.4 and `@types/node` 22.0.0 (the root
+`typescript-floor` and `types-node-floor` dev dependencies). A change that needs
+a newer version of either fails CI; raising a floor is a breaking change, listed
+in [CHANGELOG.md](CHANGELOG.md).
 
 ## Quick start
 
@@ -282,8 +304,8 @@ Each tarball holds exactly `package.json`, `README.md`, `LICENSE` and, in
 map for each and the declarations for each (`index.d.ts`, `index.d.mts`). The
 maps carry every source file in `sourcesContent`, so `src/` is not shipped:
 run Node.js with `--enable-source-maps` to see `src/*.ts` lines in stack traces.
-`@qbit-oss/rpc` is about 2.09 MB unpacked (539 KB packed), most of it the two
-maps; `@qbit-oss/zmq` about 227 KB (61 KB packed). `pack:check` fails on any
+`@qbit-oss/rpc` is about 2.09 MB unpacked (540 KB packed), most of it the two
+maps; `@qbit-oss/zmq` about 228 KB (62 KB packed). `pack:check` fails on any
 other file, on a map that does not carry its sources, and above a ceiling of
 2,270,000 and 280,000 bytes unpacked.
 
@@ -361,6 +383,15 @@ corepack pnpm verify
 `verify` runs `format:check`, `build`, `api:check`, `test`, `test:release`
 (which needs `gpg`), `test:scripts`, `typecheck`, `typecheck:test`, `pack:check` and
 `consumer:check`, as `.github/workflows/ci.yml` does, on each Node.js line.
+
+To install a build of this checkout into another project, pack each package
+(`npm pack` runs `prepack`, a fresh build) and install the tarballs:
+
+```sh
+(cd packages/rpc && npm pack)   # qbit-oss-rpc-<version>.tgz
+(cd packages/zmq && npm pack)   # qbit-oss-zmq-<version>.tgz
+npm install /path/to/qbit-oss-rpc-<version>.tgz /path/to/qbit-oss-zmq-<version>.tgz zeromq@^6.5.0
+```
 
 ### The API report
 

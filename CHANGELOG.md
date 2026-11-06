@@ -582,6 +582,13 @@ properties only. The API report is unchanged.
   bodies are copied with `new Uint8Array(body)`, which is faster than
   `Uint8Array.from` and still a copy.
 
+### TypeScript and `@types/node` floors
+
+- The declarations need TypeScript 5.0 or later and `@types/node` 22.0.0 or
+  later, which consumers install themselves; neither is a dependency or a peer
+  dependency. CI type-checks the packed declarations at both floors, and
+  raising either is a breaking change.
+
 ### Wallet and chain methods for the payout adapter
 
 - Typed, validated methods for the calls qbit-payments' qbit Core wallet

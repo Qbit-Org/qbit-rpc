@@ -2,7 +2,15 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 
-import { mapProblems, peerProblems, sizeProblem } from './pack-checks.mjs'
+import {
+  authorProblem,
+  CHANGELOG_URL,
+  linksLeavingPackage,
+  mapProblems,
+  peerProblems,
+  readmeProblems,
+  sizeProblem,
+} from './pack-checks.mjs'
 
 describe('sizeProblem', () => {
   it('passes a size under its ceiling, and fails one over it', () => {
@@ -96,5 +104,67 @@ describe('peerProblems', () => {
     assert.deepEqual(peerProblems(manifest('>=6.5.0', '6.5.0')), [
       'peer dependency zeromq must be a caret range (^x.y.z), not >=6.5.0',
     ])
+  })
+})
+
+describe('readmeProblems', () => {
+  const changelog = `See the [changelog](${CHANGELOG_URL}).`
+
+  it('passes absolute links, anchors and links inside the package, with the changelog linked', () => {
+    const readme = [
+      changelog,
+      '[site](https://example.com/x) [mail](mailto:a@example.com) [up](#install) [lib](lib/index.d.ts)',
+      '[ref]: https://example.com/ref',
+      '<img src="https://img.shields.io/badge/x"> <a href="//example.com/">x</a>',
+    ].join('\n')
+    assert.deepEqual(readmeProblems(readme), [])
+  })
+
+  it('finds a relative link that leaves the package, inline, by reference or in HTML', () => {
+    for (const link of [
+      '[root](../../README.md)',
+      '[root](<../../README.md>)',
+      '[a](../x#y)',
+      '[abs](/README.md)',
+      '[ref]: ../../LICENSE',
+      '<a href="../../SECURITY.md">x</a>',
+      "<img src='../logo.png'>",
+      '<a href=../../SECURITY.md>x</a>',
+      '<img src=../logo.png>',
+      '[enc](%2e%2e/%2e%2e/LICENSE)',
+    ]) {
+      assert.equal(linksLeavingPackage(link).length, 1, link)
+      assert.match(readmeProblems(`${changelog}\n${link}`)[0] ?? '', /links outside the package/, link)
+    }
+  })
+
+  it('does not read code as links: fenced blocks and inline code', () => {
+    const readme = [changelog, '```ts', 'handlers[k](../x)', '```', 'Call `fn[0](../y)` once.'].join('\n')
+    assert.deepEqual(readmeProblems(readme), [])
+  })
+
+  it('fails a README that does not link the changelog by its absolute URL', () => {
+    assert.deepEqual(readmeProblems('No changelog here. [c](../../CHANGELOG.md)').length, 2)
+    assert.deepEqual(readmeProblems('No changelog here.'), [`README.md does not link ${CHANGELOG_URL}`])
+  })
+})
+
+describe('authorProblem', () => {
+  it('passes a name with an https URL', () => {
+    assert.equal(authorProblem({ name: 'Qbit', url: 'https://github.com/Qbit-Org' }), undefined)
+  })
+
+  it('fails a string, a missing name or URL, or a URL that is not https', () => {
+    for (const author of [
+      'Qbit <https://github.com/Qbit-Org>',
+      undefined,
+      { name: 'Qbit' },
+      { url: 'https://github.com/Qbit-Org' },
+      { name: 'Qbit', url: 'http://github.com/Qbit-Org' },
+      { name: '', url: 'https://github.com/Qbit-Org' },
+      { name: 'Qbit', url: 'https://' },
+    ]) {
+      assert.notEqual(authorProblem(author), undefined, JSON.stringify(author))
+    }
   })
 })

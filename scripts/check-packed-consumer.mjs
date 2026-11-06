@@ -8,7 +8,11 @@
 //    DOM lib) against the packed declarations with `skipLibCheck: false`. A
 //    `.mts` and a `.cts` file resolve the `import` and `require` export
 //    conditions, so both `lib/index.d.mts` and `lib/index.d.ts` are checked,
-//    and the run must resolve exactly those files for each package.
+//    and the run must resolve exactly those files for each package. It runs
+//    twice: with the workspace's TypeScript and `@types/node`, and at the
+//    floors the package READMEs state, TypeScript 5.0 and `@types/node`
+//    22.0.0 (the root `typescript-floor` and `types-node-floor` aliases), so a
+//    declaration that needs a newer version of either fails here.
 // 2. Loads the CommonJS and the ESM build of each package side by side and
 //    checks that each error class's `is()` recognizes an error from the other
 //    build, where `instanceof` cannot, and that both builds work.
@@ -44,10 +48,24 @@ const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)))
 const rpcDir = join(repoRoot, 'packages', 'rpc')
 const zmqDir = join(repoRoot, 'packages', 'zmq')
 const requireFromRpc = createRequire(join(rpcDir, 'package.json'))
-const tscPath = join(dirname(requireFromRpc.resolve('typescript/package.json')), 'bin', 'tsc')
-const typeRoot = join(rpcDir, 'node_modules', '@types')
+const requireFromRoot = createRequire(join(repoRoot, 'package.json'))
 const zeromq = realpathSync(join(zmqDir, 'node_modules', 'zeromq'))
 const esbuild = createRequire(realpathSync(join(rpcDir, 'node_modules', 'tsup', 'package.json')))('esbuild')
+
+// One type-check run each: the TypeScript to run, and the `@types/node` it
+// sees, linked in as `<typeRoot>/node`.
+const TOOLCHAINS = [
+  {
+    label: 'workspace',
+    typescript: dirname(requireFromRpc.resolve('typescript/package.json')),
+    typesNode: realpathSync(join(rpcDir, 'node_modules', '@types', 'node')),
+  },
+  {
+    label: 'floor',
+    typescript: dirname(requireFromRoot.resolve('typescript-floor/package.json')),
+    typesNode: dirname(requireFromRoot.resolve('types-node-floor/package.json')),
+  },
+]
 
 const PACKAGES = { rpc: '@qbit-oss/rpc', zmq: '@qbit-oss/zmq' }
 
@@ -289,7 +307,7 @@ function bundle(entry, cwd) {
   return outfile
 }
 
-function typeCheck(tsconfig, cwd) {
+function typeCheck(tscPath, tsconfig, cwd) {
   console.log(`+ ${process.execPath} ${tscPath} -p ${tsconfig} --listFiles  (cwd: ${cwd})`)
   try {
     return execFileSync(process.execPath, [tscPath, '-p', tsconfig, '--listFiles'], {
@@ -338,35 +356,50 @@ try {
   writeFileSync(join(consumerDir, 'package.json'), `${JSON.stringify({ private: true, type: 'module' }, null, 2)}\n`)
   writeFileSync(join(consumerDir, 'consumer.mts'), CONSUMER)
   writeFileSync(join(consumerDir, 'consumer.cts'), CONSUMER)
-  const compilerOptions = {
-    target: 'ES2022',
-    module: 'NodeNext',
-    moduleResolution: 'NodeNext',
-    lib: ['ES2022'],
-    types: ['node'],
-    typeRoots: [typeRoot],
-    strict: true,
-    exactOptionalPropertyTypes: true,
-    skipLibCheck: false,
-    noEmit: true,
-  }
-  writeFileSync(
-    join(consumerDir, 'tsconfig.json'),
-    `${JSON.stringify({ compilerOptions, files: ['consumer.mts', 'consumer.cts'] }, null, 2)}\n`
-  )
-  const listed = typeCheck('tsconfig.json', consumerDir).split('\n')
-  for (const name of Object.values(PACKAGES)) {
-    const lib = `${realpathSync(join(modules, ...name.split('/'), 'lib'))}/`
-    const resolved = listed
-      .filter(file => file.startsWith(lib))
-      .map(file => file.slice(lib.length))
-      .sort()
-    if (JSON.stringify(resolved) !== JSON.stringify(['index.d.mts', 'index.d.ts'])) {
-      throw new Error(
-        `the consumer resolved ${name} lib/${resolved.join(', lib/')}, not lib/index.d.mts and lib/index.d.ts`
-      )
+  // Each toolchain's compiler options, with its @types/node linked in as <typeRoot>/node.
+  const setups = TOOLCHAINS.map(toolchain => {
+    const typeRoot = join(stage, `types-${toolchain.label}`)
+    mkdirSync(typeRoot)
+    symlinkSync(toolchain.typesNode, join(typeRoot, 'node'), 'dir')
+    const compilerOptions = {
+      target: 'ES2022',
+      module: 'NodeNext',
+      moduleResolution: 'NodeNext',
+      lib: ['ES2022'],
+      types: ['node'],
+      typeRoots: [typeRoot],
+      strict: true,
+      exactOptionalPropertyTypes: true,
+      skipLibCheck: false,
+      noEmit: true,
     }
-    console.log(`${name} consumer types (lib/${resolved.join(', lib/')}): PASS`)
+    return { toolchain, compilerOptions, tscPath: join(toolchain.typescript, 'bin', 'tsc') }
+  })
+  for (const { toolchain, compilerOptions, tscPath } of setups) {
+    const version = name => JSON.parse(readFileSync(join(toolchain[name], 'package.json'), 'utf8')).version
+    const versions = `TypeScript ${version('typescript')}, @types/node ${version('typesNode')}`
+    const tsconfig = `tsconfig.${toolchain.label}.json`
+    writeFileSync(
+      join(consumerDir, tsconfig),
+      `${JSON.stringify({ compilerOptions, files: ['consumer.mts', 'consumer.cts'] }, null, 2)}\n`
+    )
+    const listed = typeCheck(tscPath, tsconfig, consumerDir).split('\n')
+    if (!listed.some(file => file.startsWith(`${realpathSync(toolchain.typesNode)}/`))) {
+      throw new Error(`the ${toolchain.label} run did not use @types/node from ${toolchain.typesNode}`)
+    }
+    for (const name of Object.values(PACKAGES)) {
+      const lib = `${realpathSync(join(modules, ...name.split('/'), 'lib'))}/`
+      const resolved = listed
+        .filter(file => file.startsWith(lib))
+        .map(file => file.slice(lib.length))
+        .sort()
+      if (JSON.stringify(resolved) !== JSON.stringify(['index.d.mts', 'index.d.ts'])) {
+        throw new Error(
+          `the consumer resolved ${name} lib/${resolved.join(', lib/')}, not lib/index.d.mts and lib/index.d.ts`
+        )
+      }
+      console.log(`${name} consumer types (lib/${resolved.join(', lib/')}) with ${versions}: PASS`)
+    }
   }
 
   writeFileSync(join(consumerDir, 'brand-check.mjs'), BRAND_CHECK)
@@ -391,12 +424,12 @@ try {
   cpSync(join(modules, '@qbit-oss', 'zmq'), bareZmq, { recursive: true })
   writeFileSync(join(bareDir, 'package.json'), `${JSON.stringify({ private: true, type: 'module' }, null, 2)}\n`)
   writeFileSync(join(bareDir, 'consumer.mts'), NO_ZEROMQ)
-  writeFileSync(
-    join(bareDir, 'tsconfig.json'),
-    `${JSON.stringify({ compilerOptions, files: ['consumer.mts'] }, null, 2)}\n`
-  )
-  typeCheck('tsconfig.json', bareDir)
-  console.log('@qbit-oss/zmq consumer types without zeromq: PASS')
+  for (const { toolchain, compilerOptions, tscPath } of setups) {
+    const tsconfig = `tsconfig.${toolchain.label}.json`
+    writeFileSync(join(bareDir, tsconfig), `${JSON.stringify({ compilerOptions, files: ['consumer.mts'] }, null, 2)}\n`)
+    typeCheck(tscPath, tsconfig, bareDir)
+    console.log(`@qbit-oss/zmq consumer types without zeromq, ${toolchain.label} toolchain: PASS`)
+  }
   writeFileSync(join(bareDir, 'check.mjs'), NO_ZEROMQ_CHECK)
   run(process.execPath, ['check.mjs'], { cwd: bareDir })
   passed = true
