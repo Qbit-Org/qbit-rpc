@@ -89,6 +89,12 @@ The first release of both packages.
 - **Remote nodes** behind a TLS terminator: a private CA, a client
   certificate, key pins and a `connect` function for proxies, with certificate
   verification that cannot be turned off.
+- **`ClientSatisfies<Copy>`**, a type that checks an interface you declare for
+  the client instead of importing its types: `true` when `QbitRpcClient` fits
+  it, and otherwise each member that does not, with parameters compared both
+  ways (`UndeclaredKeys`). Check it in your own type tests,
+  `true satisfies ClientSatisfies<MyRpc>`; see
+  [Methods](docs/rpc/methods.md#checking-an-interface-of-your-own-clientsatisfies).
 
 ### `@qbit-oss/zmq`
 

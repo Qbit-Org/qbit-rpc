@@ -4,8 +4,10 @@ export type {
   BatchResults,
   CallOptions,
   ChainStatus,
+  ClientSatisfies,
   ExtraMethodPolicy,
   QbitRpcClientOptions,
+  UndeclaredKeys,
 } from './client'
 export type { Capability, QbitChain } from './capabilities'
 export type { RpcAuth, RpcConnect, RpcConnectTarget, RpcTlsOptions } from './endpoint'

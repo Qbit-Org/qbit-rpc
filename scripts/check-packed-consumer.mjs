@@ -14,7 +14,8 @@
 //    22.0.0 (the root `typescript-floor` and `types-node-floor` aliases), so a
 //    declaration that needs a newer version of either fails here. The same
 //    runs type-check the quick start of each packed README, and the example
-//    of the repository README, as written.
+//    of the repository README, as written, and a `ClientSatisfies` check of
+//    an interface a consumer declares for the client.
 // 2. Loads the CommonJS and the ESM build of each package side by side and
 //    checks that each error class's `is()` recognizes an error from the other
 //    build, where `instanceof` cannot, and that both builds work.
@@ -92,6 +93,8 @@ import {
   formatQbt,
   requests,
   type BatchItem,
+  type CallOptions,
+  type ClientSatisfies,
   type QbitRpcClientOptions,
 } from '@qbit-oss/rpc'
 import {
@@ -155,6 +158,21 @@ export async function first(): Promise<ZmqEvent | ZmqSetupErrorCode | undefined>
   return undefined
 }
 export const parsed = parseZmqMessage
+
+// An interface a consumer declares for the client, checked as its type tests would.
+interface ChainReads {
+  getBlockCount(callOptions?: CallOptions): Promise<number>
+  getTxOut(
+    txid: string,
+    vout: number,
+    options?: { readonly includeMempool?: boolean },
+    callOptions?: CallOptions
+  ): Promise<{ readonly valueBits: bigint } | null>
+  confirmChain?(callOptions?: CallOptions): Promise<unknown>
+}
+true satisfies ClientSatisfies<ChainReads>
+// @ts-expect-error A call option in the method's own options does not fit.
+true satisfies ClientSatisfies<{ getTxOut(txid: string, vout: number, options?: { readonly timeoutMs?: number }): Promise<unknown> }>
 `
 
 const BRAND_CHECK = `

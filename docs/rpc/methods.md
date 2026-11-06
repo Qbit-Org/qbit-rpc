@@ -210,3 +210,45 @@ synchronously and may throw anything: whatever it throws fails that entry with
 value as `cause`, and the other entries are unaffected. The same holds on every
 other path that takes an `RpcRequest`, where a side-effecting call's failure
 arrives as the `cause` of an `RpcUnknownOutcomeError`, since the node has acted.
+
+## Checking an interface of your own: `ClientSatisfies`
+
+A package that takes a qbit Core client often declares the calls it makes as an
+interface of its own, so that its declarations need not name this package and
+its tests can pass a fake: `qbit-payments`' `CoreRpc` and `qbit-game-kit`'s
+`PayoutRpc` are two. `QbitRpcClient` has to go on fitting such a copy, and a
+plain assignment (`const rpc: CoreRpc = client`) cannot tell: TypeScript
+compares methods bivariantly, and an object with more properties is assignable
+to one with fewer. So a copy that declares the call options inside a method's
+own options, `getTxOut(txid, vout, options?: { includeMempool?: boolean } &
+CallOptions)`, type-checks, and the client refuses `timeoutMs` there with a
+`TypeError`.
+
+`ClientSatisfies<Copy>` is `true` when the client fits `Copy`, and otherwise an
+object naming each member of `Copy` that does not, with why. Check it in the
+type tests your CI compiles, so that a change on either side that breaks the
+fit fails there:
+
+```ts
+import type { ClientSatisfies } from '@qbit-oss/rpc'
+import type { CoreRpc } from '../src/core-wallet/rpc'
+
+true satisfies ClientSatisfies<CoreRpc>
+// error TS1360: Type 'boolean' does not satisfy the expected type
+// '{ getTxOut: "parameters"; ...; lockUnspent: "parameters" | "returns"; ... }'.
+```
+
+| Reason | The member |
+| --- | --- |
+| `missing` | The client has no such member. A member optional in the copy (`confirmChain?()`) may be missing: check `ClientSatisfies<Required<Copy>>` to require it. |
+| `returns` | What the client's method returns is not assignable to what the copy's returns. The copy may read fewer fields, but an open enum needs its `(string & {})`, as for `PqcLimitState` (see [values a later qbit Core may add](versions.md)). |
+| `parameters` | The copy allows arguments the client does not take. They are compared both ways: the copy's arguments must be assignable to the client's parameters, compared strictly rather than bivariantly, and may hold no key, at any depth, that the client does not declare there (the type `UndeclaredKeys` lists them). The copy may take fewer arguments, or narrower values, such as `sighashType?: 'DEFAULT'`, or `options?: undefined` to pass call options alone. |
+| `type` | A member that is not a method has a type the client's is not assignable to, or one of the two is a method and the other is not. |
+
+`tsc` shortens a long type in its messages: set `"noErrorTruncation": true` in
+the tsconfig of the type tests to see every member. The check runs whenever
+your CI does, against the version of this package you install, so a change
+here reaches it when you update; to hear of one sooner, also run it on a
+schedule against a build of this repository's `main`. It checks types only:
+how the copy is used is out of its sight, such as reading a node's error code
+from `rpcCode` (see [Errors](errors.md)).

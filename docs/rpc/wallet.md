@@ -233,16 +233,15 @@ under `mine`. `lastProcessedBlock` is the block the balances were computed at.
 
 ## As a `CoreRpc` wallet adapter
 
-`QbitRpcClient` satisfies the `CoreRpc` interface of the qbit Core wallet
-adapter in `qbit-payments` with no wrapper (`test/core-rpc.test.ts` checks a
-copy of it). Scope the client to the wallet (`wallet`), enable `wallet-read`,
+`QbitRpcClient` is passed as it is, with no wrapper, to the qbit Core wallet
+adapter in `qbit-payments`, whose `CoreRpc` interface declares the calls it
+makes. Scope the client to the wallet (`wallet`), enable `wallet-read`,
 `wallet-write` and `broadcast`, and call `confirmChain()` before handing it
-over. The adapter must read a node's error code from `rpcCode`, as the copy here
-does: reading `code`, it would take every node error for an unknown outcome. It
-must also take this version's shapes, which the copy has: call options as the
-last argument, `lockUnspent(outputs, options)` and `unlockUnspent(outputs)`
-resolving nothing, and a `PqcLimitState` open to a state a later qbit Core adds
-(see [CHANGELOG.md](https://github.com/Qbit-Org/qbit-rpc/blob/main/CHANGELOG.md)).
+over. Check that the client fits `CoreRpc` in the adapter's own type tests,
+with [`ClientSatisfies`](methods.md#checking-an-interface-of-your-own-clientsatisfies).
+That check sees types only: the adapter must also read a node's error code
+from `rpcCode`. Reading `code`, it would take every node error for an unknown
+outcome.
 
 ## Signing a data hash
 

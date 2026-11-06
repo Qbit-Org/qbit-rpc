@@ -315,6 +315,93 @@ export type BatchResults<T extends readonly RpcRequest<unknown>[]> = {
  */
 export type ChainStatus = 'unconfirmed' | 'confirmed' | 'stale' | 'mismatch' | 'unsupported_version'
 
+/**
+ * `true` when `QbitRpcClient` fits `Copy`, an interface a consumer declares
+ * for the client, strictly enough that every call `Copy` allows is one the
+ * client takes. Otherwise an object with each member of `Copy` that does not
+ * fit, and why:
+ *
+ * - `missing`: the client has no such member. A member optional in `Copy`
+ *   (`confirmChain?()`) may be missing; check `Required<Copy>` to require it.
+ * - `returns`: what the client's method returns is not assignable to what
+ *   `Copy`'s returns.
+ * - `parameters`: `Copy` allows arguments the client does not take. They are
+ *   compared both ways: the arguments `Copy` allows must be assignable to the
+ *   client's parameters, compared strictly rather than bivariantly, as
+ *   TypeScript compares methods; and they may hold no key, at any depth, that
+ *   the client's parameter there does not declare ({@link UndeclaredKeys}). So
+ *   call options (`signal`, `timeoutMs`) declared in a method's own options
+ *   do not fit: the client takes them in a separate, last argument, and
+ *   refuses them in the options with a `TypeError`.
+ * - `type`: a member that is not a method has a type the client's is not
+ *   assignable to, or one of the two is a method and the other is not.
+ *
+ * Check it in the consumer's type tests, which its CI compiles:
+ *
+ * ```ts
+ * import type { ClientSatisfies } from '@qbit-oss/rpc'
+ *
+ * true satisfies ClientSatisfies<CoreRpc>
+ * ```
+ */
+export type ClientSatisfies<Copy extends object> = {
+  -readonly [K in keyof Copy]-?: K extends keyof QbitRpcClient
+    ? Exclude<Copy[K], undefined> extends (...args: infer Args) => infer Result
+      ? QbitRpcClient[K] extends (...args: infer Params) => infer ClientResult
+        ? | ([ClientResult] extends [Result] ? never : 'returns')
+          | ([Args] extends [Params]
+              ? [UndeclaredKeys<Args, Params>] extends [never]
+                ? never
+                : 'parameters'
+              : 'parameters')
+        : 'type'
+      : [QbitRpcClient[K]] extends [Exclude<Copy[K], undefined>]
+        ? never
+        : 'type'
+    : {} extends Pick<Copy, K>
+      ? never
+      : 'missing'
+} extends infer Reasons
+  ? { [K in keyof Reasons as [Reasons[K]] extends [never] ? never : K]: Reasons[K] } extends infer Mismatches
+    ? {} extends Mismatches
+      ? true
+      : Mismatches
+    : never
+  : never
+
+/**
+ * The keys an argument of type `Arg` can hold, at any depth, that the
+ * parameter `Param` it is passed to does not declare; `never` when there is
+ * none. TypeScript lets such a key through, since an object with more
+ * properties is assignable to one with fewer, but the client refuses it with a
+ * `TypeError`. Argument lists (tuples) are compared position by position, and
+ * a key of any member of a union `Param` is declared. For {@link ClientSatisfies}.
+ */
+export type UndeclaredKeys<Arg, Param> = unknown extends Param
+  ? never
+  : [Param] extends [never]
+    ? never
+    : 0 extends 1 & Arg
+      ? never
+      : Arg extends (...args: never) => unknown
+        ? never
+        : Arg extends readonly unknown[]
+          ? {
+              [I in keyof Arg]-?: UndeclaredKeys<
+                Arg[I],
+                Param extends unknown ? (I extends keyof Param ? Param[I] : never) : never
+              >
+            }[number]
+          : Arg extends object
+            ? | Exclude<keyof Arg, Param extends unknown ? keyof Param : never>
+              | {
+                  [K in keyof Arg]-?: UndeclaredKeys<
+                    Arg[K],
+                    Param extends unknown ? (K extends keyof Param ? Param[K] : never) : never
+                  >
+                }[keyof Arg]
+            : never
+
 type ChainState =
   | { readonly status: 'unconfirmed' }
   /** `digest`: of the Authorization header the check was sent with; a call with another one checks again. */

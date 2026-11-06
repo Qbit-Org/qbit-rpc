@@ -30,7 +30,6 @@ import { descriptorChecksum } from '../../src/methods'
 import { buildAuxPow, buildBlock } from '../helpers/block-builder'
 import { HIDDEN_METHOD_CLASSES, METHOD_CLASSES } from '../../src/method-classes'
 import { testPki } from '../helpers/certificates'
-import type { CoreRpc } from '../helpers/core-rpc'
 
 // Runs only under scripts/regtest-smoke.sh, which starts a throwaway regtest
 // node on loopback and sets these variables.
@@ -602,12 +601,12 @@ describe.runIf(enabled)('qbit Core v1.0.0 regtest', () => {
     )
   })
 
-  // Every method qbit-payments' core-wallet adapter reaches, through its own
-  // CoreRpc interface, on the client it is wired with.
+  // Every method qbit-payments' core-wallet adapter reaches, on the client it is
+  // wired with. Whether its CoreRpc interface fits the client is the adapter's
+  // to check, with ClientSatisfies.
   it('serves the payout adapter: chain tip, outputs, mempool, addresses, change and coin locks', async () => {
     const wallet = client({ wallet: 'smoke', capabilities: ['wallet-read', 'wallet-write', 'broadcast'] })
     await wallet.confirmChain()
-    const core: CoreRpc = wallet
     const nodeError = (code: number) => (error: unknown) => RpcError.is(error) && error.rpcCode === code
     const sorted = (outpoints: Outpoint[]): Outpoint[] =>
       [...outpoints].sort((a, b) => `${a.txid}:${a.vout}`.localeCompare(`${b.txid}:${b.vout}`))
@@ -615,11 +614,11 @@ describe.runIf(enabled)('qbit Core v1.0.0 regtest', () => {
     const foreign = cli('-rpcwallet=adapter-foreign', 'getnewaddress', '', 'p2mr')
 
     // getblockcount.
-    const height = await core.getBlockCount()
+    const height = await wallet.getBlockCount()
     expect(height).toBe((await wallet.getBlockchainInfo()).blocks)
 
     // getrawchangeaddress, and getaddressinfo with the PQC signature budget.
-    const change = await core.getRawChangeAddress({ addressType: 'p2mr' })
+    const change = await wallet.getRawChangeAddress({ addressType: 'p2mr' })
     const changeInfo = await wallet.getAddressInfo(change)
     expect(changeInfo).toMatchObject({
       address: change,
@@ -646,7 +645,7 @@ describe.runIf(enabled)('qbit Core v1.0.0 regtest', () => {
     expect(await locked.getRawChangeAddress({ addressType: 'p2mr' })).toMatch(/^qbrt1z/)
     const receive = (await wallet.call('getnewaddress', ['', 'p2mr'])) as string
     expect(await wallet.getAddressInfo(receive.toUpperCase())).toMatchObject({ address: receive, isChange: false })
-    const foreignInfo = await core.getAddressInfo(foreign)
+    const foreignInfo = await wallet.getAddressInfo(foreign)
     expect(foreignInfo).toMatchObject({ address: foreign, isMine: false, solvable: false })
     expect(foreignInfo).not.toHaveProperty('pqcKeyStates')
     await expect(
@@ -657,7 +656,7 @@ describe.runIf(enabled)('qbit Core v1.0.0 regtest', () => {
     const [coin, second] = await wallet.listUnspent()
     const outpoint = { txid: coin!.txid, vout: coin!.vout }
     const other = { txid: second!.txid, vout: second!.vout }
-    const unspent = await core.getTxOut(coin!.txid, coin!.vout)
+    const unspent = await wallet.getTxOut(coin!.txid, coin!.vout)
     expect(unspent).toMatchObject({
       confirmations: coin!.confirmations,
       valueBits: coin!.amountBits,
@@ -669,9 +668,9 @@ describe.runIf(enabled)('qbit Core v1.0.0 regtest', () => {
 
     // lockunspent (lockUnspent and unlockUnspent) and listlockunspent.
     await wallet.call('lockunspent', [true])
-    expect(await core.listLockUnspent()).toEqual([])
-    expect(await core.lockUnspent([outpoint])).toBeUndefined()
-    expect(await core.listLockUnspent()).toEqual([outpoint])
+    expect(await wallet.listLockUnspent()).toEqual([])
+    expect(await wallet.lockUnspent([outpoint])).toBeUndefined()
+    expect(await wallet.listLockUnspent()).toEqual([outpoint])
     expect((await wallet.listUnspent()).some(u => u.txid === coin!.txid && u.vout === coin!.vout)).toBe(false)
     await expect(wallet.lockUnspent([outpoint])).rejects.toSatisfy(nodeError(-8))
     // One bad output and the node changes nothing.
@@ -688,7 +687,7 @@ describe.runIf(enabled)('qbit Core v1.0.0 regtest', () => {
     expect(sorted(await wallet.listLockUnspent())).toEqual(sorted([outpoint, other]))
     await expect(wallet.unlockUnspent([])).rejects.toThrow(RangeError)
     // One unlock clears persistent and in-memory locks alike.
-    expect(await core.unlockUnspent([outpoint, other])).toBeUndefined()
+    expect(await wallet.unlockUnspent([outpoint, other])).toBeUndefined()
     expect(await wallet.listLockUnspent()).toEqual([])
     await expect(wallet.unlockUnspent([outpoint])).rejects.toSatisfy(nodeError(-8))
 
@@ -715,8 +714,8 @@ describe.runIf(enabled)('qbit Core v1.0.0 regtest', () => {
     expect(entry.fees.baseBits).toBe(funded.feeBits)
     expect(entry.vsize).toBe(entry.weight)
     expect(entry.wtxid).toBe(decoded.hash)
-    expect(typeof (await core.getMempoolEntry(txid))).toBe('object')
-    expect(await core.getTxOut(coin!.txid, coin!.vout, { includeMempool: true })).toBeNull()
+    expect(typeof (await wallet.getMempoolEntry(txid))).toBe('object')
+    expect(await wallet.getTxOut(coin!.txid, coin!.vout, { includeMempool: true })).toBeNull()
     expect(await wallet.getTxOut(coin!.txid, coin!.vout, { includeMempool: false })).toMatchObject({
       valueBits: coin!.amountBits,
     })
@@ -740,8 +739,8 @@ describe.runIf(enabled)('qbit Core v1.0.0 regtest', () => {
 
     // Mined: out of the mempool, and confirmed in the UTXO set.
     cli('generatetoaddress', '1', foreign)
-    expect(await core.getBlockCount()).toBe(height + 1)
-    await expect(core.getMempoolEntry(txid)).rejects.toSatisfy(nodeError(-5))
+    expect(await wallet.getBlockCount()).toBe(height + 1)
+    await expect(wallet.getMempoolEntry(txid)).rejects.toSatisfy(nodeError(-5))
     expect(await wallet.getTxOut(txid, paid, { includeMempool: false })).toMatchObject({ confirmations: 1 })
 
     // The read and wallet-read methods in one batch.
