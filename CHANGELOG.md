@@ -1090,3 +1090,13 @@ signing. The client does it now.
   refuses a key with one signature left and two inputs (`would_run_out`) and an
   exhausted key, its count read back unchanged, and signs a critical and a
   normal key's inputs through the check.
+
+### `batch()` refuses params that are not an array
+
+- A hand-built `batch()` entry whose `params` is sent as anything but an array
+  is now a `TypeError`, unsent, as it already is through `call()` and
+  `requests.raw()`. Sent as named params, it got past the checks of ignored
+  options and the redaction of the node's messages, so a node error quoting a
+  descriptor's private key came back as it was. The check reads the request
+  body as it will be sent, so an array with a `toJSON` that returns an object
+  is refused too. An entry that leaves `params` out still sends none.
