@@ -201,7 +201,10 @@ enumerable properties: a hole, or one of these held any other
 way (a class's `parse` method, a key on a polluted `Object.prototype`), rejects
 with a `TypeError` before anything is sent, and so does a `method` that is not a
 non-empty primitive string (a `String` object, or an object with `toJSON`), so
-the method the capability check sees is the one sent. The `parse` runs
+the method the capability check sees is the one sent. So does `params` that is
+sent as anything but an array, as `call()` also refuses: named params would
+get past the checks and the redaction of the node's messages. Left out, it
+sends none. The `parse` runs
 synchronously and may throw anything: whatever it throws fails that entry with
 `RpcResponseError` (`reason: 'validation'`, `path: 'result'`), with the thrown
 value as `cause`, and the other entries are unaffected. The same holds on every

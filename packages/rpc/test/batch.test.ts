@@ -46,6 +46,36 @@ describe('batch', () => {
     expect(node.calls()).toEqual([])
   })
 
+  it.each([
+    ['an object', (): unknown => ({ descriptor: 'pk(xprv)' })],
+    ['a string', (): unknown => 'pk(xprv)'],
+    ['null', (): unknown => null],
+    [
+      'an array whose toJSON sends an object',
+      (): unknown => Object.assign([], { toJSON: () => ({ descriptor: 'pk(xprv)' }) }),
+    ],
+  ])('refuses params that are %s, so the redaction reads what is sent', async (_name, params) => {
+    const entry = {
+      method: 'getdescriptorinfo',
+      params: params(),
+      parse: (x: unknown) => x,
+    } as unknown as RpcRequest<unknown>
+    await expect(rpc.batch([requests.getBlockCount(), entry])).rejects.toThrow(
+      new TypeError('batch() entry 1: params must be an array')
+    )
+    expect(node.calls()).toEqual([])
+  })
+
+  it('takes an entry that leaves its params out', async () => {
+    node.handler = (request, response) => {
+      const [call] = JSON.parse(request.body) as Call[]
+      expect(call).not.toHaveProperty('params')
+      response.end(`[${item(call!.id, '7')}]`)
+    }
+    const entry = { method: 'getblockcount', parse: (x: unknown) => x } as unknown as RpcRequest<unknown>
+    expect(await rpc.batch([entry])).toMatchObject([{ ok: true }])
+  })
+
   it('refuses an oversized batch from its length, before reading its entries', async () => {
     await expect(rpc.batch(new Array(2000) as RpcRequest<unknown>[])).rejects.toThrow(
       new RangeError('a batch holds at most 1000 requests')

@@ -1675,6 +1675,12 @@ export class QbitRpcClient {
     // Read back from the body, as for a single call: each entry's checks and
     // redaction follow what is sent, a copied or hand-built entry's included.
     const sent = bodies.map(sentParams)
+    // An array, or none, as call() takes them: named params would pass the checks and redaction below unread.
+    sent.forEach((params, index) => {
+      if (params !== undefined && !Array.isArray(params)) {
+        throw new TypeError(`batch() entry ${index}: params must be an array`)
+      }
+    })
     list.forEach((entry, index) => checkIgnoredOptions(entry.method, sent[index]))
     const redactors = list.map((entry, index) => {
       const secrets = messageSecrets(entry.method, sent[index])
