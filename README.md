@@ -67,6 +67,13 @@ tested against v1.0.0. The type declarations need TypeScript 5.0 or later and
 [Compatibility](docs/compatibility.md) for what CI tests, and
 [Limits](docs/limits.md).
 
+## Versions
+
+Both packages share one version. Below 1.0, a minor release (`0.1` → `0.2`)
+can break and a patch cannot, apart from the behaviour changes
+[RELEASING.md](RELEASING.md#versioning) lists. Release candidates are on npm's
+`candidate` dist-tag.
+
 ## Documentation
 
 - [`@qbit-oss/rpc`](packages/rpc/README.md) and

@@ -73,6 +73,14 @@ Calling `walletPassphrase` again is safe too: it waits for one still running,
 then sets a new relock time. `walletLock()` also waits for it, under the same
 default deadline.
 
+## Signing right after `qbitd` starts
+
+After `qbitd` starts, qbit Core v1.0.0 validates an unencrypted wallet's
+plaintext PQC keys before it signs. Until
+`getWalletInfo().pqcKeyValidation.signingBlocked` is false, `walletProcessPsbt`
+fails with `RpcError` "plaintext PQC wallet key validation is still in
+progress". Wait for it before signing.
+
 ## PQC signature budgets
 
 Each P2MR address of a wallet has its own PQC key, and qbit Core v1.0.0 lets a

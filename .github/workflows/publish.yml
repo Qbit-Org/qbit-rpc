@@ -1,0 +1,501 @@
+name: Publish
+
+# Publishes @qbit-oss/rpc and @qbit-oss/zmq to npm when a release tag is
+# pushed. RELEASING.md describes the release steps and the one-time setup.
+# Ported from Qbit-Org/qbit-js .github/workflows/publish.yml.
+#
+# Four jobs, so that only code the lockfile pins can shape what is published,
+# and nothing that runs third-party code can publish. `build` runs only the
+# locked dev dependencies and each package's prepack, packs the tarballs, and
+# reports their SHA-256 sums and the artifact's ID. `smoke` runs the checks
+# build does not need: the packed-consumer check and the regtest smoke test
+# against a qbit Core release verified by its signing keys. `tarballs` checks
+# build's artifact as the publish job will read it, and rehearses the publish
+# with `npm publish --dry-run`. None of these three holds a secret or an
+# id-token. `publish` holds both, but checks out nothing, installs nothing and
+# runs no lifecycle script: it downloads build's artifact by ID and publishes
+# those tarballs only if they match build's sums.
+#
+# A manual run (workflow_dispatch) on release/X.Y is a dry run: every job but
+# `publish`, for the tag the branch's version would get.
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# An explicit shell makes every run block bash -eo pipefail, not bash -e.
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    # Only Qbit-Org/qbit-rpc publishes: npm provenance ties every version to the
+    # repository in package.json `repository.url`, and forks must never publish.
+    if: github.repository == 'Qbit-Org/qbit-rpc'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
+      dist_tag: ${{ steps.release.outputs.dist_tag }}
+      sha256: ${{ steps.pack.outputs.sha256 }}
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+
+    steps:
+      # Full history, so the release-branch check below can see release/X.Y.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # No `version:` input: the action installs the pnpm version pinned by
+      # package.json `packageManager`, as in CI. It fetches that version from
+      # the registry and does not check packageManager's +sha512 hash; the
+      # check below compares versions only.
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          run_install: false
+
+      # No `cache:`: a release build must not restore a cache that other
+      # workflow runs write.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+
+      - name: Check pnpm matches packageManager
+        run: |
+          expected="$(node -p "require('./package.json').packageManager.split('+')[0].slice('pnpm@'.length)")"
+          actual="$(pnpm --version)"
+          echo "packageManager pnpm $expected, running pnpm $actual"
+          test "$actual" = "$expected"
+
+      # Both packages release in lockstep from release/X.Y (RELEASING.md).
+      # scripts/check-release.mjs, which needs Node.js only, checks that the
+      # tag names their shared version, that they are ready to publish, and
+      # that CHANGELOG.md has the version's section; here the tagged commit
+      # must also be on that release branch. A dry run takes the tag from the
+      # branch's version, and must run on that version's release branch. Runs
+      # before the dependencies are installed.
+      - name: Check the tag against the versions, CHANGELOG.md and release branch
+        id: release
+        env:
+          EVENT: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+        run: |
+          if [ "$EVENT" = push ]; then
+            if [ "$REF_TYPE" != tag ]; then
+              echo "::error::a push publishes only from a tag, not the $REF_TYPE $REF_NAME"
+              exit 1
+            fi
+            tag="$REF_NAME"
+          else
+            tag="v$(node -p "require('./packages/rpc/package.json').version")"
+          fi
+          if ! node scripts/check-release.mjs "$tag" > "$RUNNER_TEMP/release.txt"; then
+            echo "::error::$tag cannot be released from this commit: see the lines above"
+            exit 1
+          fi
+          cat "$RUNNER_TEMP/release.txt"
+          line="$(sed -n 's/^line=//p' "$RUNNER_TEMP/release.txt")"
+          branch="release/$line"
+          if [ "$EVENT" != push ] && [ "$REF_NAME" != "$branch" ]; then
+            echo "::error::a dry run of $tag runs on $branch, not $REF_NAME"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor HEAD "refs/remotes/origin/$branch"; then
+            echo "::error::$tag is not on $branch; release tags are cut only on release branches"
+            exit 1
+          fi
+          echo "Releasing $tag from $branch ($EVENT)"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          grep -E '^(version|dist_tag)=' "$RUNNER_TEMP/release.txt" >> "$GITHUB_OUTPUT"
+
+      # engine-strict as in CI. esbuild's and zeromq's install scripts run, as
+      # pnpm-workspace.yaml allows; no other dependency's does.
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --config.engine-strict=true
+
+      - name: Build
+        run: pnpm build
+
+      - name: Check the API reports
+        run: pnpm api:check
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Typecheck tests
+        run: pnpm typecheck:test
+
+      - name: Test
+        run: pnpm test
+
+      - name: Test the scripts
+        run: pnpm test:scripts
+
+      # The release mode: both packages at the tag's version, without
+      # "private", with files, license, LICENSE, engines and publishConfig,
+      # and every check of the packed contents.
+      - name: Check npm package contents
+        env:
+          PACK_CHECK_RELEASE: ${{ steps.release.outputs.tag }}
+        run: pnpm pack:check
+
+      # npm pack runs each package's prepack (a fresh tsup build). These two
+      # tarballs are exactly what the publish job publishes, and their sums are
+      # recorded in the same step, before any other code runs, and printed, for
+      # anyone who downloads the artifact to check against.
+      - name: Pack the tarballs to publish
+        id: pack
+        run: |
+          mkdir "$RUNNER_TEMP/tarballs"
+          npm pack ./packages/rpc ./packages/zmq --ignore-scripts=false --pack-destination "$RUNNER_TEMP/tarballs"
+          cd "$RUNNER_TEMP/tarballs" || exit
+          sums="$(sha256sum -- *.tgz)"
+          printf '%s\n' "$sums"
+          { echo 'sha256<<EOF'; printf '%s\n' "$sums"; echo EOF; } >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        id: upload
+        with:
+          name: npm-tarballs
+          path: ${{ runner.temp }}/tarballs/*.tgz
+          if-no-files-found: error
+
+  # Checks that build does not need in order to pack the tarballs. They run
+  # here, not in build, so that their code cannot touch the tarballs before
+  # build records their sums, and publish takes build's artifact by ID and
+  # checks those sums. This job can stop a release, but not change what is
+  # published.
+  smoke:
+    needs: build
+    if: github.repository == 'Qbit-Org/qbit-rpc'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          run_install: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+
+      # The smoke script runs the suites with `corepack pnpm`; both must be the
+      # packageManager pin.
+      - name: Check pnpm matches packageManager
+        run: |
+          expected="$(node -p "require('./package.json').packageManager.split('+')[0].slice('pnpm@'.length)")"
+          echo "packageManager pnpm $expected, pnpm $(pnpm --version), corepack pnpm $(corepack pnpm --version)"
+          test "$(pnpm --version)" = "$expected"
+          test "$(corepack pnpm --version)" = "$expected"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --config.engine-strict=true
+
+      # Offline, with the lockfile's TypeScript, @types/node, esbuild and
+      # zeromq: packs both packages itself, type-checks the declarations at the
+      # workspace's versions and the stated floors, loads both builds, and
+      # installs @qbit-oss/zmq without zeromq.
+      - name: Packed-consumer check
+        run: pnpm consumer:check
+
+      # The verifier's own tests, before it is trusted with the release.
+      - name: Test the release verifier
+        run: pnpm test:release
+
+      # As in CI's regtest smoke job, but with no cache: the tarball is
+      # downloaded, and used only once SHA256SUMS verifies against a quorum of
+      # the keys in scripts/qbit-release-keys/ and the tarball against it.
+      - name: Download and verify qbit Core
+        id: core
+        run: |
+          node scripts/qbit-release.mjs sums "$RUNNER_TEMP/qbit-release-sums"
+          node scripts/qbit-release.mjs install "$RUNNER_TEMP/qbit-release-sums" "$RUNNER_TEMP/qbit-core-tarball" \
+            "$RUNNER_TEMP/qbit-core" >> "$GITHUB_OUTPUT"
+
+      - name: Regtest smoke
+        env:
+          QBIT_BIN_DIR: ${{ steps.core.outputs.bin-dir }}
+        run: scripts/regtest-smoke.sh
+
+  # Everything the publish job checks before it publishes, on the same
+  # artifact, and the publish itself with --dry-run. publish checks the
+  # artifact's sums again, so what this job checked is what it publishes.
+  tarballs:
+    needs: build
+    if: github.repository == 'Qbit-Org/qbit-rpc'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      PACKAGES: '@qbit-oss/rpc @qbit-oss/zmq'
+
+    steps:
+      # By ID, not name: an artifact re-uploaded under the same name gets a
+      # new ID.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          artifact-ids: ${{ needs.build.outputs.artifact_id }}
+          path: ${{ runner.temp }}/tarballs
+
+      # The version must be the tag's, the dist-tag the one that version
+      # implies, the artifact exactly one tarball of that version per package,
+      # and each tarball byte for byte the one whose SHA-256 build recorded.
+      - name: Check the tarballs against the tag and build's SHA-256 sums
+        env:
+          TAG: ${{ needs.build.outputs.tag }}
+          VERSION: ${{ needs.build.outputs.version }}
+          DIST_TAG: ${{ needs.build.outputs.dist_tag }}
+          SHA256: ${{ needs.build.outputs.sha256 }}
+        run: |
+          case "$VERSION" in
+            *-*) expected_dist_tag=candidate ;;
+            *) expected_dist_tag=latest ;;
+          esac
+          if [ -z "$VERSION" ] || [ "$TAG" != "v$VERSION" ] || [ "$DIST_TAG" != "$expected_dist_tag" ]; then
+            echo "::error::build reported version '$VERSION' with dist-tag '$DIST_TAG' for tag $TAG"
+            exit 1
+          fi
+          tarballs="$RUNNER_TEMP/tarballs"
+          # npm pack names @scope/name@version scope-name-version.tgz.
+          expected="$(for name in $PACKAGES; do echo "$(tr / - <<<"${name#@}")-$VERSION.tgz"; done | LC_ALL=C sort)"
+          actual="$(find "$tarballs" -mindepth 1 -printf '%P\n' | LC_ALL=C sort)"
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::the npm-tarballs artifact holds [${actual//$'\n'/ }], expected [${expected//$'\n'/ }]"
+            exit 1
+          fi
+          # One `<sha256>  <file>` line per expected tarball, and nothing else.
+          if grep -Evq '^[0-9a-f]{64}  [^[:space:]]+$' <<<"$SHA256" ||
+             [ "$(cut -c 67- <<<"$SHA256" | LC_ALL=C sort)" != "$expected" ]; then
+            echo "::error::build's SHA-256 sums [${SHA256//$'\n'/ }] do not list exactly [${expected//$'\n'/ }]"
+            exit 1
+          fi
+          cd "$tarballs" || exit
+          printf '%s\n' "$SHA256" | sha256sum --check --strict -
+
+      # The publish job's Node.js, whose npm reads the tarballs below.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+
+      # npm publish reads a tarball with its own reader (pacote and node-tar),
+      # which disagrees with GNU tar on crafted archives, so each tarball's
+      # name@version is read with that reader, through `npm pack --dry-run`,
+      # and must be this package at the tagged version, with no path listed
+      # twice, no "private" and the publishConfig RELEASING.md requires. As an
+      # extra layer, every entry GNU tar lists must be under package/, with no
+      # empty, `.` or `..` component, and exactly one must be
+      # package/package.json.
+      - name: Check each tarball's entries and manifest
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          for name in $PACKAGES; do
+            file="$(tr / - <<<"${name#@}")-$VERSION.tgz"
+            tarball="$RUNNER_TEMP/tarballs/$file"
+            entries="$(tar -tzf "$tarball")"
+            if ! awk '
+                !/^package(\/[^\/]+)+$/ || /\/\.\.?(\/|$)/ { bad = 1 }
+                $0 == "package/package.json" { manifests++ }
+                END { exit bad || manifests != 1 }' <<<"$entries"; then
+              echo "::error::$file must hold only package/ entries with no empty, . or .. component, and exactly one package/package.json"
+              exit 1
+            fi
+            manifest="$(npm pack --dry-run --json --ignore-scripts --offline "$tarball" | node -e '
+              const [p] = JSON.parse(require("fs").readFileSync(0, "utf8"))
+              const paths = p.files.map(f => f.path)
+              if (new Set(paths).size !== paths.length) {
+                console.error("::error::duplicate entries: " + paths.join(" "))
+                process.exit(1)
+              }
+              console.log(p.id)')"
+            if [ "$manifest" != "$name@$VERSION" ]; then
+              echo "::error::$file holds $manifest, not $name@$VERSION"
+              exit 1
+            fi
+            tar -xzOf "$tarball" package/package.json | node -e '
+              const m = JSON.parse(require("fs").readFileSync(0, "utf8"))
+              const c = m.publishConfig
+              if ("private" in m || !c || Object.keys(c).length !== 2 || c.access !== "public" || c.provenance !== true) {
+                console.error("::error::" + process.argv[1] + " must have no \"private\" and publishConfig {\"access\":\"public\",\"provenance\":true}")
+                process.exit(1)
+              }' "$file"
+            echo "$file: $manifest"
+          done
+
+      # What the publish job runs, with --dry-run: the same skip of a version
+      # already on npm with this tarball's integrity, and a failure for one
+      # with another; then npm reads each tarball, applies its client-side
+      # checks (a final version that is already published, or not above the
+      # highest final release for `latest`, fails) and sends nothing. No
+      # credentials or id-token are here, so npm warns that it is not logged
+      # in.
+      - name: Rehearse the publish (npm publish --dry-run)
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+          DIST_TAG: ${{ needs.build.outputs.dist_tag }}
+        run: |
+          tag_args=()
+          if [ "$DIST_TAG" = candidate ]; then
+            tag_args=(--tag candidate)
+          fi
+          for name in $PACKAGES; do
+            tarball="$RUNNER_TEMP/tarballs/$(tr / - <<<"${name#@}")-$VERSION.tgz"
+            integrity="sha512-$(openssl dgst -sha512 -binary "$tarball" | base64 -w0)"
+            published="$(npm view "$name@$VERSION" dist.integrity 2>/dev/null || true)"
+            if [ -n "$published" ]; then
+              if [ "$published" != "$integrity" ]; then
+                echo "::error::$name@$VERSION is already on npm with integrity $published, but this tarball's is $integrity"
+                exit 1
+              fi
+              echo "$name@$VERSION is already on npm with this tarball's integrity; publish will skip it"
+              continue
+            fi
+            npm publish "$tarball" --dry-run --access public "${tag_args[@]}" --ignore-scripts
+          done
+
+  publish:
+    needs: [build, smoke, tarballs]
+    if: github.repository == 'Qbit-Org/qbit-rpc' && github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Holds the optional NPM_TOKEN bootstrap secret and the required
+    # reviewers; the npm trusted publishers are bound to this environment.
+    environment: npm
+    permissions:
+      contents: read
+      # OIDC token for npm trusted publishing and the provenance signature.
+      id-token: write
+    env:
+      PACKAGES: '@qbit-oss/rpc @qbit-oss/zmq'
+
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          artifact-ids: ${{ needs.build.outputs.artifact_id }}
+          path: ${{ runner.temp }}/tarballs
+
+      # Before anything else runs: the version must be the pushed tag's, the
+      # dist-tag the one that version implies, the artifact exactly one tarball
+      # of that version per package, and each tarball byte for byte the one
+      # whose SHA-256 build recorded, and so the one `tarballs` checked.
+      - name: Check the tarballs against the tag and build's SHA-256 sums
+        env:
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.build.outputs.version }}
+          DIST_TAG: ${{ needs.build.outputs.dist_tag }}
+          SHA256: ${{ needs.build.outputs.sha256 }}
+        run: |
+          case "$VERSION" in
+            *-*) expected_dist_tag=candidate ;;
+            *) expected_dist_tag=latest ;;
+          esac
+          if [ -z "$VERSION" ] || [ "$TAG" != "v$VERSION" ] || [ "$DIST_TAG" != "$expected_dist_tag" ]; then
+            echo "::error::build reported version '$VERSION' with dist-tag '$DIST_TAG' for tag $TAG"
+            exit 1
+          fi
+          tarballs="$RUNNER_TEMP/tarballs"
+          expected="$(for name in $PACKAGES; do echo "$(tr / - <<<"${name#@}")-$VERSION.tgz"; done | LC_ALL=C sort)"
+          actual="$(find "$tarballs" -mindepth 1 -printf '%P\n' | LC_ALL=C sort)"
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::the npm-tarballs artifact holds [${actual//$'\n'/ }], expected [${expected//$'\n'/ }]"
+            exit 1
+          fi
+          if grep -Evq '^[0-9a-f]{64}  [^[:space:]]+$' <<<"$SHA256" ||
+             [ "$(cut -c 67- <<<"$SHA256" | LC_ALL=C sort)" != "$expected" ]; then
+            echo "::error::build's SHA-256 sums [${SHA256//$'\n'/ }] do not list exactly [${expected//$'\n'/ }]"
+            exit 1
+          fi
+          cd "$tarballs" || exit
+          printf '%s\n' "$SHA256" | sha256sum --check --strict -
+
+      # Node.js 24 bundles an npm with trusted publishing.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      - name: Check Node.js and npm versions
+        run: |
+          # npm trusted publishing needs npm >= 11.5.1 on Node.js >= 22.14.0.
+          at_least() { [ "$(printf '%s\n' "$2" "$1" | sort -V | head -n 1)" = "$2" ]; }
+          node_version="$(node -p process.versions.node)"
+          npm_version="$(npm --version)"
+          echo "Node.js $node_version, npm $npm_version"
+          if ! at_least "$node_version" 22.14.0 || ! at_least "$npm_version" 11.5.1; then
+            echo "::error::npm trusted publishing needs Node.js >= 22.14.0 and npm >= 11.5.1"
+            exit 1
+          fi
+
+      # npm authenticates through trusted publishing (OIDC) when the package
+      # has a trusted publisher for this workflow, and otherwise falls back to
+      # NODE_AUTH_TOKEN. NPM_TOKEN exists only for the packages' first
+      # publish, before npm lets a trusted publisher be configured for them,
+      # so the step fails while it is set and both packages exist, and also
+      # when npm answers anything but E404 for whether a package exists. A
+      # version already on npm is skipped if npm's integrity for it is this
+      # tarball's and fails the job otherwise, so re-running this job finishes
+      # a partial publish. If reading that integrity fails, npm publish runs
+      # and itself refuses a version that exists. A release candidate goes to
+      # `candidate`; a final release gets no --tag, so npm applies `latest`,
+      # and the npm client refuses one not above the highest non-deprecated
+      # final release it can look up (RELEASING.md, Versioning). Publishing a
+      # tarball runs no lifecycle script; --ignore-scripts makes that explicit.
+      - name: Publish to npm
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+          DIST_TAG: ${{ needs.build.outputs.dist_tag }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -n "$NODE_AUTH_TOKEN" ]; then
+            all_exist=true
+            for name in $PACKAGES; do
+              if ! view_err="$(npm view "$name" name 2>&1 >/dev/null)"; then
+                if ! grep -qx 'npm error code E404' <<<"$view_err"; then
+                  echo "::error::cannot tell whether $name exists on npm: ${view_err//$'\n'/ }"
+                  exit 1
+                fi
+                all_exist=false
+              fi
+            done
+            if [ "$all_exist" = true ]; then
+              echo "::error::NPM_TOKEN is set but both packages already exist on npm. Delete the secret, revoke the token, and publish through the trusted publishers (RELEASING.md)."
+              exit 1
+            fi
+            echo "::warning::NPM_TOKEN is set. Delete it and revoke the token once both packages have trusted publishers (RELEASING.md)."
+          fi
+          tag_args=()
+          if [ "$DIST_TAG" = candidate ]; then
+            tag_args=(--tag candidate)
+          fi
+          for name in $PACKAGES; do
+            tarball="$RUNNER_TEMP/tarballs/$(tr / - <<<"${name#@}")-$VERSION.tgz"
+            integrity="sha512-$(openssl dgst -sha512 -binary "$tarball" | base64 -w0)"
+            published="$(npm view "$name@$VERSION" dist.integrity 2>/dev/null || true)"
+            if [ -n "$published" ]; then
+              if [ "$published" != "$integrity" ]; then
+                echo "::error::$name@$VERSION is already on npm with integrity $published, but this tarball's is $integrity"
+                exit 1
+              fi
+              echo "$name@$VERSION is already on npm with this tarball's integrity; skipping"
+              continue
+            fi
+            npm publish "$tarball" --provenance --access public "${tag_args[@]}" --ignore-scripts
+          done

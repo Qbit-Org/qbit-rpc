@@ -28,6 +28,14 @@ npm install /path/to/qbit-oss-rpc-<version>.tgz /path/to/qbit-oss-zmq-<version>.
 
 There is no ESLint: Prettier formats, and `tsc` in strict mode checks the code.
 
+## Versions and the changelog
+
+Every pull request that changes `packages/*/src` adds a line to
+[CHANGELOG.md](CHANGELOG.md), which CI's `changelog` job checks;
+`corepack pnpm changelog:check origin/main HEAD` runs the same check.
+`corepack pnpm release:version <version>` sets both packages' version, which
+they share ([RELEASING.md](RELEASING.md#versioning)).
+
 ## The API report
 
 Each package's public API is recorded in `packages/<package>/etc/<package>.api.md`,
