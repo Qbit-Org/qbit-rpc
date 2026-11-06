@@ -9,10 +9,21 @@
 // outside src/ or does not carry the source it maps to, the manifest's
 // packaging fields or dependency policy have drifted (see docs/packaging.md
 // and CONTRIBUTING.md's "Dependency policy"), a package's LICENSE copy has
-// drifted from the root LICENSE, a package is not marked private, the packed
-// README has a relative link that leaves the package or does not link the
-// changelog, or `author` names no organisation URL for npm to link. The checks
-// that need no pack are in pack-checks.mjs, which pack-checks.test.mjs tests.
+// drifted from the root LICENSE, `publishConfig` is not public with
+// provenance, the packed README has a relative link that leaves the package
+// or does not link the changelog, or `author` names no organisation URL for
+// npm to link. The checks that need no pack are in pack-checks.mjs and
+// release-checks.mjs, which pack-checks.test.mjs and release-checks.test.mjs
+// test.
+//
+// Two modes. Outside a release, both packages must stay "private": true at
+// 0.0.0, so nothing on `main` can be published by accident. With
+// PACK_CHECK_RELEASE set to a release tag (`v0.1.0-rc.0`) or release branch
+// (`release/0.1`), the release mode runs check-release.mjs's checks instead:
+// both packages at the tag's version, or one on the branch's line, without
+// "private", with `files`, `license`, a LICENSE and `engines`, and
+// CHANGELOG.md's section for the version. CI sets it on release branches and
+// the publish workflow to the tag (RELEASING.md).
 //
 // Declaration maps are not shipped, on purpose: tsup bundles the declarations
 // into one file per format, and its bundler cannot emit maps for them. The
@@ -24,7 +35,9 @@ import { readdirSync, readFileSync } from 'node:fs'
 import { dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { readReleaseInputs } from './check-release.mjs'
 import { authorProblem, mapProblems, peerProblems, readmeProblems, sizeProblem } from './pack-checks.mjs'
+import { devManifestProblems, PACKAGES, publishConfigProblems, releaseProblems } from './release-checks.mjs'
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)))
 
@@ -52,13 +65,21 @@ const MAPS = { 'lib/index.js.map': [], 'lib/index.mjs.map': ['../src/index.ts'] 
 // request that needs it.
 const CEILINGS = { rpc: 2_270_000, zmq: 280_000 }
 
-const packages = ['rpc', 'zmq']
 const rootLicense = readFileSync(join(repoRoot, 'LICENSE'), 'utf8')
+const releaseRef = process.env.PACK_CHECK_RELEASE ?? ''
 let failed = false
 
 function fail(message) {
   failed = true
   console.error(`  ${message}`)
+}
+
+if (releaseRef === '') {
+  console.log('outside a release: both packages must be "private": true at 0.0.0')
+} else {
+  const { version, problems } = releaseProblems(readReleaseInputs(repoRoot), releaseRef)
+  console.log(`release mode for ${releaseRef}${version ? `: ${version.version}, dist-tag ${version.distTag}` : ''}`)
+  problems.forEach(fail)
 }
 
 // Every TypeScript source under `dir`, as a map's `sources` names it from lib/: `../src/a/b.ts`.
@@ -70,14 +91,13 @@ function sourceFiles(cwd, dir = join(cwd, 'src')) {
   })
 }
 
-for (const name of packages) {
+for (const name of PACKAGES) {
   const cwd = join(repoRoot, 'packages', name)
   const manifest = JSON.parse(readFileSync(join(cwd, 'package.json'), 'utf8'))
   console.log(`packages/${name}`)
-  // Nothing in this repository may be published by accident.
-  if (manifest.private !== true || manifest.version !== '0.0.0') {
-    fail(`package.json must stay "private": true at version 0.0.0`)
-  }
+  // Nothing in this repository may be published by accident. The release
+  // mode checked the manifests, publishConfig included, above.
+  if (releaseRef === '') [...devManifestProblems(manifest), ...publishConfigProblems(manifest)].forEach(fail)
   if (readFileSync(join(cwd, 'LICENSE'), 'utf8') !== rootLicense) {
     fail(`LICENSE differs from the root LICENSE`)
   }

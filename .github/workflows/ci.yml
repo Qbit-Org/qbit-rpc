@@ -1,12 +1,16 @@
 name: CI
 
+# release/X.Y branches too, which RELEASING.md protects as main is, and from
+# which the publish workflow releases.
 on:
   pull_request:
     branches:
       - main
+      - 'release/**'
   push:
     branches:
       - main
+      - 'release/**'
   workflow_dispatch:
 
 permissions:
@@ -63,8 +67,13 @@ jobs:
 
       # format:check, build, api:check, test, test:release, test:scripts,
       # typecheck, typecheck:test, pack:check and consumer:check, stopping at
-      # the first failure.
+      # the first failure. On a release branch, or a pull request into one,
+      # pack:check runs in its release mode for that branch (both packages at
+      # a version of its line, ready to publish); elsewhere it keeps both
+      # "private": true at 0.0.0. A back-merge into main must put them back.
       - name: Verify
+        env:
+          PACK_CHECK_RELEASE: ${{ startsWith(github.base_ref || github.ref_name, 'release/') && (github.base_ref || github.ref_name) || '' }}
         run: pnpm verify
 
   # The check to require for the matrix: it passes only when every Node.js
@@ -81,6 +90,28 @@ jobs:
         run: |
           echo "verify (node ...): $RESULT"
           test "$RESULT" = success
+
+  # A pull request that changes a package's source (packages/*/src) must add
+  # to CHANGELOG.md (scripts/check-changelog.mjs). The pull request's merge
+  # commit is compared with its first parent, the tip of the branch it merges
+  # into, so the check sees exactly what merging it changes.
+  changelog:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+
+      - name: A source change comes with a changelog entry
+        run: node scripts/check-changelog.mjs HEAD^1 HEAD
 
   # scripts/regtest-smoke.sh: both packages against a throwaway qbit Core
   # regtest node on 127.0.0.1, with every ZMQ topic. The release named in
@@ -157,61 +188,3 @@ jobs:
         env:
           QBIT_BIN_DIR: ${{ steps.core.outputs.bin-dir }}
         run: scripts/regtest-smoke.sh
-
-  # zeromq's prebuilt addon on the arm64 platforms the Ubuntu matrix does not
-  # cover. Manual runs only: macOS minutes are billed at a multiple for a
-  # private repository, and a runner label the repository cannot get would
-  # leave the job queued on every push.
-  zeromq-platforms:
-    name: zeromq load (${{ matrix.os }})
-    if: github.event_name == 'workflow_dispatch'
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        os:
-          - macos-latest
-          - ubuntu-24.04-arm
-
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          persist-credentials: false
-
-      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-        with:
-          run_install: false
-
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: 26.x
-          check-latest: true
-          cache: pnpm
-
-      - name: Check pnpm matches packageManager
-        run: |
-          expected="$(node -p "require('./package.json').packageManager.split('+')[0].slice('pnpm@'.length)")"
-          actual="$(pnpm --version)"
-          echo "node $(node --version), packageManager pnpm $expected, running pnpm $actual"
-          test "$actual" = "$expected"
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile --config.engine-strict=true
-
-      # zeromq's loader picks a prebuild by platform, arch and libc; it is a
-      # Node-API addon, so one Node.js version stands for the others.
-      - name: Load zeromq and create a Subscriber
-        working-directory: packages/zmq
-        run: |
-          node -e "
-            const zmq = require('zeromq')
-            const socket = new zmq.Subscriber()
-            console.log('libzmq', zmq.version, 'on', process.platform, process.arch, 'node', process.version)
-            socket.close()
-          "
-
-      # Packs both packages and loads their CommonJS and ESM builds, each of
-      # which creates a zeromq Subscriber.
-      - name: Packed consumer check
-        run: pnpm consumer:check

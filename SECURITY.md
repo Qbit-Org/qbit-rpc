@@ -29,7 +29,10 @@ describes, and issues in `@qbit-oss/protocol` or `@qbit-oss/api` through
 
 ## Supported versions
 
-Nothing has been released. Fixes land on `main`.
+Security fixes go into the newest release line only, as a patch release of
+both packages, which share one version ([RELEASING.md](RELEASING.md)). Below
+1.0, a new minor line ends fixes for the one before it. Nothing has been
+released yet: until `0.1.0`, fixes land on `main`.
 
 ## Security boundaries
 

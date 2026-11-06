@@ -8,6 +8,9 @@ against v1.0.0, the release `scripts/qbit-core-release.mjs` names, by CI's
 `regtest smoke` job. A new minor version is supported only once that job passes
 against it, in a release of these packages that says so.
 
+Checks against a mainnet node, and scripted fault injection on regtest, are
+planned (#7): the network check that runs them lands in its own pull request.
+
 `@qbit-oss/rpc` checks the node's version with every chain check and exposes it
 as `rpc.nodeVersion`. On another version it refuses wallet-write, broadcast, mining and wallet-admin
 calls with `RpcChainGuardError` `reason: 'unsupported_version'`, unless the
@@ -43,17 +46,18 @@ which ships a prebuilt addon for each platform below:
 | Platform | Minimum | CI |
 | --- | --- | --- |
 | Linux x64, glibc | glibc 2.25 | All of `verify`, on each Node.js line above |
-| Linux arm64, glibc | glibc 2.25 | Loads `zeromq` and the packed packages on `ubuntu-24.04-arm`, Node.js 26.x, in manual runs |
-| macOS arm64 | macOS 14 | The same, on `macos-latest` (the current image, not the minimum), in manual runs |
+| Linux arm64, glibc | glibc 2.25 | Loads `zeromq` and the packed packages on `ubuntu-24.04-arm`, Node.js 26.x: see below |
+| macOS arm64 | macOS 14 | The same, on `macos-latest` (the current image, not the minimum): see below |
 | macOS x64 | macOS 13.7 | Untested |
 | Linux x64 and arm64, musl (Alpine) | | Untested |
 | Windows x64, arm64 and ia32 | | Untested |
 
-The two arm64 jobs run only when started by hand (`workflow_dispatch`), not on
-pull requests or pushes: macOS minutes are billed at a multiple for this
-private repository, and the arm64 runners must first be available to it. On a
-platform not in the table above, `zeromq`'s install script builds libzmq from
-source, which needs CMake, Ninja and vcpkg and is not tested here.
+The two arm64 jobs are their own workflow, `zeromq-platforms.yml`. They run on
+pull requests that change `packages/zmq/`, that workflow or the lockfile,
+weekly against the newest runner images, and by hand (`workflow_dispatch`).
+They are not required checks, so a runner that is not available cannot block a
+merge. On a platform not in the table above, `zeromq`'s install script builds
+libzmq from source, which needs CMake, Ninja and vcpkg and is not tested here.
 
 ## TypeScript
 

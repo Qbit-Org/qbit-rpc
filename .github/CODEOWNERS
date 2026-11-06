@@ -2,8 +2,7 @@
 # the scripts CI and pack checks run, the manifests and the lockfile, the
 # workspace, build and TypeScript configuration, and RELEASING.md itself. This
 # takes effect once the `main` rules in RELEASING.md are on, with code-owner
-# review required; rulesets are refused while the repository is private (see
-# RELEASING.md's Gaps), so until then nothing here is enforced.
+# review required; until then nothing here is enforced.
 /.github/ @kiwidream
 /scripts/ @kiwidream
 /package.json @kiwidream
