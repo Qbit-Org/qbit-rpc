@@ -3,6 +3,7 @@ import { inspect } from 'node:util'
 
 import {
   CAPABILITIES,
+  extraMethodPolicies,
   methodPolicy,
   QBIT_CHAINS,
   QBIT_DEFAULT_SIGNET_CHALLENGE,
@@ -80,6 +81,14 @@ import { ExchangeFailure, HttpTransport, prototypePollution } from './transport'
 import { ResultIssue } from './validate'
 import { nodeVersionRequest, type NodeVersion } from './version'
 
+/** How the client treats a method opened with `extraMethods`, as it treats an allowlisted one with the same policy. */
+export interface ExtraMethodPolicy {
+  /** What the client must enable: `read` for a chain read, or a capability. */
+  readonly capability: 'read' | Capability
+  /** Whether a call can change node or wallet state; it has no default. */
+  readonly sideEffects: boolean
+}
+
 export interface QbitRpcClientOptions {
   /**
    * The node's JSON-RPC endpoint, such as `http://127.0.0.1:48352/` for
@@ -124,6 +133,30 @@ export interface QbitRpcClientOptions {
   readonly expectedSignetChallenge?: string
   /** Capabilities beyond chain reads. Default none: read-only. */
   readonly capabilities?: readonly Capability[]
+  /**
+   * Methods to allow beyond the package's allowlist, for this client, untyped,
+   * through `call()` and `requests.raw()`. Each entry is the method's policy:
+   * `capability`, `read` or one in `capabilities`, and `sideEffects`, which
+   * has no default; one with side effects needs `wallet-write`, `broadcast`
+   * or `node-admin`. The client treats the method as an allowlisted one with
+   * that policy: `wallet-write`, `broadcast` and `node-admin` wait for the
+   * chain guard, and a method with side effects is never retried or batched,
+   * uses a fresh connection, and is an `RpcUnknownOutcomeError` when it may
+   * have run. A `node-admin` call needs the chain's identity only: an
+   * unsupported qbit Core version does not refuse it. Node administration (`stop`, `setban`, `addnode`, ...) is
+   * reachable only this way, under `node-admin`. A method qbit Core
+   * v1.0.0's `help` lists may not be declared below what it does: a wallet
+   * method needs a wallet capability, and one that changes state needs
+   * `sideEffects: true` under its kind's capability. A method `help` does not
+   * list keeps the policy given. An allowlisted method may be restated with
+   * its own policy, which then applies. Anything else is a `TypeError`: a
+   * policy below the method's, another policy for an allowlisted method, a
+   * capability the client does not enable, an option or entry that is not a
+   * plain object or is malformed, and `sendmany`, `sendtoaddress`, `send`,
+   * `sendall` and `bumpfee`, which sign and broadcast in one step. `toJSON()`
+   * lists them. Default none.
+   */
+  readonly extraMethods?: Readonly<Record<string, ExtraMethodPolicy>>
   /**
    * Deadline for one operation (a call or a batch, with every retry, any wait
    * for a request slot and the cookie read). Default 30,000 ms. For
@@ -251,8 +284,18 @@ type ChainState =
       readonly differs: readonly ChainCheck[]
       readonly doubt: number
     }
-  /** Recorded and lifted as a mismatch is; `doubt` as there. */
-  | { readonly status: 'unsupported_version'; readonly version: NodeVersion; readonly doubt: number }
+  /**
+   * Recorded and lifted as a mismatch is; `doubt` as there. `matched`: that
+   * check also read the expected chain and genesis block, with no doubt
+   * meanwhile, which a `node-admin` call, refused by no version, takes as a
+   * confirmation made then, with that cookie, until the next doubt.
+   */
+  | {
+      readonly status: 'unsupported_version'
+      readonly version: NodeVersion
+      readonly doubt: number
+      readonly matched?: { readonly at: number; readonly digest: string; readonly suspicions: number }
+    }
 
 /**
  * What a chain check found: the node's chain name, genesis block hash and
@@ -300,6 +343,7 @@ const CLIENT_OPTIONS = keysOf<QbitRpcClientOptions>({
   expectedGenesisHash: true,
   expectedSignetChallenge: true,
   capabilities: true,
+  extraMethods: true,
   timeoutMs: true,
   maxResponseBytes: true,
   readRetries: true,
@@ -374,6 +418,7 @@ export class QbitRpcClient {
   /** Set exactly when `#expectedChain` is signet. */
   readonly #expectedSignetChallenge: string | undefined
   readonly #capabilities: ReadonlySet<Capability>
+  readonly #extraMethods: ReadonlyMap<string, MethodPolicy>
   /** Undefined when the option is unset: each method's own default applies. */
   readonly #timeoutMs: number | undefined
   readonly #maxResponseBytes: number
@@ -394,6 +439,12 @@ export class QbitRpcClient {
    * change while in flight cannot record a confirmation.
    */
   #doubts = 0
+  /**
+   * Counts the signs alone that the node behind the URL may be another one: a
+   * connection error, an HTTP 401. A node-admin call's match stands only
+   * while none has come since the check that read it began.
+   */
+  #suspicions = 0
   /** Chain checks in the order they were sent, so one answered late cannot roll `#nodeVersion` back. */
   #chainChecks = 0
   #nodeVersion: NodeVersion | undefined
@@ -441,6 +492,7 @@ export class QbitRpcClient {
       }
     }
     this.#capabilities = new Set(capabilities as Capability[])
+    this.#extraMethods = extraMethodPolicies(own.extraMethods, this.#capabilities)
     this.#timeoutMs = checkInteger(own.timeoutMs, 'timeoutMs', 1, 3_600_000, undefined)
     this.#maxResponseBytes = checkInteger(
       own.maxResponseBytes,
@@ -559,10 +611,10 @@ export class QbitRpcClient {
   }
 
   /**
-   * Call any allowlisted method with positional parameters. The result is
-   * returned unvalidated, with every number as a `JsonNumber`. Pass amounts as
-   * strings from `formatQbt(bits)` (qbit Core accepts amount strings) and
-   * integers above 2^53 as `bigint`.
+   * Call any allowlisted method, or one in `extraMethods`, with positional
+   * parameters. The result is returned unvalidated, with every number as a
+   * `JsonNumber`. Pass amounts as strings from `formatQbt(bits)` (qbit Core
+   * accepts amount strings) and integers above 2^53 as `bigint`.
    */
   call(method: string, params: readonly unknown[] = [], callOptions?: CallOptions): Promise<unknown> {
     return this.#lazy(() => requests.raw(method, params), callOptions)
@@ -801,6 +853,7 @@ export class QbitRpcClient {
         ? {}
         : { expectedSignetChallenge: this.#expectedSignetChallenge }),
       capabilities: [...this.#capabilities],
+      ...(this.#extraMethods.size === 0 ? {} : { extraMethods: Object.fromEntries(this.#extraMethods) }),
       auth: this.#credentials.kind,
       ...(this.#tlsSummary === undefined ? {} : { tls: structuredClone(this.#tlsSummary) }),
       ...(this.#customConnect ? { connect: 'custom' } : {}),
@@ -845,11 +898,22 @@ export class QbitRpcClient {
     version: NodeVersion | undefined,
     complete: boolean,
     since: number,
+    suspicion: number,
     digest: string,
     clearsBefore: number | undefined
   ): boolean {
     const chain = this.#chain
     const differs = report === undefined ? [] : this.#chainDifferences(report)
+    // The expected chain and genesis block, and a version, read with no sign since the check
+    // began that the node is another one: what a node-admin call, refused by no version, goes on.
+    const identity =
+      report !== undefined &&
+      report.genesisHash !== undefined &&
+      differs.length === 0 &&
+      version !== undefined &&
+      this.#suspicions === suspicion
+        ? { at: performance.now(), digest, suspicions: suspicion }
+        : undefined
     const lifts =
       (chain.status !== 'mismatch' && chain.status !== 'unsupported_version') ||
       (clearsBefore !== undefined && chain.doubt <= clearsBefore)
@@ -863,12 +927,22 @@ export class QbitRpcClient {
       const matched = report !== undefined && report.genesisHash !== undefined
       if (chain.status !== 'mismatch' || (lifts && matched)) {
         this.#doubts += 1
-        this.#chain = { status: 'unsupported_version', version, doubt: this.#doubts }
+        this.#chain = {
+          status: 'unsupported_version',
+          version,
+          doubt: this.#doubts,
+          ...(identity === undefined ? {} : { matched: identity }),
+        }
       } else if (lifts) {
         this.#doubts += 1
         this.#chain = { ...chain, doubt: this.#doubts }
       }
       return true
+    }
+    // A supported version again, while the unsupported one stays recorded until a confirmChain():
+    // the match is fresh for node-admin calls, and nothing else changes.
+    if (chain.status === 'unsupported_version' && !lifts && identity !== undefined) {
+      this.#chain = { ...chain, matched: identity }
     }
     if (complete && this.#doubts === since && lifts) {
       this.#chain = { status: 'confirmed', at: performance.now(), digest }
@@ -911,15 +985,20 @@ export class QbitRpcClient {
   /** A sign the node may have restarted or been replaced: re-check the chain before the next guarded call. */
   #invalidateChain(): void {
     this.#doubts += 1
+    this.#suspicions += 1
     if (this.#chain.status === 'confirmed') this.#chain = { status: 'invalidated' }
   }
 
-  /** The refusal of a guarded call while the chain is unconfirmed or another one, or the version unsupported. */
-  #chainRefusal(method: string): RpcChainGuardError | undefined {
+  /**
+   * The refusal of a guarded call while the chain is unconfirmed or another
+   * one, or the version unsupported, which `versionExempt` (a `node-admin`
+   * call) leaves out: it goes on to check the chain, and takes a match.
+   */
+  #chainRefusal(method: string, versionExempt = false): RpcChainGuardError | undefined {
     const chain = this.#chain
     if (chain.status === 'unconfirmed') return new RpcChainGuardError(method, 'unconfirmed', this.#expectedChain)
     if (chain.status === 'mismatch') return this.#mismatchError(method, chain)
-    if (chain.status === 'unsupported_version') {
+    if (chain.status === 'unsupported_version' && !versionExempt) {
       return new RpcChainGuardError(method, 'unsupported_version', this.#expectedChain, { nodeVersion: chain.version })
     }
     return undefined
@@ -933,18 +1012,35 @@ export class QbitRpcClient {
    * MAX_CHAIN_CHECKS checks have each been doubted. `confirming` is set for
    * `confirmChain()`, to `#doubts` when it began: it always checks, and is
    * refused only by a mismatch or unsupported version found since then.
+   * `versionExempt`, for a `node-admin` call, takes an unsupported version
+   * whose check matched the chain as it takes a confirmation.
    */
-  #chainNeedsCheck(method: string, authorization: Authorization, checks: number, confirming?: number): boolean {
+  #chainNeedsCheck(
+    method: string,
+    authorization: Authorization,
+    checks: number,
+    confirming?: number,
+    versionExempt = false
+  ): boolean {
     const chain = this.#chain
     if (confirming === undefined) {
-      const refusal = this.#chainRefusal(method)
+      const refusal = this.#chainRefusal(method, versionExempt)
       if (refusal !== undefined) throw new Failure(refusal, false, false)
     } else {
       this.#refuseRecordedSince(method, confirming)
     }
-    const fresh =
-      checks > 0 || (confirming === undefined && chain.status === 'confirmed' && !this.#chainExpired(chain.at))
-    if (chain.status === 'confirmed' && chain.digest === authorization.digest && fresh) return false
+    const fresh = (at: number): boolean => checks > 0 || (confirming === undefined && !this.#chainExpired(at))
+    if (chain.status === 'confirmed' && chain.digest === authorization.digest && fresh(chain.at)) return false
+    if (
+      versionExempt &&
+      chain.status === 'unsupported_version' &&
+      chain.matched?.digest === authorization.digest &&
+      // None since: after a connection error or an HTTP 401 the node may be another one.
+      chain.matched.suspicions === this.#suspicions &&
+      fresh(chain.matched.at)
+    ) {
+      return false
+    }
     if (checks >= MAX_CHAIN_CHECKS) {
       throw new Failure(new RpcChainGuardError(method, 'stale', this.#expectedChain), false, true)
     }
@@ -969,10 +1065,10 @@ export class QbitRpcClient {
    * side effects retries it under `readRetries`, and a stale socket still gets
    * its extra attempt.
    */
-  #guardFailure(method: string, error: unknown): Failure {
+  #guardFailure(method: string, error: unknown, versionExempt = false): Failure {
     if (error instanceof Failure && (RpcChainGuardError.is(error.error) || isPollutionRefusal(error.error)))
       return error
-    const refusal = this.#chainRefusal(method)
+    const refusal = this.#chainRefusal(method, versionExempt)
     if (refusal !== undefined) return new Failure(refusal, false, false)
     // Anything else thrown here, a bug included, still failed before the call was sent.
     if (!(error instanceof Failure)) {
@@ -1038,6 +1134,7 @@ export class QbitRpcClient {
       }))
     )
     const since = this.#doubts
+    const suspicion = this.#suspicions
     const sent = ++this.#chainChecks
     const definite = (error: unknown): Failure => {
       const failure = asFailure(check.method, error, attempt)
@@ -1072,7 +1169,15 @@ export class QbitRpcClient {
     }
     const report =
       info === undefined ? undefined : { chain: info.chain, genesisHash, signetChallenge: info.signetChallenge }
-    const refused = this.#recordChain(report, version, failed === undefined, since, authorization.digest, clearsBefore)
+    const refused = this.#recordChain(
+      report,
+      version,
+      failed === undefined,
+      since,
+      suspicion,
+      authorization.digest,
+      clearsBefore
+    )
     if (failed !== undefined && !refused) throw definite(failed.error)
     return info
   }
@@ -1090,9 +1195,10 @@ export class QbitRpcClient {
   #authorize(method: string, inBatch: boolean): MethodPolicy {
     // A primitive string on every path, so the method checked is the one sent.
     if (typeof method !== 'string' || method === '') throw new TypeError('method must be a non-empty string')
-    const policy = methodPolicy(method)
+    const policy = methodPolicy(method) ?? this.#extraMethods.get(method)
     if (policy === undefined) throw new RpcCapabilityError(method, 'unknown_method')
-    if (inBatch && policy.capability !== 'read' && policy.capability !== 'wallet-read') {
+    // A batch is sent as a read: on a pooled connection, retried, never an unknown outcome.
+    if (inBatch && (policy.sideEffects || (policy.capability !== 'read' && policy.capability !== 'wallet-read'))) {
       throw new RpcCapabilityError(method, 'not_batchable')
     }
     if (policy.capability !== 'read' && !this.#capabilities.has(policy.capability)) {
@@ -1100,7 +1206,7 @@ export class QbitRpcClient {
     }
     if (guarded(policy)) {
       // Refuse before reading a cookie; the call decides again just before it is sent.
-      const refusal = this.#chainRefusal(method)
+      const refusal = this.#chainRefusal(method, policy.capability === 'node-admin')
       if (refusal !== undefined) throw refusal
     }
     return policy
@@ -1119,18 +1225,20 @@ export class QbitRpcClient {
         // with that header, and a new cookie (qbitd restarted) means a check.
         const authorization = await this.#authorization(method, attempt.signal)
         if (guarded(policy)) {
+          // node-admin: the chain's identity only, so stop and setban reach a node of an unsupported version.
+          const exempt = policy.capability === 'node-admin'
           try {
             // Decide after the last await: a mismatch or doubt recorded meanwhile is honoured.
-            for (let checks = 0; this.#chainNeedsCheck(method, authorization, checks); checks += 1) {
+            for (let checks = 0; this.#chainNeedsCheck(method, authorization, checks, undefined, exempt); checks += 1) {
               if (checks > 0) {
                 await this.#pause(method, attempt)
                 // Decide again after the wait: a mismatch recorded meanwhile refuses the call.
-                if (!this.#chainNeedsCheck(method, authorization, checks)) break
+                if (!this.#chainNeedsCheck(method, authorization, checks, undefined, exempt)) break
               }
               await this.#checkChain(attempt, authorization, undefined)
             }
           } catch (error) {
-            throw this.#guardFailure(method, error)
+            throw this.#guardFailure(method, error, exempt)
           }
         }
         const text = await this.#exchange(method, body, attempt.signal, policy.sideEffects, id, authorization.header)
@@ -1445,8 +1553,12 @@ export class QbitRpcClient {
   }
 }
 
+/**
+ * Whether a call waits for the chain guard: one that can change a wallet, the
+ * mempool or the node. A `node-admin` call needs the chain's identity only.
+ */
 function guarded(policy: MethodPolicy): boolean {
-  return policy.capability === 'wallet-write' || policy.capability === 'broadcast'
+  return policy.capability === 'wallet-write' || policy.capability === 'broadcast' || policy.capability === 'node-admin'
 }
 
 function legacyError(method: string, body: string, id: number): RpcError | undefined {

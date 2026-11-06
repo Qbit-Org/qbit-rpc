@@ -585,6 +585,7 @@ describe('client options', () => {
       expectedGenesisHash: '00',
       expectedSignetChallenge: '51',
       capabilities: ['broadcast', 'wallet-write'],
+      extraMethods: { getchaintxstats: { capability: 'read', sideEffects: false } },
       timeoutMs: 1,
       maxResponseBytes: 1,
       readRetries: 10,

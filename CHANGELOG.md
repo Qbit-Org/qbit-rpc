@@ -769,3 +769,52 @@ properties only. The API report is unchanged.
   runs without heartbeats.
 - `@qbit-oss/zmq` is about 224 KB unpacked, and its `pack:check` ceiling 280,000
   bytes.
+
+### Opening another method
+
+- The client option `extraMethods` opens a method the package does not
+  allowlist, for that client only, untyped, through `call()` and
+  `requests.raw()`, such as
+  `{ getchaintxstats: { capability: 'read', sideEffects: false } }`. Each entry
+  gets the treatment of an allowlisted method with the same policy
+  (`ExtraMethodPolicy`): `wallet-write` and `broadcast` wait for the chain guard, and one
+  with side effects is never retried or batched, uses a fresh connection, and
+  is an `RpcUnknownOutcomeError` when it may have run. The constructor throws a
+  `TypeError` for a malformed name or entry, an option or entry that is not a
+  plain object (a `Map`, a class instance), an unknown capability or one the
+  client does not enable (restated allowlisted methods included), a missing
+  `sideEffects` (it has no default), side effects without `wallet-write`,
+  `broadcast` or `node-admin`, a method the package already allowlists with another policy
+  (restating its own is accepted), and `sendmany`, `sendtoaddress`, `send`,
+  `sendall` and `bumpfee`, which sign and broadcast in one step. `toJSON()` and
+  `util.inspect` list the opened methods.
+- Each of the 161 methods qbit Core v1.0.0's `help` lists has a fixed class,
+  from its source: a policy below it is a `TypeError` naming the method and the
+  policy it needs. A wallet method needs a wallet capability; one that signs or
+  changes a wallet needs `wallet-write` with side effects; one that hands a
+  transaction to the network or builds or submits blocks needs `broadcast`
+  with side effects. `walletpassphrasechange` or `signrawtransactionwithwallet`
+  cannot be opened as a read. qbit Core v1.0.0's 18 hidden methods are
+  classed too: `invalidateblock` cannot be opened as a read either. A method
+  in neither table, as a later release's, keeps the policy given. The regtest
+  smoke test compares the table with the node's `help`, and each hidden name
+  with `help <name>`.
+- A new capability, `node-admin`, for node administration: `stop`, `setban`,
+  `clearbanned`, `addnode`, `disconnectnode`, `setnetworkactive`,
+  `pruneblockchain`, `savemempool`, `importmempool`, `logging`,
+  `dumptxoutset`, `loadtxoutset`, `getblockfrompeer`, `preciousblock` and
+  `ping`. It allowlists nothing: each is reachable only through
+  `extraMethods`, as `{ capability: 'node-admin', sideEffects: true }`, on a
+  client whose `capabilities` include `node-admin`. Under any other
+  capability, `broadcast` included, such an entry is a `TypeError` naming the
+  method and `node-admin`. Its calls wait for the chain guard, by the chain's
+  identity only: refused before `confirmChain()`, on another chain, and when
+  the chain cannot be confirmed (`stale`, `check_failed`), but not for an
+  unsupported qbit Core version, so `stop` and `setban` still reach such a
+  node. None goes in a batch (`not_batchable`). `Capability` gains `node-admin`, so a
+  `switch` over it checked for exhaustiveness needs the case.
+- `extraMethods` and each entry are read from their own properties: a key of
+  an entry held only on a polluted `Object.prototype` is a `TypeError` naming
+  it, as for the other options, and an unknown key of an entry is refused with
+  the key it most likely meant. `extraMethods` is one of the constructor's
+  strict keys.

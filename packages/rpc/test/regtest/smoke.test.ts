@@ -18,6 +18,7 @@ import {
   type QbitRpcClientOptions,
 } from '../../src'
 import { QBIT_GENESIS_HASHES } from '../../src/capabilities'
+import { HIDDEN_METHOD_CLASSES, METHOD_CLASSES } from '../../src/method-classes'
 import { testPki } from '../helpers/certificates'
 import type { CoreRpc } from '../helpers/core-rpc'
 
@@ -183,6 +184,87 @@ describe.runIf(enabled)('qbit Core v1.0.0 regtest', () => {
     expect(new URL(url).hostname).toBe('127.0.0.1')
     await rpc.confirmChain()
     expect(rpc.chainStatus).toBe('confirmed')
+  })
+
+  it('opens a method the package does not allowlist through extraMethods', async () => {
+    const policy = { capability: 'read', sideEffects: false } as const
+    const closed = await client()
+      .call('getchaintxstats', [10])
+      .catch((e: unknown) => e)
+    expect(RpcCapabilityError.is(closed) && closed.reason).toBe('unknown_method')
+    const rpc = client({ extraMethods: { getchaintxstats: policy } })
+    expect(rpc.toJSON()).toMatchObject({ capabilities: [], extraMethods: { getchaintxstats: policy } })
+    type Stats = {
+      txcount: JsonNumber
+      window_block_count: JsonNumber
+      window_final_block_height: JsonNumber
+      window_final_block_hash: string
+    }
+    const stats = (await rpc.call('getchaintxstats', [10])) as Stats
+    const height = stats.window_final_block_height.toSafeInteger()
+    expect(height).toBeGreaterThanOrEqual(101)
+    expect(stats.window_block_count.toSafeInteger()).toBe(10)
+    expect(stats.window_final_block_hash).toBe(await rpc.getBlockHash(height))
+    // At least one coinbase per block after the genesis block.
+    expect(stats.txcount.toSafeInteger()).toBeGreaterThan(height)
+    // A read: it goes in a batch, and the node's refusal is that entry's RpcError.
+    const [batched, tooLong] = await rpc.batch([
+      requests.raw('getchaintxstats', [10]),
+      requests.raw('getchaintxstats', [1_000_000]),
+    ])
+    expect(batched.ok && (batched.value as Stats).window_block_count.toSafeInteger()).toBe(10)
+    expect(!tooLong.ok && RpcError.is(tooLong.error) && tooLong.error.rpcCode).toBe(-8)
+  })
+
+  it('administers the node through extraMethods under node-admin only, behind the chain guard', async () => {
+    const broadcast = { capability: 'broadcast', sideEffects: true } as const
+    expect(() => client({ capabilities: ['broadcast'], extraMethods: { ping: broadcast } })).toThrow(
+      "extraMethods.ping: qbit Core v1.0.0's ping changes what the node stores, follows or connects to, or stops it, so it needs { capability: 'node-admin', sideEffects: true }"
+    )
+    const admin: Partial<QbitRpcClientOptions> = {
+      capabilities: ['node-admin'],
+      extraMethods: { ping: { capability: 'node-admin', sideEffects: true } },
+    }
+    const rpc = client(admin)
+    // Refused until confirmChain(), as wallet-write and broadcast calls are.
+    await expect(rpc.call('ping')).rejects.toMatchObject({ name: 'RpcChainGuardError', reason: 'unconfirmed' })
+    await rpc.confirmChain()
+    expect(await rpc.call('ping')).toBeNull()
+    // A client that expects another chain never sends it here.
+    const elsewhere = client({ ...admin, expectedChain: 'main' })
+    await expect(elsewhere.confirmChain()).rejects.toMatchObject({ reason: 'mismatch' })
+    await expect(elsewhere.call('ping')).rejects.toMatchObject({ reason: 'mismatch', method: 'ping' })
+  })
+
+  it("classifies exactly the methods the node's help lists", async () => {
+    // help is in the table, as a read: extraMethods opens it as one.
+    const rpc = client({ extraMethods: { help: { capability: 'read', sideEffects: false } } })
+    const help = (await rpc.call('help')) as string
+    // One line per method under each "== Category ==" heading: its name, then its arguments.
+    const listed = help
+      .split('\n')
+      .filter(line => /^[a-z]/.test(line))
+      .map(line => line.split(' ')[0]!)
+      .sort()
+    expect(listed).toHaveLength(161)
+    expect(Object.keys(METHOD_CLASSES).sort()).toEqual(listed)
+    // Each hidden method in the other table is one this node has: help describes it by name.
+    for (const name of Object.keys(HIDDEN_METHOD_CLASSES)) {
+      expect(listed, name).not.toContain(name)
+      expect(((await rpc.call('help', [name])) as string).split(/\s/)[0], name).toBe(name)
+    }
+    // Each category heading is one the table's comments use.
+    expect(help.split('\n').filter(line => line.startsWith('=='))).toEqual([
+      '== Blockchain ==',
+      '== Control ==',
+      '== Mining ==',
+      '== Network ==',
+      '== Rawtransactions ==',
+      '== Signer ==',
+      '== Util ==',
+      '== Wallet ==',
+      '== Zmq ==',
+    ])
   })
 
   // Every option name the client sends must change what the node does: qbit

@@ -10,7 +10,8 @@ application.
 
 - [`@qbit-oss/rpc`](packages/rpc/README.md) to read chain and wallet state from
   `qbitd`, fund and sign PSBTs with its wallet, and broadcast. Every method is
-  allowlisted and gated by capabilities the client opts into, wallet-write and
+  allowlisted, by the package or by the client's own `extraMethods`, and gated
+  by capabilities the client opts into, wallet-write and
   broadcast calls wait until the node's chain is confirmed, results are
   validated, and amounts are exact `bigint` bits. No runtime dependencies.
 - [`@qbit-oss/zmq`](packages/zmq/README.md) to be woken by `qbitd`'s ZMQ
@@ -197,6 +198,7 @@ for await (const event of zmq) {
 | Unlock an encrypted wallet | `rpc.walletPassphrase(passphrase, seconds)`, `rpc.walletLock()`; a new wallet's first unlock is slow, see [its deadline](packages/rpc/README.md#unlocking-an-encrypted-wallet) |
 | Verify a data-hash PQC proof | `rpc.verifyDataPqcHash(proof)` |
 | Any other allowlisted method | `rpc.call('getmempoolinfo')` (numbers come back as `JsonNumber`) |
+| A method the package does not allowlist | open it for one client, `extraMethods: { getchaintxstats: { capability: 'read', sideEffects: false } }`, then `rpc.call('getchaintxstats')`; see [opening another method](packages/rpc/README.md#opening-another-method-extramethods) |
 | Abort a call or give it its own deadline | the last argument: `rpc.getTxOut(txid, vout, { includeMempool: true }, { signal, timeoutMs: 5_000 })` |
 | Convert amounts | `parseQbt('1.5')` → `150000000n`, `formatQbt(1n)` → `'0.00000001'` |
 | Block and mempool notifications | `new QbitZmqSubscriber({ url, topics })`, `subscriber.health()` |
@@ -223,9 +225,16 @@ and again as soon as the connection drops.
 ## Limits
 
 - **Typed methods** cover the list in the [`@qbit-oss/rpc` README](packages/rpc/README.md#typed-methods).
-  Other allowlisted methods are untyped through `call()`. `sendmany`,
-  `sendtoaddress`, `send`, `sendall` and `bumpfee` are excluded on purpose:
-  they sign and broadcast in one step. `psbtbumpfee` returns an unsigned PSBT
+  Other allowlisted methods are untyped through `call()`. A client can open a
+  method the package does not allowlist with
+  [`extraMethods`](packages/rpc/README.md#opening-another-method-extramethods),
+  untyped and unvalidated, under a capability and with `sideEffects` stated.
+  For a method qbit Core v1.0.0's `help` lists, the package refuses a policy
+  below what the method does; for a hidden one, it cannot check the policy.
+  Node administration (`stop`, `setban`, `addnode`, ...) opens only this way,
+  under the `node-admin` capability, which allowlists nothing by default.
+  `sendmany`, `sendtoaddress`, `send`, `sendall` and `bumpfee` are excluded on
+  purpose, and cannot be opened: they sign and broadcast in one step. `psbtbumpfee` returns an unsigned PSBT
   instead, so it is allowlisted and typed.
 - `getwalletinfo` in qbit Core v1.0.0 has no per-key PQC signature counts; they
   appear on `walletprocesspsbt` and `getaddressinfo` replies.
@@ -263,7 +272,7 @@ Each tarball holds exactly `package.json`, `README.md`, `LICENSE` and, in
 map for each and the declarations for each (`index.d.ts`, `index.d.mts`). The
 maps carry every source file in `sourcesContent`, so `src/` is not shipped:
 run Node.js with `--enable-source-maps` to see `src/*.ts` lines in stack traces.
-`@qbit-oss/rpc` is about 1.45 MB unpacked (377 KB packed), most of it the two
+`@qbit-oss/rpc` is about 1.57 MB unpacked (407 KB packed), most of it the two
 maps; `@qbit-oss/zmq` about 224 KB (60 KB packed). `pack:check` fails on any
 other file, on a map that does not carry its sources, and above a ceiling of
 1,815,000 and 280,000 bytes unpacked.

@@ -177,7 +177,7 @@ export interface CallOptions {
 }
 
 // @public
-export type Capability = 'wallet-read' | 'wallet-write' | 'broadcast';
+export type Capability = 'wallet-read' | 'wallet-write' | 'broadcast' | 'node-admin';
 
 // @public
 export type ChainCheck = 'chain' | 'genesis_hash' | 'signet_challenge';
@@ -297,6 +297,12 @@ export interface DecodedTransaction {
     readonly vsize: number;
     // (undocumented)
     readonly weight: number;
+}
+
+// @public
+export interface ExtraMethodPolicy {
+    readonly capability: 'read' | Capability;
+    readonly sideEffects: boolean;
 }
 
 // @public (undocumented)
@@ -683,6 +689,7 @@ export interface QbitRpcClientOptions {
     readonly expectedChain: QbitChain;
     readonly expectedGenesisHash?: string;
     readonly expectedSignetChallenge?: string;
+    readonly extraMethods?: Readonly<Record<string, ExtraMethodPolicy>>;
     readonly maxConcurrentRequests?: number;
     readonly maxResponseBytes?: number;
     readonly readRetries?: number;
