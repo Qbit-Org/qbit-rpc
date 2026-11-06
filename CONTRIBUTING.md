@@ -11,10 +11,10 @@ corepack pnpm install --frozen-lockfile
 corepack pnpm verify
 ```
 
-`verify` runs `format:check`, `build`, `api:check`, `test`, `test:release`
-(which needs `gpg`), `test:scripts`, `typecheck`, `typecheck:test`,
-`pack:check` and `consumer:check`, as `.github/workflows/ci.yml` does, on each
-Node.js line. Which lines and platforms CI covers is in
+`verify` runs `format:check`, `build`, `api:check`, `docs:api`, `test`,
+`test:release` (which needs `gpg`), `test:scripts`, `typecheck`,
+`typecheck:test`, `pack:check` and `consumer:check`, as
+`.github/workflows/ci.yml` does, on each Node.js line. Which lines and platforms CI covers is in
 [Compatibility](docs/compatibility.md).
 
 To install a build of this checkout into another project, pack each package
@@ -61,6 +61,40 @@ git diff packages/*/etc    # review what changed
 Commit the reports with the change, and list a breaking change in
 [CHANGELOG.md](CHANGELOG.md) with how a caller migrates. `api:check` alone
 (after `corepack pnpm build`) runs the check without writing anything.
+
+## The API reference
+
+`corepack pnpm docs:api` builds the [TypeDoc](https://typedoc.org/) (`typedoc`
+0.28.20) reference of both packages into `api-docs/`, which is not committed,
+from each package's `src/index.ts` (see `typedoc.json`). Every exported
+declaration, and every member of one, needs a doc comment: TypeDoc fails on any
+warning, such as a missing comment, a `{@link}` it cannot resolve or a type
+that is used but not exported. `verify` runs it, and the Docs workflow's
+`api-reference` job builds it on every pull request and uploads it as an
+artifact. A doc comment that points to a page of `docs/` links its GitHub URL,
+as the reference and the declarations ship without `docs/`.
+
+The Docs workflow's `deploy` job publishes it from final release tags only,
+once a repository admin has enabled GitHub Pages as
+[RELEASING.md](RELEASING.md#the-api-reference-on-github-pages) describes. It
+is then at <https://qbit-org.github.io/qbit-rpc/>, which the READMEs and
+[`docs/`](docs/README.md#api-reference) link already.
+
+## Examples and code blocks
+
+`consumer:check` type-checks, against the packed packages and at both
+toolchains (the workspace's, and TypeScript 5.0 with `@types/node` 22.0.0):
+
+- the quick start of each package README (its first `ts` block) and the
+  example of the repository README;
+- every program in [`examples/`](examples/README.md);
+- every `ts` block of the pages in `docs/`, as written, with the names a block
+  takes from its page's text (`rpc`, `txid`, `store`, ...) declared in
+  `DOCS_CONTEXT` in `scripts/check-packed-consumer.mjs`. Add a name there when a
+  page introduces one; a helper the page does not name belongs in the block.
+  Each block is checked as its own file, named after the page and the line of
+  its opening fence (`docs/rpc/payments-L14.mts`), and tsc's line numbers are
+  the page's.
 
 ## The regtest smoke test
 

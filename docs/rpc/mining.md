@@ -11,7 +11,7 @@ const template = await rpc.getBlockTemplate() // { coinbaseValueBits, transactio
 await rpc.checkBlockProposal(blockHex) // optional: null, or why the node would refuse it, before any hashing
 const result = await rpc.submitBlock(blockHex)
 // null: accepted. duplicate: the node had it. inconclusive: stored, but its parent left the tip.
-if (result !== null && result !== 'duplicate' && result !== 'inconclusive') logRefusal(result)
+if (result !== null && result !== 'duplicate' && result !== 'inconclusive') console.error('refused:', result)
 ```
 
 - `getMiningInfo()` is a read, needing no capability, like `getBlockchainInfo()`:

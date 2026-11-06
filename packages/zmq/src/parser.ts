@@ -13,19 +13,32 @@ export type ZmqMessage = {
   /** The publisher's per-topic message counter, an unsigned 32-bit value that wraps. */
   readonly sequence: number
 } & (
-  | { readonly topic: 'hashblock'; readonly hash: string }
-  | { readonly topic: 'hashtx'; readonly txid: string }
   | {
+      /** The active chain has a new tip. */
+      readonly topic: 'hashblock'
+      /** The new tip's block hash. */
+      readonly hash: string
+    }
+  | {
+      /** A transaction entered the mempool, or is in a block connected or disconnected. */
+      readonly topic: 'hashtx'
+      /** The transaction's txid. */
+      readonly txid: string
+    }
+  | {
+      /** The active chain has a new tip. */
       readonly topic: 'rawblock'
       /** The serialized block, as qbit Core stores it: a copy of the frame, not decoded here. */
       readonly bytes: Uint8Array
     }
   | {
+      /** A transaction entered the mempool, or is in a block connected or disconnected. */
       readonly topic: 'rawtx'
       /** The serialized transaction: a copy of the frame, not decoded here. */
       readonly bytes: Uint8Array
     }
   | {
+      /** A block was connected or disconnected, or a transaction entered or left the mempool. */
       readonly topic: 'sequence'
       /** Block connected (`C`) or disconnected (`D`), or a transaction added to (`A`) or removed from (`R`) the mempool. */
       readonly event: 'block_connected' | 'block_disconnected' | 'mempool_added' | 'mempool_removed'
@@ -36,6 +49,7 @@ export type ZmqMessage = {
     }
 )
 
+/** How a message failed to parse; see {@link ZmqFrameError}. */
 export type ZmqFrameErrorCode = 'frame_count' | 'frame_type' | 'topic' | 'body_length' | 'label' | 'sequence_length'
 
 /**
@@ -47,6 +61,7 @@ export type ZmqFrameErrorCode = 'frame_count' | 'frame_type' | 'topic' | 'body_l
  * counter that is not 4 bytes (`sequence_length`).
  */
 export class ZmqFrameError extends Error {
+  /** How the message failed to parse. */
   readonly code: ZmqFrameErrorCode
   /** The topic, when the first frame named a known one. */
   readonly topic?: ZmqTopic
@@ -144,8 +159,11 @@ export function parseZmqMessage(frames: readonly Uint8Array[]): ZmqMessage {
  * publisher restarted: either way, reconcile over RPC.
  */
 export interface SequenceGap {
+  /** The topic whose counter broke. */
   readonly topic: ZmqTopic
+  /** The counter the next message should have had. */
   readonly expected: number
+  /** The counter it had. */
   readonly received: number
   /**
    * Messages skipped, when the counter jumped forward (by less than 2^31,

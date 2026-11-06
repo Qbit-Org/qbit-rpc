@@ -60,6 +60,7 @@ export type RpcCapabilityRefusal = 'not_enabled' | 'unknown_method' | 'not_batch
  * enabled, the method is not on the allowlist, or it cannot go in a batch.
  */
 export class RpcCapabilityError extends QbitRpcError {
+  /** Why the call was refused. */
   readonly reason: RpcCapabilityRefusal
   /** The capability the method needs, for `not_enabled`. */
   readonly required?: Capability
@@ -76,6 +77,7 @@ export class RpcCapabilityError extends QbitRpcError {
     if (required !== undefined) this.required = required
   }
 
+  /** Whether `value` is an `RpcCapabilityError` from any copy of this package. */
   static override is(value: unknown): value is RpcCapabilityError {
     return hasBrand(value, 'RpcCapabilityError')
   }
@@ -87,11 +89,15 @@ export type ChainCheck = 'chain' | 'genesis_hash' | 'signet_challenge'
 
 /** What a chain check found, beyond the chain name, for a `mismatch` {@link RpcChainGuardError}. */
 export interface ChainMismatch {
+  /** What differed: the chain name, the genesis block hash or the signet challenge. */
   readonly differs: readonly ChainCheck[]
+  /** The genesis block hash the client expects. */
   readonly expectedGenesisHash: string
   /** Absent when the `getblockhash 0` reply failed, and the chain name or challenge differed anyway. */
   readonly actualGenesisHash?: string
+  /** The signet challenge the client expects, when signet is expected. */
   readonly expectedSignetChallenge?: string
+  /** The signet challenge the node reported; absent when it reported none (only a signet does). */
   readonly actualSignetChallenge?: string
 }
 
@@ -145,6 +151,7 @@ function causeText(cause: unknown): string {
  * trying again; `cause` tells whether soon is any use.
  */
 export class RpcChainGuardError extends QbitRpcError {
+  /** Why the call was refused; see the class description. */
   readonly reason: RpcChainGuardReason
   /** The chain the client expects (the `expectedChain` option). */
   readonly expectedChain: QbitChain
@@ -215,6 +222,7 @@ export class RpcChainGuardError extends QbitRpcError {
     }
   }
 
+  /** Whether `value` is an `RpcChainGuardError` from any copy of this package. */
   static override is(value: unknown): value is RpcChainGuardError {
     return hasBrand(value, 'RpcChainGuardError')
   }
@@ -236,6 +244,7 @@ export class RpcError extends QbitRpcError {
     this.rpcCode = rpcCode
   }
 
+  /** Whether `value` is an `RpcError` from any copy of this package. */
   static override is(value: unknown): value is RpcError {
     return hasBrand(value, 'RpcError')
   }
@@ -254,6 +263,7 @@ brand(RpcError, 'RpcError')
  * is `tls` unless a TLS alert came after the request was written.
  */
 export class RpcTransportError extends QbitRpcError {
+  /** What failed; see the class description. */
   readonly reason: 'network' | 'tls' | 'not_loopback' | 'prototype_polluted' | 'http_status' | 'credentials'
   /** The HTTP status, for `http_status`. */
   readonly status?: number
@@ -301,6 +311,7 @@ export class RpcTransportError extends QbitRpcError {
     if (code !== undefined) this.code = code
   }
 
+  /** Whether `value` is an `RpcTransportError` from any copy of this package. */
   static override is(value: unknown): value is RpcTransportError {
     return hasBrand(value, 'RpcTransportError')
   }
@@ -309,6 +320,7 @@ brand(RpcTransportError, 'RpcTransportError')
 
 /** The operation's deadline (`timeoutMs`) expired. It covers every attempt, backoff and the cookie read. */
 export class RpcTimeoutError extends QbitRpcError {
+  /** The deadline that expired, in milliseconds. */
   readonly timeoutMs: number
 
   constructor(method: string, timeoutMs: number) {
@@ -316,6 +328,7 @@ export class RpcTimeoutError extends QbitRpcError {
     this.timeoutMs = timeoutMs
   }
 
+  /** Whether `value` is an `RpcTimeoutError` from any copy of this package. */
   static override is(value: unknown): value is RpcTimeoutError {
     return hasBrand(value, 'RpcTimeoutError')
   }
@@ -328,6 +341,7 @@ export class RpcAbortedError extends QbitRpcError {
     super(`RPC ${method} was aborted`, method, { cause: reason })
   }
 
+  /** Whether `value` is an `RpcAbortedError` from any copy of this package. */
   static override is(value: unknown): value is RpcAbortedError {
     return hasBrand(value, 'RpcAbortedError')
   }
@@ -336,6 +350,7 @@ brand(RpcAbortedError, 'RpcAbortedError')
 
 /** The response body passed `maxResponseBytes`, so the client stopped reading it. */
 export class RpcResponseTooLargeError extends QbitRpcError {
+  /** The limit passed: the client's `maxResponseBytes`. */
   readonly limitBytes: number
 
   constructor(method: string, limitBytes: number) {
@@ -343,6 +358,7 @@ export class RpcResponseTooLargeError extends QbitRpcError {
     this.limitBytes = limitBytes
   }
 
+  /** Whether `value` is an `RpcResponseTooLargeError` from any copy of this package. */
   static override is(value: unknown): value is RpcResponseTooLargeError {
     return hasBrand(value, 'RpcResponseTooLargeError')
   }
@@ -357,7 +373,9 @@ brand(RpcResponseTooLargeError, 'RpcResponseTooLargeError')
  * is what it threw.
  */
 export class RpcResponseError extends QbitRpcError {
+  /** `protocol` for a reply that is not well-formed JSON-RPC, `validation` for a result that failed validation. */
   readonly reason: 'protocol' | 'validation'
+  /** Where the offending value is, such as `result.vout[0].value`. */
   readonly path: string
 
   constructor(
@@ -372,6 +390,7 @@ export class RpcResponseError extends QbitRpcError {
     this.path = path
   }
 
+  /** Whether `value` is an `RpcResponseError` from any copy of this package. */
   static override is(value: unknown): value is RpcResponseError {
     return hasBrand(value, 'RpcResponseError')
   }
@@ -401,6 +420,7 @@ function stateText(state: string): string {
  * message names the input and the key.
  */
 export class PqcSigningError extends QbitRpcError {
+  /** Why the PSBT was refused: see the class's description. */
   readonly reason: PqcSigningRefusal
   /** The input refused (`no_address`), or the first input spending from `address`. */
   readonly inputIndex?: number
@@ -456,6 +476,7 @@ export class PqcSigningError extends QbitRpcError {
     if (remaining !== undefined) this.remaining = remaining
   }
 
+  /** Whether `value` is a `PqcSigningError` from any copy of this package. */
   static override is(value: unknown): value is PqcSigningError {
     return hasBrand(value, 'PqcSigningError')
   }
@@ -510,6 +531,7 @@ export class RpcUnknownOutcomeError extends QbitRpcError {
     if (blockHash !== undefined) this.blockHash = blockHash
   }
 
+  /** Whether `value` is an `RpcUnknownOutcomeError` from any copy of this package. */
   static override is(value: unknown): value is RpcUnknownOutcomeError {
     return hasBrand(value, 'RpcUnknownOutcomeError')
   }

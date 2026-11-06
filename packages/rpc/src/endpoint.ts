@@ -15,7 +15,17 @@ import { argOptions, keysOf, ownElements } from './own'
  *   the file is read again for every request, so qbitd can restart and
  *   rotate it without restarting your service.
  */
-export type RpcAuth = { readonly username: string; readonly password: string } | { readonly cookieFile: string }
+export type RpcAuth =
+  | {
+      /** The user name: `rpcuser`, or an `rpcauth` entry's. */
+      readonly username: string
+      /** The password. `toJSON()` and `util.inspect` never show it. */
+      readonly password: string
+    }
+  | {
+      /** The path of qbitd's `.cookie` file, on this host. */
+      readonly cookieFile: string
+    }
 
 /**
  * TLS settings for an `https` endpoint, such as a TLS terminator in front of

@@ -10,26 +10,16 @@ import { inspect } from 'node:util';
 // @public
 export interface AddressInfo extends PqcUsage {
     readonly address: string;
-    // (undocumented)
     readonly desc?: string;
-    // (undocumented)
     readonly isChange: boolean;
-    // (undocumented)
     readonly isMine: boolean;
-    // (undocumented)
     readonly isScript?: boolean;
-    // (undocumented)
     readonly isWitness: boolean;
-    // (undocumented)
     readonly labels: readonly string[];
-    // (undocumented)
     readonly parentDesc?: string;
-    // (undocumented)
     readonly scriptPubKey: string;
     readonly solvable: boolean;
-    // (undocumented)
     readonly witnessProgram?: string;
-    // (undocumented)
     readonly witnessVersion?: number;
 }
 
@@ -53,21 +43,15 @@ export type AddressValidation = {
 
 // @public
 export interface AuxBlock {
-    // (undocumented)
     readonly bits: string;
     readonly chainId: number;
-    // (undocumented)
     readonly coinbaseValueBits: bigint;
     readonly commitmentActivationHeight: number;
     readonly commitmentOrder: 'internal' | 'display';
-    // (undocumented)
     readonly futureBlockTime: FutureBlockTimeRule;
     readonly hash: string;
-    // (undocumented)
     readonly height: number;
-    // (undocumented)
     readonly p2mrValidationWeight: P2mrValidationWeightRule;
-    // (undocumented)
     readonly previousBlockHash: string;
     readonly target: string;
 }
@@ -81,7 +65,7 @@ export type BatchItem<T> = {
     readonly error: RpcError | RpcResponseError;
 };
 
-// @public (undocumented)
+// @public
 export type BatchResults<T extends readonly RpcRequest<unknown>[]> = {
     -readonly [K in keyof T]: BatchItem<T[K] extends RpcRequest<infer R> ? R : never>;
 };
@@ -91,30 +75,21 @@ export const BITS_PER_QBT = 100000000n;
 
 // @public
 export interface Block extends BlockHeader {
-    // (undocumented)
     readonly size: number;
-    // (undocumented)
     readonly strippedSize: number;
     readonly tx: readonly string[];
-    // (undocumented)
     readonly weight: number;
 }
 
 // @public
 export interface BlockchainInfo {
-    // (undocumented)
     readonly automaticPruning?: boolean;
-    // (undocumented)
     readonly bestBlockHash: string;
     readonly bits: string;
-    // (undocumented)
     readonly blocks: number;
     readonly chain: QbitChain | (string & {});
-    // (undocumented)
     readonly chainwork: string;
-    // (undocumented)
     readonly difficulty: number;
-    // (undocumented)
     readonly futureBlockTime: {
         readonly legacyLimitSeconds: number;
         readonly v2LimitSeconds: number;
@@ -128,13 +103,9 @@ export interface BlockchainInfo {
         readonly nextBlockMaxTime: number;
         readonly nextBlockTimeHeadroomSeconds: number;
     };
-    // (undocumented)
     readonly headers: number;
-    // (undocumented)
     readonly initialBlockDownload: boolean;
-    // (undocumented)
     readonly medianTime: number;
-    // (undocumented)
     readonly p2mrValidationWeight: {
         readonly legacyPerSigop: number;
         readonly v2PerSigop: number;
@@ -143,19 +114,12 @@ export interface BlockchainInfo {
         readonly activeForNextBlock: boolean;
         readonly blocksRemaining: number;
     };
-    // (undocumented)
     readonly pruned: boolean;
-    // (undocumented)
     readonly pruneHeight?: number;
-    // (undocumented)
     readonly pruneTargetSize?: number;
-    // (undocumented)
     readonly signetChallenge?: string;
-    // (undocumented)
     readonly sizeOnDisk: number;
-    // (undocumented)
     readonly target: string;
-    // (undocumented)
     readonly time: number;
     readonly verificationProgress: number;
     readonly warnings: readonly string[];
@@ -163,42 +127,27 @@ export interface BlockchainInfo {
 
 // @public
 export interface BlockHeader {
-    // (undocumented)
     readonly bits: string;
-    // (undocumented)
     readonly chainwork: string;
     readonly confirmations: number;
-    // (undocumented)
     readonly difficulty: number;
-    // (undocumented)
     readonly hash: string;
-    // (undocumented)
     readonly height: number;
-    // (undocumented)
     readonly medianTime: number;
-    // (undocumented)
     readonly merkleRoot: string;
-    // (undocumented)
     readonly nextBlockHash?: string;
-    // (undocumented)
     readonly nonce: number;
-    // (undocumented)
     readonly nTx: number;
     readonly previousBlockHash?: string;
-    // (undocumented)
     readonly target: string;
-    // (undocumented)
     readonly time: number;
-    // (undocumented)
     readonly version: number;
     readonly versionHex: string;
 }
 
 // @public
 export interface BlockRef {
-    // (undocumented)
     readonly hash: string;
-    // (undocumented)
     readonly height: number;
 }
 
@@ -210,43 +159,28 @@ export type BlockSubmissionResult = null | BlockSubmissionReason;
 
 // @public
 export interface BlockTemplate {
-    // (undocumented)
     readonly bits: string;
-    // (undocumented)
     readonly capabilities: readonly string[];
     readonly coinbaseAux: Readonly<Record<string, string>>;
     readonly coinbaseValueBits: bigint;
-    // (undocumented)
     readonly curTime: number;
     readonly defaultWitnessCommitment?: string;
-    // (undocumented)
     readonly futureBlockTime: FutureBlockTimeRule;
-    // (undocumented)
     readonly height: number;
     readonly longPollId: string;
-    // (undocumented)
     readonly minTime: number;
-    // (undocumented)
     readonly mutable: readonly string[];
-    // (undocumented)
     readonly nonceRange: string;
-    // (undocumented)
     readonly p2mrValidationWeight: P2mrValidationWeightRule;
-    // (undocumented)
     readonly previousBlockHash: string;
     readonly rules: readonly string[];
     readonly signetChallenge?: string;
-    // (undocumented)
     readonly sigOpLimit: number;
-    // (undocumented)
     readonly sizeLimit: number;
     readonly target: string;
     readonly transactions: readonly BlockTemplateTransaction[];
-    // (undocumented)
     readonly vbAvailable: Readonly<Record<string, number>>;
-    // (undocumented)
     readonly vbRequired: number;
-    // (undocumented)
     readonly version: number;
     readonly versionRollingMask: string;
     readonly weightLimit?: number;
@@ -256,14 +190,10 @@ export interface BlockTemplate {
 export interface BlockTemplateTransaction {
     readonly data: string;
     readonly depends: readonly number[];
-    // (undocumented)
     readonly feeBits: bigint;
     readonly hash: string;
-    // (undocumented)
     readonly sigops: number;
-    // (undocumented)
     readonly txid: string;
-    // (undocumented)
     readonly weight: number;
 }
 
@@ -274,7 +204,6 @@ export interface BlockTransaction extends Omit<DecodedTransaction, 'blockHash' |
 
 // @public
 export interface BlockWithTransactions extends Omit<Block, 'tx'> {
-    // (undocumented)
     readonly tx: readonly BlockTransaction[];
 }
 
@@ -301,13 +230,9 @@ export type ChainCheck = 'chain' | 'genesis_hash' | 'signet_challenge';
 // @public
 export interface ChainMismatch {
     readonly actualGenesisHash?: string;
-    // (undocumented)
     readonly actualSignetChallenge?: string;
-    // (undocumented)
     readonly differs: readonly ChainCheck[];
-    // (undocumented)
     readonly expectedGenesisHash: string;
-    // (undocumented)
     readonly expectedSignetChallenge?: string;
 }
 
@@ -317,11 +242,8 @@ export type ChainStatus = 'unconfirmed' | 'confirmed' | 'stale' | 'mismatch' | '
 // @public
 export interface ChainTip {
     readonly branchLen: number;
-    // (undocumented)
     readonly hash: string;
-    // (undocumented)
     readonly height: number;
-    // (undocumented)
     readonly status: ChainTipStatus | (string & {});
 }
 
@@ -338,9 +260,7 @@ export type ClientSatisfies<Copy extends object> = {
 // @public
 export interface ConfirmationTarget {
     readonly auxpowHashrate: number;
-    // (undocumented)
     readonly equivalentBtcConfirmations: number;
-    // (undocumented)
     readonly model: {
         readonly btcTargetConfirmations: number;
         readonly blockTimeSeconds: number;
@@ -354,33 +274,23 @@ export interface ConfirmationTarget {
         readonly securityPerConfirmation: number;
         readonly cadenceMergedFraction: number;
     };
-    // (undocumented)
     readonly orphanRate: number;
     readonly permissionlessHashrate: number;
-    // (undocumented)
     readonly requiredConfirmations: number;
-    // (undocumented)
     readonly requiredMinutes: number;
-    // (undocumented)
     readonly securityLevel: SecurityLevel;
-    // (undocumented)
     readonly totalObservedHashrate: number;
 }
 
 // @public
 export interface DataPqcHashProof {
-    // (undocumented)
     readonly address: string;
-    // (undocumented)
     readonly controlBlock: string;
-    // (undocumented)
     readonly leafScript: string;
-    // (undocumented)
     readonly leafVersion: number;
     readonly messageHash: string;
     readonly proofMode: 'p2mr-pubkey';
     readonly pubkey: string;
-    // (undocumented)
     readonly signature: string;
 }
 
@@ -395,53 +305,32 @@ export interface DataPqcHashSignature extends DataPqcHashProof, PqcUsage {
 
 // @public
 export interface DataPqcHashVerification {
-    // (undocumented)
     readonly address?: string;
-    // (undocumented)
     readonly datasigHash?: string;
-    // (undocumented)
     readonly error?: string;
-    // (undocumented)
     readonly messageHash?: string;
-    // (undocumented)
     readonly p2mrMerkleRoot?: string;
-    // (undocumented)
     readonly proofMode?: string;
-    // (undocumented)
     readonly pubkey?: string;
-    // (undocumented)
     readonly valid: boolean;
 }
 
 // @public
 export interface DecodedTransaction {
-    // (undocumented)
     readonly blockHash?: string;
-    // (undocumented)
     readonly blockTime?: number;
-    // (undocumented)
     readonly confirmations?: number;
     readonly hash: string;
-    // (undocumented)
     readonly hex: string;
     readonly inActiveChain?: boolean;
-    // (undocumented)
     readonly locktime: number;
-    // (undocumented)
     readonly size: number;
-    // (undocumented)
     readonly time?: number;
-    // (undocumented)
     readonly txid: string;
-    // (undocumented)
     readonly version: number;
-    // (undocumented)
     readonly vin: readonly TransactionInput[];
-    // (undocumented)
     readonly vout: readonly TransactionOutput[];
-    // (undocumented)
     readonly vsize: number;
-    // (undocumented)
     readonly weight: number;
 }
 
@@ -474,11 +363,8 @@ export interface DescriptorInfo {
     readonly checksum: string;
     readonly descriptor: string;
     readonly hasP2mrStandardSatisfaction?: boolean;
-    // (undocumented)
     readonly hasPrivateKeys: boolean;
-    // (undocumented)
     readonly isRange: boolean;
-    // (undocumented)
     readonly isSolvable: boolean;
     readonly multipathExpansion?: readonly string[];
 }
@@ -492,16 +378,13 @@ export interface ExtraMethodPolicy {
     readonly sideEffects: boolean;
 }
 
-// @public (undocumented)
+// @public
 export type FeeEstimateMode = 'unset' | 'economical' | 'conservative';
 
 // @public
 export interface FinalizedPsbt {
-    // (undocumented)
     readonly complete: boolean;
-    // (undocumented)
     readonly hex?: string;
-    // (undocumented)
     readonly psbt?: string;
 }
 
@@ -511,13 +394,11 @@ export function formatQbt(bits: bigint): string;
 // @public
 export interface FundedPsbt {
     readonly changePos: number;
-    // (undocumented)
     readonly feeBits: bigint;
-    // (undocumented)
     readonly psbt: string;
 }
 
-// @public (undocumented)
+// @public
 export type FundedPsbtOutput = {
     readonly address: string;
     readonly amountBits: bigint;
@@ -527,38 +408,28 @@ export type FundedPsbtOutput = {
 
 // @public
 export interface FutureBlockTimeRule {
-    // (undocumented)
     readonly limitSeconds: number;
-    // (undocumented)
     readonly v2ActivationHeight: number;
-    // (undocumented)
     readonly v2Active: boolean;
 }
 
 // @public
 export class JsonNumber {
-    // (undocumented)
     [inspect.custom](): string;
     constructor(source: string);
-    // (undocumented)
     readonly source: string;
     toBigInt(): bigint;
     toBits(): bigint;
-    // (undocumented)
     toJSON(): unknown;
     toNumber(): number;
     toSafeInteger(): number;
-    // (undocumented)
     toString(): string;
-    // (undocumented)
     valueOf(): never;
 }
 
-// @public (undocumented)
+// @public
 export interface LastProcessedBlock {
-    // (undocumented)
     readonly hash: string;
-    // (undocumented)
     readonly height: number;
 }
 
@@ -571,7 +442,7 @@ export interface ListSinceBlockOptions {
     readonly targetConfirmations?: number;
 }
 
-// @public (undocumented)
+// @public
 export interface ListTransactionsOptions {
     readonly count?: number;
     readonly includeWatchOnly?: boolean;
@@ -579,29 +450,22 @@ export interface ListTransactionsOptions {
     readonly skip?: number;
 }
 
-// @public (undocumented)
+// @public
 export interface ListUnspentOptions {
-    // (undocumented)
     readonly addresses?: readonly string[];
-    // (undocumented)
     readonly includeImmatureCoinbase?: boolean;
     readonly includeUnsafe?: boolean;
     readonly maxConf?: number;
-    // (undocumented)
     readonly maximumAmountBits?: bigint;
-    // (undocumented)
     readonly maximumCount?: number;
     readonly minConf?: number;
-    // (undocumented)
     readonly minimumAmountBits?: bigint;
-    // (undocumented)
     readonly minimumSumAmountBits?: bigint;
 }
 
 // @public
 export interface LoadedWallet {
     readonly name: string;
-    // (undocumented)
     readonly warnings?: readonly string[];
 }
 
@@ -611,38 +475,27 @@ export const MAX_MONEY_BITS: bigint;
 // @public
 export interface MempoolAcceptance {
     readonly allowed?: boolean;
-    // (undocumented)
     readonly fees?: {
         readonly baseBits: bigint;
         readonly effectiveFeeRateBitsPerKvB: bigint;
         readonly effectiveIncludes: readonly string[];
     };
-    // (undocumented)
     readonly packageError?: string;
-    // (undocumented)
     readonly rejectDetails?: string;
-    // (undocumented)
     readonly rejectReason?: string;
-    // (undocumented)
     readonly txid: string;
-    // (undocumented)
     readonly vsize?: number;
-    // (undocumented)
     readonly wtxid: string;
 }
 
 // @public
 export interface MempoolEntry {
-    // (undocumented)
     readonly ancestorCount: number;
-    // (undocumented)
     readonly ancestorSize: number;
     readonly bip125Replaceable?: boolean;
     readonly depends: readonly string[];
     readonly descendantCount: number;
-    // (undocumented)
     readonly descendantSize: number;
-    // (undocumented)
     readonly fees: {
         readonly baseBits: bigint;
         readonly modifiedBits: bigint;
@@ -653,11 +506,8 @@ export interface MempoolEntry {
     readonly spentBy: readonly string[];
     readonly time: number;
     readonly unbroadcast: boolean;
-    // (undocumented)
     readonly vsize: number;
-    // (undocumented)
     readonly weight: number;
-    // (undocumented)
     readonly wtxid: string;
 }
 
@@ -665,21 +515,15 @@ export interface MempoolEntry {
 export interface MempoolInfo {
     readonly bytes: number;
     readonly fullRbf?: boolean;
-    // (undocumented)
     readonly incrementalRelayFeeBitsPerKvB: bigint;
     readonly loaded: boolean;
-    // (undocumented)
     readonly maxDataCarrierSize: number;
     readonly maxMempool: number;
     readonly mempoolMinFeeBitsPerKvB: bigint;
-    // (undocumented)
     readonly minRelayTxFeeBitsPerKvB: bigint;
-    // (undocumented)
     readonly permitBareMultisig: boolean;
     readonly size: number;
-    // (undocumented)
     readonly totalFeeBits: bigint;
-    // (undocumented)
     readonly unbroadcastCount: number;
     readonly usage: number;
 }
@@ -687,23 +531,18 @@ export interface MempoolInfo {
 // @public
 export interface MempoolSnapshot {
     readonly mempoolSequence: bigint;
-    // (undocumented)
     readonly txids: readonly string[];
 }
 
 // @public
 export interface MiningInfo {
     readonly bits: string;
-    // (undocumented)
     readonly blockMinTxFeeBitsPerKvB: bigint;
     readonly blocks: number;
-    // (undocumented)
     readonly chain: QbitChain | (string & {});
     readonly currentBlockTx?: number;
     readonly currentBlockWeight?: number;
-    // (undocumented)
     readonly difficulty: number;
-    // (undocumented)
     readonly networkHashPs: number;
     readonly next: {
         readonly height: number;
@@ -711,7 +550,6 @@ export interface MiningInfo {
         readonly difficulty: number;
         readonly target: string;
     };
-    // (undocumented)
     readonly pooledTx: number;
     readonly signetChallenge?: string;
     readonly target: string;
@@ -720,27 +558,19 @@ export interface MiningInfo {
 
 // @public
 export interface NetworkInfo {
-    // (undocumented)
     readonly connections?: number;
-    // (undocumented)
     readonly connectionsIn?: number;
-    // (undocumented)
     readonly connectionsOut?: number;
-    // (undocumented)
     readonly incrementalFeeBitsPerKvB?: bigint;
-    // (undocumented)
     readonly localAddresses: readonly {
         readonly address: string;
         readonly port: number;
         readonly score: number;
     }[];
-    // (undocumented)
     readonly localRelay?: boolean;
     readonly localServices?: string;
     readonly localServicesNames?: readonly string[];
-    // (undocumented)
     readonly networkActive?: boolean;
-    // (undocumented)
     readonly networks: readonly {
         readonly name: string;
         readonly limited: boolean;
@@ -748,26 +578,18 @@ export interface NetworkInfo {
         readonly proxy: string;
         readonly proxyRandomizeCredentials: boolean;
     }[];
-    // (undocumented)
     readonly protocolVersion: number;
     readonly relayFeeBitsPerKvB?: bigint;
-    // (undocumented)
     readonly subversion: string;
-    // (undocumented)
     readonly timeOffset?: number;
-    // (undocumented)
     readonly version: number;
-    // (undocumented)
     readonly warnings: readonly string[];
 }
 
 // @public
 export interface NodeVersion {
-    // (undocumented)
     readonly major: number;
-    // (undocumented)
     readonly minor: number;
-    // (undocumented)
     readonly patch: number;
     readonly subversion: string;
     readonly supported: boolean;
@@ -776,19 +598,14 @@ export interface NodeVersion {
 
 // @public
 export interface Outpoint {
-    // (undocumented)
     readonly txid: string;
-    // (undocumented)
     readonly vout: number;
 }
 
 // @public
 export interface P2mrValidationWeightRule {
-    // (undocumented)
     readonly perSigop: number;
-    // (undocumented)
     readonly v2ActivationHeight: number;
-    // (undocumented)
     readonly v2Active: boolean;
 }
 
@@ -802,16 +619,13 @@ export interface PackageSubmission {
 // @public
 export interface PackageTransactionResult {
     readonly error?: string;
-    // (undocumented)
     readonly fees?: {
         readonly baseBits: bigint;
         readonly effectiveFeeRateBitsPerKvB?: bigint;
         readonly effectiveIncludes?: readonly string[];
     };
     readonly otherWtxid?: string;
-    // (undocumented)
     readonly txid: string;
-    // (undocumented)
     readonly vsize?: number;
 }
 
@@ -822,15 +636,10 @@ export function parseQbt(text: string, options?: {
 
 // @public
 export interface PqcKeyState {
-    // (undocumented)
     readonly pqcLimitState: PqcLimitState;
-    // (undocumented)
     readonly pqcSignatureCount: number;
-    // (undocumented)
     readonly pqcSignatureLimit: number;
-    // (undocumented)
     readonly pqcSignaturesRemaining: number;
-    // (undocumented)
     readonly pubkey: string;
 }
 
@@ -849,11 +658,9 @@ export class PqcSigningError extends QbitRpcError {
     });
     readonly address?: string;
     readonly inputIndex?: number;
-    // (undocumented)
     static is(value: unknown): value is PqcSigningError;
     readonly needed?: number;
     readonly pubkey?: string;
-    // (undocumented)
     readonly reason: PqcSigningRefusal;
     readonly remaining?: number;
     readonly state?: string;
@@ -863,7 +670,6 @@ export class PqcSigningError extends QbitRpcError {
 export interface PqcSigningKey {
     readonly addresses: readonly string[];
     readonly needed: number;
-    // (undocumented)
     readonly pubkey: string;
     readonly remaining: number;
     readonly state: 'normal' | 'warning' | 'critical';
@@ -881,34 +687,25 @@ export type PqcSigningRefusal = 'no_address' | 'no_keys' | 'exhausted' | 'unknow
 
 // @public
 export interface PqcUsage {
-    // (undocumented)
     readonly pqcKeyStates?: readonly PqcKeyState[];
-    // (undocumented)
     readonly pqcLimitState?: PqcLimitState;
-    // (undocumented)
     readonly pqcOverallLimitState?: PqcLimitState;
-    // (undocumented)
     readonly pqcSignatureCount?: number;
-    // (undocumented)
     readonly pqcSignatureLimit?: number;
-    // (undocumented)
     readonly pqcSignaturesRemaining?: number;
 }
 
 // @public
 export interface ProcessedPsbt extends PqcUsage {
-    // (undocumented)
     readonly complete: boolean;
     readonly hex?: string;
-    // (undocumented)
     readonly psbt: string;
     readonly warnings?: readonly string[];
 }
 
-// @public (undocumented)
+// @public
 export interface PsbtBumpFeeOptions {
     readonly confTarget?: number;
-    // (undocumented)
     readonly estimateMode?: FeeEstimateMode;
     readonly feeRateBitsPerKvB?: bigint;
     readonly originalChangeIndex?: number;
@@ -921,7 +718,6 @@ export type QbitChain = 'main' | 'test' | 'testnet4' | 'signet' | 'regtest';
 
 // @public
 export class QbitRpcClient {
-    // (undocumented)
     [inspect.custom](): string;
     constructor(options: QbitRpcClientOptions);
     backupWallet(destination: string, callOptions?: CallOptions): Promise<void>;
@@ -949,20 +745,13 @@ export class QbitRpcClient {
     finalizePsbt(psbt: string, options?: {
         readonly extract?: boolean;
     }, callOptions?: CallOptions): Promise<FinalizedPsbt>;
-    // (undocumented)
     getAddressInfo(address: string, callOptions?: CallOptions): Promise<AddressInfo>;
-    // (undocumented)
     getBalances(callOptions?: CallOptions): Promise<WalletBalances>;
-    // (undocumented)
     getBestBlockHash(callOptions?: CallOptions): Promise<string>;
     getBlock(blockHash: string, callOptions?: CallOptions): Promise<Block>;
-    // (undocumented)
     getBlockchainInfo(callOptions?: CallOptions): Promise<BlockchainInfo>;
-    // (undocumented)
     getBlockCount(callOptions?: CallOptions): Promise<number>;
-    // (undocumented)
     getBlockHash(height: number, callOptions?: CallOptions): Promise<string>;
-    // (undocumented)
     getBlockHeader(blockHash: string, callOptions?: CallOptions): Promise<BlockHeader>;
     getBlockHex(blockHash: string, callOptions?: CallOptions): Promise<string>;
     getBlockTemplate(options?: {
@@ -970,7 +759,6 @@ export class QbitRpcClient {
         readonly capabilities?: readonly string[];
     }, callOptions?: CallOptions): Promise<BlockTemplate>;
     getBlockWithTransactions(blockHash: string, callOptions?: CallOptions): Promise<BlockWithTransactions>;
-    // (undocumented)
     getChainTips(callOptions?: CallOptions): Promise<ChainTip[]>;
     getConfirmationTarget(valueBits: bigint, options?: {
         readonly securityLevel?: SecurityLevel;
@@ -978,13 +766,9 @@ export class QbitRpcClient {
         readonly btcHashrate?: number;
     }, callOptions?: CallOptions): Promise<ConfirmationTarget>;
     getDescriptorInfo(descriptor: string, callOptions?: CallOptions): Promise<DescriptorInfo>;
-    // (undocumented)
     getMempoolEntry(txid: string, callOptions?: CallOptions): Promise<MempoolEntry>;
-    // (undocumented)
     getMempoolInfo(callOptions?: CallOptions): Promise<MempoolInfo>;
-    // (undocumented)
     getMiningInfo(callOptions?: CallOptions): Promise<MiningInfo>;
-    // (undocumented)
     getNetworkInfo(callOptions?: CallOptions): Promise<NetworkInfo>;
     getNewAddress(options?: {
         readonly label?: string;
@@ -993,7 +777,6 @@ export class QbitRpcClient {
     getRawChangeAddress(options?: {
         readonly addressType?: AddressType;
     }, callOptions?: CallOptions): Promise<string>;
-    // (undocumented)
     getRawMempool(callOptions?: CallOptions): Promise<string[]>;
     getRawMempoolSequence(callOptions?: CallOptions): Promise<MempoolSnapshot>;
     getRawMempoolVerbose(callOptions?: CallOptions): Promise<Record<string, MempoolEntry>>;
@@ -1003,24 +786,20 @@ export class QbitRpcClient {
     getRawTransactionVerbose(txid: string, options?: {
         readonly blockHash?: string;
     }, callOptions?: CallOptions): Promise<DecodedTransaction>;
-    // (undocumented)
     getTransaction(txid: string, callOptions?: CallOptions): Promise<WalletTransaction>;
     getTxOut(txid: string, vout: number, options?: {
         readonly includeMempool?: boolean;
     }, callOptions?: CallOptions): Promise<TxOut | null>;
     getTxSpendingPrevout(outputs: readonly Outpoint[], callOptions?: CallOptions): Promise<TxSpendingPrevout[]>;
-    // (undocumented)
     getWalletInfo(callOptions?: CallOptions): Promise<WalletInfo>;
     importDescriptors(descriptors: readonly DescriptorImport[], callOptions?: CallOptions): Promise<DescriptorImportResult[]>;
     keypoolRefill(options?: {
         readonly newSize?: number;
     }, callOptions?: CallOptions): Promise<void>;
-    // (undocumented)
     listLockUnspent(callOptions?: CallOptions): Promise<Outpoint[]>;
     listSinceBlock(options?: ListSinceBlockOptions, callOptions?: CallOptions): Promise<SinceBlockHistory>;
     listTransactions(options?: ListTransactionsOptions, callOptions?: CallOptions): Promise<WalletHistoryEntry[]>;
     listUnspent(options?: ListUnspentOptions, callOptions?: CallOptions): Promise<UnspentOutput[]>;
-    // (undocumented)
     listWalletDir(callOptions?: CallOptions): Promise<WalletDirEntry[]>;
     loadWallet(filename: string, options?: {
         readonly loadOnStartup?: boolean;
@@ -1058,14 +837,12 @@ export class QbitRpcClient {
         readonly loadOnStartup?: boolean;
     }, callOptions?: CallOptions): Promise<UnloadedWallet>;
     unlockUnspent(outputs: readonly Outpoint[], callOptions?: CallOptions): Promise<void>;
-    // (undocumented)
     validateAddress(address: string, callOptions?: CallOptions): Promise<AddressValidation>;
     verifyDataPqcHash(proof: DataPqcHashProof, callOptions?: CallOptions): Promise<DataPqcHashVerification>;
     waitForBlockHeight(height: number, waitMs: number, callOptions?: CallOptions): Promise<BlockRef>;
     waitForNewBlock(waitMs: number, options?: {
         readonly currentTip?: string;
     }, callOptions?: CallOptions): Promise<BlockRef>;
-    // (undocumented)
     walletCreateFundedPsbt(args: WalletCreateFundedPsbtArgs, callOptions?: CallOptions): Promise<FundedPsbt>;
     walletLock(callOptions?: CallOptions): Promise<void>;
     walletPassphrase(passphrase: string, timeoutSeconds: number, callOptions?: CallOptions): Promise<void>;
@@ -1079,10 +856,9 @@ export class QbitRpcClient {
     }, callOptions?: CallOptions): Promise<ProcessedPsbt>;
 }
 
-// @public (undocumented)
+// @public
 export interface QbitRpcClientOptions {
     readonly allowUnsupportedNodeVersion?: boolean;
-    // (undocumented)
     readonly auth: RpcAuth;
     readonly capabilities?: readonly Capability[];
     readonly chainCheckMaxAgeMs?: number;
@@ -1243,7 +1019,6 @@ export const requests: {
 
 // @public
 export interface RescanResult {
-    // (undocumented)
     readonly startHeight: number;
     readonly stopHeight: number | null;
 }
@@ -1251,7 +1026,6 @@ export interface RescanResult {
 // @public
 export class RpcAbortedError extends QbitRpcError {
     constructor(method: string, reason: unknown);
-    // (undocumented)
     static is(value: unknown): value is RpcAbortedError;
 }
 
@@ -1266,9 +1040,7 @@ export type RpcAuth = {
 // @public
 export class RpcCapabilityError extends QbitRpcError {
     constructor(method: string, reason: RpcCapabilityRefusal, required?: Capability);
-    // (undocumented)
     static is(value: unknown): value is RpcCapabilityError;
-    // (undocumented)
     readonly reason: RpcCapabilityRefusal;
     readonly required?: Capability;
 }
@@ -1291,10 +1063,8 @@ export class RpcChainGuardError extends QbitRpcError {
     readonly expectedChain: QbitChain;
     readonly expectedGenesisHash?: string;
     readonly expectedSignetChallenge?: string;
-    // (undocumented)
     static is(value: unknown): value is RpcChainGuardError;
     readonly nodeVersion?: NodeVersion;
-    // (undocumented)
     readonly reason: RpcChainGuardReason;
 }
 
@@ -1314,7 +1084,6 @@ export interface RpcConnectTarget {
 // @public
 export class RpcError extends QbitRpcError {
     constructor(method: string, rpcCode: number, message: string);
-    // (undocumented)
     static is(value: unknown): value is RpcError;
     readonly rpcCode: number;
 }
@@ -1322,9 +1091,7 @@ export class RpcError extends QbitRpcError {
 // @public
 export interface RpcRequest<T> {
     readonly blockHash?: string;
-    // (undocumented)
     readonly method: string;
-    // (undocumented)
     readonly params: readonly unknown[];
     readonly parse: (result: unknown) => T;
     readonly txid?: string;
@@ -1337,29 +1104,22 @@ export class RpcResponseError extends QbitRpcError {
     constructor(method: string, reason: 'protocol' | 'validation', path: string, expected: string, options?: {
         readonly cause?: unknown;
     });
-    // (undocumented)
     static is(value: unknown): value is RpcResponseError;
-    // (undocumented)
     readonly path: string;
-    // (undocumented)
     readonly reason: 'protocol' | 'validation';
 }
 
 // @public
 export class RpcResponseTooLargeError extends QbitRpcError {
     constructor(method: string, limitBytes: number);
-    // (undocumented)
     static is(value: unknown): value is RpcResponseTooLargeError;
-    // (undocumented)
     readonly limitBytes: number;
 }
 
 // @public
 export class RpcTimeoutError extends QbitRpcError {
     constructor(method: string, timeoutMs: number);
-    // (undocumented)
     static is(value: unknown): value is RpcTimeoutError;
-    // (undocumented)
     readonly timeoutMs: number;
 }
 
@@ -1381,9 +1141,7 @@ export class RpcTransportError extends QbitRpcError {
         pollutedKeys?: number;
     });
     readonly code?: string;
-    // (undocumented)
     static is(value: unknown): value is RpcTransportError;
-    // (undocumented)
     readonly reason: 'network' | 'tls' | 'not_loopback' | 'prototype_polluted' | 'http_status' | 'credentials';
     readonly status?: number;
 }
@@ -1392,7 +1150,6 @@ export class RpcTransportError extends QbitRpcError {
 export class RpcUnknownOutcomeError extends QbitRpcError {
     constructor(method: string, cause: QbitRpcError, txid?: string, txids?: readonly (string | null)[], blockHash?: string);
     readonly blockHash?: string;
-    // (undocumented)
     static is(value: unknown): value is RpcUnknownOutcomeError;
     readonly txid?: string;
     readonly txids?: readonly (string | null)[];
@@ -1400,13 +1157,9 @@ export class RpcUnknownOutcomeError extends QbitRpcError {
 
 // @public
 export interface ScriptPubKey {
-    // (undocumented)
     readonly address?: string;
-    // (undocumented)
     readonly asm: string;
-    // (undocumented)
     readonly desc: string;
-    // (undocumented)
     readonly hex: string;
     readonly type: string;
 }
@@ -1414,7 +1167,7 @@ export interface ScriptPubKey {
 // @public
 export type SecurityLevel = 'low' | 'medium' | 'high' | 'maximum';
 
-// @public (undocumented)
+// @public
 export type SighashType = 'DEFAULT' | 'ALL' | 'NONE' | 'SINGLE' | 'ALL|ANYONECANPAY' | 'NONE|ANYONECANPAY' | 'SINGLE|ANYONECANPAY';
 
 // @public
@@ -1426,15 +1179,12 @@ export interface SinceBlockHistory {
 
 // @public
 export interface SmartFeeEstimate {
-    // (undocumented)
     readonly blocks: number;
-    // (undocumented)
     readonly errors?: readonly string[];
-    // (undocumented)
     readonly feeRateBitsPerKvB?: bigint;
 }
 
-// @public (undocumented)
+// @public
 export type TransactionInput = {
     readonly coinbase: string;
     readonly txinwitness?: readonly string[];
@@ -1450,34 +1200,26 @@ export type TransactionInput = {
     readonly sequence: number;
 };
 
-// @public (undocumented)
+// @public
 export interface TransactionOutput {
-    // (undocumented)
     readonly n: number;
-    // (undocumented)
     readonly scriptPubKey: ScriptPubKey;
-    // (undocumented)
     readonly valueBits: bigint;
 }
 
 // @public
 export interface TxOut {
     readonly bestBlock: string;
-    // (undocumented)
     readonly coinbase: boolean;
     readonly confirmations: number;
-    // (undocumented)
     readonly scriptPubKey: ScriptPubKey;
-    // (undocumented)
     readonly valueBits: bigint;
 }
 
 // @public
 export interface TxSpendingPrevout {
     readonly spendingTxid?: string;
-    // (undocumented)
     readonly txid: string;
-    // (undocumented)
     readonly vout: number;
 }
 
@@ -1490,53 +1232,34 @@ export type UndeclaredKeys<Arg, Param> = unknown extends Param ? never : [Param]
 
 // @public
 export interface UnloadedWallet {
-    // (undocumented)
     readonly warnings?: readonly string[];
 }
 
 // @public
 export interface UnspentOutput {
-    // (undocumented)
     readonly address?: string;
-    // (undocumented)
     readonly amountBits: bigint;
-    // (undocumented)
     readonly ancestorCount?: number;
     readonly ancestorFeesBits?: bigint;
-    // (undocumented)
     readonly ancestorSize?: number;
-    // (undocumented)
     readonly confirmations: number;
-    // (undocumented)
     readonly desc?: string;
-    // (undocumented)
     readonly label?: string;
-    // (undocumented)
     readonly parentDescs: readonly string[];
-    // (undocumented)
     readonly redeemScript?: string;
-    // (undocumented)
     readonly reused?: boolean;
-    // (undocumented)
     readonly safe: boolean;
-    // (undocumented)
     readonly scriptPubKey: string;
-    // (undocumented)
     readonly solvable: boolean;
-    // (undocumented)
     readonly spendable: boolean;
-    // (undocumented)
     readonly txid: string;
-    // (undocumented)
     readonly vout: number;
-    // (undocumented)
     readonly witnessScript?: string;
 }
 
 // @public
 export interface WalletBalances {
     readonly lastProcessedBlock: LastProcessedBlock;
-    // (undocumented)
     readonly mine: {
         readonly trustedBits: bigint;
         readonly untrustedPendingBits: bigint;
@@ -1545,9 +1268,8 @@ export interface WalletBalances {
     };
 }
 
-// @public (undocumented)
+// @public
 export interface WalletCreateFundedPsbtArgs {
-    // (undocumented)
     readonly bip32derivs?: boolean;
     readonly inputs?: readonly {
         readonly txid: string;
@@ -1555,7 +1277,6 @@ export interface WalletCreateFundedPsbtArgs {
         readonly sequence?: number;
     }[];
     readonly locktime?: number;
-    // (undocumented)
     readonly options?: {
         readonly addInputs?: boolean;
         readonly includeUnsafe?: boolean;
@@ -1578,7 +1299,6 @@ export interface WalletCreateFundedPsbtArgs {
 
 // @public
 export interface WalletDirEntry {
-    // (undocumented)
     readonly name: string;
     readonly warnings?: readonly string[];
 }
@@ -1588,16 +1308,12 @@ export interface WalletHistoryEntry {
     readonly abandoned: boolean;
     readonly address?: string;
     readonly amountBits: bigint;
-    // (undocumented)
     readonly bip125Replaceable: 'yes' | 'no' | 'unknown';
     readonly blockHash?: string;
-    // (undocumented)
     readonly blockHeight?: number;
     readonly blockIndex?: number;
     readonly blockTime?: number;
-    // (undocumented)
     readonly category: WalletTxCategory;
-    // (undocumented)
     readonly comment?: string;
     readonly confirmations: number;
     readonly feeBits?: bigint;
@@ -1606,43 +1322,28 @@ export interface WalletHistoryEntry {
     readonly mempoolConflicts: readonly string[];
     readonly parentDescs?: readonly string[];
     readonly replacedByTxid?: string;
-    // (undocumented)
     readonly replacesTxid?: string;
     readonly time: number;
     readonly timeReceived: number;
-    // (undocumented)
     readonly to?: string;
     readonly trusted?: boolean;
-    // (undocumented)
     readonly txid: string;
-    // (undocumented)
     readonly vout: number;
     readonly walletConflicts: readonly string[];
-    // (undocumented)
     readonly wtxid: string;
 }
 
 // @public
 export interface WalletInfo {
-    // (undocumented)
     readonly avoidReuse: boolean;
-    // (undocumented)
     readonly birthtime?: number;
-    // (undocumented)
     readonly blank: boolean;
-    // (undocumented)
     readonly descriptors: boolean;
-    // (undocumented)
     readonly externalSigner: boolean;
-    // (undocumented)
     readonly flags: readonly string[];
-    // (undocumented)
     readonly format: string;
-    // (undocumented)
     readonly keypoolSize: number;
-    // (undocumented)
     readonly keypoolSizeHdInternal?: number;
-    // (undocumented)
     readonly lastProcessedBlock: LastProcessedBlock;
     readonly payTxFeeBitsPerKvB?: bigint;
     readonly pqcKeyValidation: {
@@ -1655,39 +1356,27 @@ export interface WalletInfo {
         readonly signingBlocked: boolean;
         readonly encryptionRecommended: boolean;
     };
-    // (undocumented)
     readonly privateKeysEnabled: boolean;
     readonly scanning: false | {
         readonly duration: number;
         readonly progress: number;
     };
-    // (undocumented)
     readonly txCount: number;
     readonly unlockedUntil?: number;
-    // (undocumented)
     readonly walletName: string;
-    // (undocumented)
     readonly walletVersion: number;
 }
 
 // @public
 export interface WalletTransaction {
-    // (undocumented)
     readonly amountBits: bigint;
-    // (undocumented)
     readonly bip125Replaceable: 'yes' | 'no' | 'unknown';
-    // (undocumented)
     readonly blockHash?: string;
-    // (undocumented)
     readonly blockHeight?: number;
-    // (undocumented)
     readonly blockIndex?: number;
-    // (undocumented)
     readonly blockTime?: number;
-    // (undocumented)
     readonly comment?: string;
     readonly confirmations: number;
-    // (undocumented)
     readonly details: readonly {
         readonly address?: string;
         readonly category: WalletTxCategory;
@@ -1698,35 +1387,20 @@ export interface WalletTransaction {
         readonly abandoned: boolean;
         readonly parentDescs?: readonly string[];
     }[];
-    // (undocumented)
     readonly feeBits?: bigint;
-    // (undocumented)
     readonly generated?: boolean;
-    // (undocumented)
     readonly hex: string;
-    // (undocumented)
     readonly lastProcessedBlock: LastProcessedBlock;
-    // (undocumented)
     readonly mempoolConflicts: readonly string[];
-    // (undocumented)
     readonly parentDescs?: readonly string[];
-    // (undocumented)
     readonly replacedByTxid?: string;
-    // (undocumented)
     readonly replacesTxid?: string;
-    // (undocumented)
     readonly time: number;
-    // (undocumented)
     readonly timeReceived: number;
-    // (undocumented)
     readonly to?: string;
-    // (undocumented)
     readonly trusted?: boolean;
-    // (undocumented)
     readonly txid: string;
-    // (undocumented)
     readonly walletConflicts: readonly string[];
-    // (undocumented)
     readonly wtxid: string;
 }
 

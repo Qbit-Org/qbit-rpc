@@ -121,6 +121,7 @@ export interface ExtraMethodPolicy {
   readonly sideEffects: boolean
 }
 
+/** The options of a {@link QbitRpcClient}, checked at construction: a bad one is a `TypeError` or a `RangeError`. */
 export interface QbitRpcClientOptions {
   /**
    * The node's JSON-RPC endpoint, such as `http://127.0.0.1:48352/` for
@@ -133,12 +134,13 @@ export interface QbitRpcClientOptions {
   readonly url: string
   /** Send every call to `/wallet/<name>`. Required for wallet calls when the node has several wallets loaded. */
   readonly wallet?: string
+  /** The node's credentials: a user name and password, or qbitd's cookie file. See {@link RpcAuth}. */
   readonly auth: RpcAuth
   /**
    * TLS settings for an `https` url: a private CA, a client certificate, the
    * name to check, and key pins. Default: the system's CAs, no client
    * certificate, the URL's host, no pin. See
-   * {@link https://github.com/Qbit-Org/qbit-rpc/blob/main/docs/rpc/remote-nodes.md | Remote nodes}.
+   * [Remote nodes](https://github.com/Qbit-Org/qbit-rpc/blob/main/docs/rpc/remote-nodes.md).
    */
   readonly tls?: RpcTlsOptions
   /**
@@ -152,8 +154,8 @@ export interface QbitRpcClientOptions {
   /**
    * The genesis block hash the node must report (`getblockhash 0`) on every
    * chain check: 64 hex characters, in either case (compared in lowercase).
-   * Default: `expectedChain`'s genesis block in qbit Core v1.0.0, which
-   * {@link https://github.com/Qbit-Org/qbit-rpc/blob/main/docs/rpc/chain-guard.md | Chain guard}
+   * Default: `expectedChain`'s genesis block in qbit Core v1.0.0, which the
+   * [Chain guard](https://github.com/Qbit-Org/qbit-rpc/blob/main/docs/rpc/chain-guard.md)
    * lists. Set it for a node built with other chain parameters.
    */
   readonly expectedGenesisHash?: string
@@ -198,8 +200,7 @@ export interface QbitRpcClientOptions {
    * `walletpassphrase` and `walletlock` it is at least 120,000 ms (see
    * {@link QbitRpcClient.walletPassphrase}), and so for `keypoolrefill`,
    * `importdescriptors`, `rescanblockchain`, `loadwallet` and `unloadwallet`
-   * (see
-   * {@link https://github.com/Qbit-Org/qbit-rpc/blob/main/docs/rpc/wallet-admin.md | Wallet administration}):
+   * (see [Wallet administration](https://github.com/Qbit-Org/qbit-rpc/blob/main/docs/rpc/wallet-admin.md)):
    * a shorter client `timeoutMs` does
    * not shorten it, nor a long poll's, at least its wait plus 10 s (see
    * {@link QbitRpcClient.waitForNewBlock}). A call's own `timeoutMs` overrides
@@ -240,7 +241,7 @@ export interface QbitRpcClientOptions {
    * aborted while waiting was never sent, so it is a plain `RpcTimeoutError` or
    * `RpcAbortedError`, never an unknown outcome. Keep the total over all clients of a node at or below its
    * `-rpcworkqueue` (see
-   * {@link https://github.com/Qbit-Org/qbit-rpc/blob/main/docs/rpc/errors.md#the-work-queue | the work queue}).
+   * [the work queue](https://github.com/Qbit-Org/qbit-rpc/blob/main/docs/rpc/errors.md#the-work-queue)).
    * Default 8.
    */
   readonly maxConcurrentRequests?: number
@@ -289,8 +290,20 @@ export interface CallOptions {
  * an `RpcResponseError` here.
  */
 export type BatchItem<T> =
-  { readonly ok: true; readonly value: T } | { readonly ok: false; readonly error: RpcError | RpcResponseError }
+  | {
+      /** The entry succeeded. */
+      readonly ok: true
+      /** Its result, validated and converted. */
+      readonly value: T
+    }
+  | {
+      /** The entry failed. */
+      readonly ok: false
+      /** The node's error for this entry, or why its result did not validate. */
+      readonly error: RpcError | RpcResponseError
+    }
 
+/** What `batch()` resolves with: one {@link BatchItem} per request, in the order the requests were passed. */
 export type BatchResults<T extends readonly RpcRequest<unknown>[]> = {
   -readonly [K in keyof T]: BatchItem<T[K] extends RpcRequest<infer R> ? R : never>
 }
@@ -536,8 +549,7 @@ function checkInteger<F extends number | undefined>(
  * Every method is checked against an allowlist and the client's capabilities
  * before anything is sent, wallet-write, broadcast, mining and wallet-admin calls also need a
  * confirmed chain, and every typed result is validated before it is returned.
- * Amounts are `bigint` bits. See
- * {@link https://github.com/Qbit-Org/qbit-rpc/blob/main/docs/rpc/errors.md | Errors}
+ * Amounts are `bigint` bits. See [Errors](https://github.com/Qbit-Org/qbit-rpc/blob/main/docs/rpc/errors.md)
  * for the failure model.
  *
  * Each typed method takes the arguments of the request builder of the same
@@ -768,21 +780,27 @@ export class QbitRpcClient {
     return this.#batch(entries, callOptions) as Promise<BatchResults<T>>
   }
 
+  /** See {@link requests.getBlockchainInfo}. */
   getBlockchainInfo(callOptions?: CallOptions): Promise<BlockchainInfo> {
     return this.#single(requests.getBlockchainInfo(), callOptions)
   }
+  /** See {@link requests.getNetworkInfo}. */
   getNetworkInfo(callOptions?: CallOptions): Promise<NetworkInfo> {
     return this.#single(requests.getNetworkInfo(), callOptions)
   }
+  /** See {@link requests.getBestBlockHash}. */
   getBestBlockHash(callOptions?: CallOptions): Promise<string> {
     return this.#single(requests.getBestBlockHash(), callOptions)
   }
+  /** See {@link requests.getBlockCount}. */
   getBlockCount(callOptions?: CallOptions): Promise<number> {
     return this.#single(requests.getBlockCount(), callOptions)
   }
+  /** See {@link requests.getBlockHash}. */
   getBlockHash(height: number, callOptions?: CallOptions): Promise<string> {
     return this.#lazy(() => requests.getBlockHash(height), callOptions)
   }
+  /** See {@link requests.getBlockHeader}. */
   getBlockHeader(blockHash: string, callOptions?: CallOptions): Promise<BlockHeader> {
     return this.#lazy(() => requests.getBlockHeader(blockHash), callOptions)
   }
@@ -798,6 +816,7 @@ export class QbitRpcClient {
   getBlockHex(blockHash: string, callOptions?: CallOptions): Promise<string> {
     return this.#lazy(() => requests.getBlockHex(blockHash), callOptions)
   }
+  /** See {@link requests.getChainTips}. */
   getChainTips(callOptions?: CallOptions): Promise<ChainTip[]> {
     return this.#single(requests.getChainTips(), callOptions)
   }
@@ -840,9 +859,11 @@ export class QbitRpcClient {
   ): Promise<DecodedTransaction> {
     return this.#lazy(() => requests.getRawTransactionVerbose(txid, options), callOptions)
   }
+  /** See {@link requests.getMempoolInfo}. */
   getMempoolInfo(callOptions?: CallOptions): Promise<MempoolInfo> {
     return this.#single(requests.getMempoolInfo(), callOptions)
   }
+  /** See {@link requests.getRawMempool}. */
   getRawMempool(callOptions?: CallOptions): Promise<string[]> {
     return this.#single(requests.getRawMempool(), callOptions)
   }
@@ -858,6 +879,7 @@ export class QbitRpcClient {
   getTxSpendingPrevout(outputs: readonly Outpoint[], callOptions?: CallOptions): Promise<TxSpendingPrevout[]> {
     return this.#lazy(() => requests.getTxSpendingPrevout(outputs), callOptions)
   }
+  /** See {@link requests.getMempoolEntry}. */
   getMempoolEntry(txid: string, callOptions?: CallOptions): Promise<MempoolEntry> {
     return this.#lazy(() => requests.getMempoolEntry(txid), callOptions)
   }
@@ -890,6 +912,7 @@ export class QbitRpcClient {
   ): Promise<SmartFeeEstimate> {
     return this.#lazy(() => requests.estimateSmartFee(confTarget, options), callOptions)
   }
+  /** See {@link requests.validateAddress}. */
   validateAddress(address: string, callOptions?: CallOptions): Promise<AddressValidation> {
     return this.#lazy(() => requests.validateAddress(address), callOptions)
   }
@@ -933,6 +956,7 @@ export class QbitRpcClient {
   ): Promise<PackageSubmission> {
     return this.#lazy(() => requests.submitPackage(rawTxs, options), callOptions)
   }
+  /** See {@link requests.getMiningInfo}. */
   getMiningInfo(callOptions?: CallOptions): Promise<MiningInfo> {
     return this.#single(requests.getMiningInfo(), callOptions)
   }
@@ -972,9 +996,11 @@ export class QbitRpcClient {
   submitAuxBlock(blockHash: string, auxpowHex: string, callOptions?: CallOptions): Promise<BlockSubmissionResult> {
     return this.#lazy(() => requests.submitAuxBlock(blockHash, auxpowHex), callOptions)
   }
+  /** See {@link requests.getWalletInfo}. */
   getWalletInfo(callOptions?: CallOptions): Promise<WalletInfo> {
     return this.#single(requests.getWalletInfo(), callOptions)
   }
+  /** See {@link requests.getTransaction}. */
   getTransaction(txid: string, callOptions?: CallOptions): Promise<WalletTransaction> {
     return this.#lazy(() => requests.getTransaction(txid), callOptions)
   }
@@ -982,9 +1008,11 @@ export class QbitRpcClient {
   listUnspent(options?: ListUnspentOptions, callOptions?: CallOptions): Promise<UnspentOutput[]> {
     return this.#lazy(() => requests.listUnspent(options), callOptions)
   }
+  /** See {@link requests.getAddressInfo}. */
   getAddressInfo(address: string, callOptions?: CallOptions): Promise<AddressInfo> {
     return this.#lazy(() => requests.getAddressInfo(address), callOptions)
   }
+  /** See {@link requests.listLockUnspent}. */
   listLockUnspent(callOptions?: CallOptions): Promise<Outpoint[]> {
     return this.#single(requests.listLockUnspent(), callOptions)
   }
@@ -996,9 +1024,11 @@ export class QbitRpcClient {
   listTransactions(options?: ListTransactionsOptions, callOptions?: CallOptions): Promise<WalletHistoryEntry[]> {
     return this.#lazy(() => requests.listTransactions(options), callOptions)
   }
+  /** See {@link requests.getBalances}. */
   getBalances(callOptions?: CallOptions): Promise<WalletBalances> {
     return this.#single(requests.getBalances(), callOptions)
   }
+  /** See {@link requests.walletCreateFundedPsbt}. */
   walletCreateFundedPsbt(args: WalletCreateFundedPsbtArgs, callOptions?: CallOptions): Promise<FundedPsbt> {
     return this.#lazy(() => requests.walletCreateFundedPsbt(args), callOptions)
   }
@@ -1068,7 +1098,7 @@ export class QbitRpcClient {
    * nothing was sent. Every call on that
    * wallet waits for a first unlock, and the others keep the client's
    * deadline, so one sent meanwhile can need a longer `timeoutMs`. See
-   * {@link https://github.com/Qbit-Org/qbit-rpc/blob/main/docs/rpc/wallet.md#unlocking-an-encrypted-wallet | Unlocking a wallet}.
+   * [Unlocking](https://github.com/Qbit-Org/qbit-rpc/blob/main/docs/rpc/wallet.md#unlocking-an-encrypted-wallet).
    */
   walletPassphrase(passphrase: string, timeoutSeconds: number, callOptions?: CallOptions): Promise<void> {
     return this.#lazy(() => requests.walletPassphrase(passphrase, timeoutSeconds), callOptions).then(() => undefined)
@@ -1158,6 +1188,7 @@ export class QbitRpcClient {
   ): Promise<UnloadedWallet> {
     return this.#lazy(() => requests.unloadWallet(walletName, options), callOptions)
   }
+  /** See {@link requests.listWalletDir}. */
   listWalletDir(callOptions?: CallOptions): Promise<WalletDirEntry[]> {
     return this.#single(requests.listWalletDir(), callOptions)
   }
@@ -1215,6 +1246,7 @@ export class QbitRpcClient {
     }
   }
 
+  /** What `util.inspect` and `console.log` show: {@link QbitRpcClient.toJSON}'s description, without credentials. */
   [inspect.custom](): string {
     return `QbitRpcClient ${inspect(this.toJSON())}`
   }

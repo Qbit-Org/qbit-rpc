@@ -13,9 +13,13 @@
 //    floors the package READMEs state, TypeScript 5.0 and `@types/node`
 //    22.0.0 (the root `typescript-floor` and `types-node-floor` aliases), so a
 //    declaration that needs a newer version of either fails here. The same
-//    runs type-check the quick start of each packed README, and the example
-//    of the repository README, as written, and a `ClientSatisfies` check of
-//    an interface a consumer declares for the client.
+//    runs type-check the quick start of each packed README, the example of the
+//    repository README and every program in examples/, as written, and a
+//    `ClientSatisfies` check of an interface a consumer declares for the
+//    client. A separate run at each toolchain type-checks every TypeScript
+//    block of the pages in docs/, as written, with the names a block takes
+//    from its page's text (`rpc`, `txid`, ...) declared in DOCS_CONTEXT; its
+//    line numbers are the page's.
 // 2. Loads the CommonJS and the ESM build of each package side by side and
 //    checks that each error class's `is()` recognizes an error from the other
 //    build, where `instanceof` cannot, and that both builds work.
@@ -44,7 +48,7 @@ import {
 } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)))
@@ -77,6 +81,40 @@ function quickStart(readme) {
   const block = readFileSync(readme, 'utf8').match(/^```ts\n([\s\S]*?)^```$/m)
   if (!block) throw new Error(`${readme} has no ts code block`)
   return block[1]
+}
+
+/**
+ * Every TypeScript block of the pages under docs/, each as an ES module named
+ * after its page and the line of its opening fence, such as
+ * `docs/rpc/payments-L14.mts`: blank lines before it make tsc's line numbers
+ * the page's.
+ */
+function docsBlocks() {
+  const docsDir = join(repoRoot, 'docs')
+  const pages = dir =>
+    readdirSync(dir, { withFileTypes: true })
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .flatMap(entry => {
+        const path = join(dir, entry.name)
+        if (entry.isDirectory()) return pages(path)
+        return entry.name.endsWith('.md') ? [path] : []
+      })
+  const blocks = []
+  for (const page of pages(docsDir)) {
+    const lines = readFileSync(page, 'utf8').split('\n')
+    let open
+    lines.forEach((line, index) => {
+      if (open === undefined && line === '```ts') open = index
+      else if (open !== undefined && line === '```') {
+        const name = `docs/${relative(docsDir, page).replace(/\.md$/, '')}-L${open + 1}.mts`
+        blocks.push({ name, text: `${'\n'.repeat(open + 1)}${lines.slice(open + 1, index).join('\n')}\nexport {}\n` })
+        open = undefined
+      }
+    })
+    if (open !== undefined) throw new Error(`${relative(repoRoot, page)}:${open + 1}: a ts block that is not closed`)
+  }
+  if (blocks.length === 0) throw new Error('no ts block in docs/')
+  return blocks
 }
 
 function run(cmd, args, opts = {}) {
@@ -256,6 +294,41 @@ for (const [from, to] of [
 console.log('zmq dual-build parser, zeromq load, address check, ZmqFrameError and ZmqSetupError: PASS')
 `
 
+// What the TypeScript blocks of docs/ take from the text around them, without
+// importing or declaring it: a client and its options, the classes a page's
+// first block imports, and the values the text names. Only the docs run sees
+// these, so an example or a quick start that used one would fail.
+const DOCS_CONTEXT = `
+import type { QbitRpcClient as Client, QbitRpcClientOptions, RpcAuth, RpcTlsOptions } from '@qbit-oss/rpc'
+
+declare global {
+  const QbitRpcClient: typeof import('@qbit-oss/rpc').QbitRpcClient
+  const RpcUnknownOutcomeError: typeof import('@qbit-oss/rpc').RpcUnknownOutcomeError
+  const rpc: Client
+  const options: QbitRpcClientOptions
+  const url: string
+  const auth: RpcAuth
+  const tls: RpcTlsOptions
+  const signal: AbortSignal
+  const passphrase: string
+  const address: string
+  const payoutAddress: string
+  const txid: string
+  const vout: number
+  const hash: string
+  const target: number
+  const hex: string
+  const parentHex: string
+  const childHex: string
+  const blockHex: string
+  const auxpowHex: string
+  const challengeHash: string
+  /** Your storage, where a signed transaction is kept before it is broadcast. */
+  const store: { save(txid: string, hex: string): Promise<void> }
+}
+export {}
+`
+
 // A bare import: nothing of either package may be left in the bundle.
 const BARE_IMPORT = `
 import '@qbit-oss/rpc'
@@ -390,6 +463,20 @@ try {
     'quickstart-root.mts': join(repoRoot, 'README.md'),
   }
   for (const [file, readme] of Object.entries(quickStarts)) writeFileSync(join(consumerDir, file), quickStart(readme))
+  // The programs in examples/, as they are: ES modules too, by the consumer's "type".
+  const examples = readdirSync(join(repoRoot, 'examples'))
+    .filter(file => file.endsWith('.ts'))
+    .sort()
+    .map(file => `examples/${file}`)
+  if (examples.length === 0) throw new Error('no program in examples/')
+  mkdirSync(join(consumerDir, 'examples'))
+  for (const file of examples) cpSync(join(repoRoot, file), join(consumerDir, file))
+  const blocks = docsBlocks()
+  for (const { name, text } of blocks) {
+    mkdirSync(dirname(join(consumerDir, name)), { recursive: true })
+    writeFileSync(join(consumerDir, name), text)
+  }
+  writeFileSync(join(consumerDir, 'docs', 'context.d.ts'), DOCS_CONTEXT)
   // Each toolchain's compiler options, with its @types/node linked in as <typeRoot>/node.
   const setups = TOOLCHAINS.map(toolchain => {
     const typeRoot = join(stage, `types-${toolchain.label}`)
@@ -415,7 +502,7 @@ try {
     const tsconfig = `tsconfig.${toolchain.label}.json`
     writeFileSync(
       join(consumerDir, tsconfig),
-      `${JSON.stringify({ compilerOptions, files: ['consumer.mts', 'consumer.cts', ...Object.keys(quickStarts)] }, null, 2)}\n`
+      `${JSON.stringify({ compilerOptions, files: ['consumer.mts', 'consumer.cts', ...Object.keys(quickStarts), ...examples] }, null, 2)}\n`
     )
     const listed = typeCheck(tscPath, tsconfig, consumerDir).split('\n')
     if (!listed.some(file => file.startsWith(`${realpathSync(toolchain.typesNode)}/`))) {
@@ -435,6 +522,14 @@ try {
       console.log(`${name} consumer types (lib/${resolved.join(', lib/')}) with ${versions}: PASS`)
     }
     console.log(`README quick starts (${Object.keys(quickStarts).join(', ')}) type-check with ${versions}: PASS`)
+    console.log(`examples (${examples.join(', ')}) type-check with ${versions}: PASS`)
+    const docsTsconfig = `tsconfig.docs.${toolchain.label}.json`
+    writeFileSync(
+      join(consumerDir, docsTsconfig),
+      `${JSON.stringify({ compilerOptions, files: ['docs/context.d.ts', ...blocks.map(block => block.name)] }, null, 2)}\n`
+    )
+    typeCheck(tscPath, docsTsconfig, consumerDir)
+    console.log(`${blocks.length} ts blocks of docs/ type-check with ${versions}: PASS`)
   }
 
   writeFileSync(join(consumerDir, 'brand-check.mjs'), BRAND_CHECK)

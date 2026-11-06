@@ -27,8 +27,11 @@ export interface NodeVersion {
    * `-uacomment` in parentheses, `/qbit:1.0.0(ours)/`.
    */
   readonly subversion: string
+  /** The major version: 1 for 1.0.0. */
   readonly major: number
+  /** The minor version: 0 for 1.0.0. */
   readonly minor: number
+  /** The patch version: 0 for 1.0.0. */
   readonly patch: number
   /** Whether this package supports it: a qbit Core (`qbit`) 1.0.x release, no pre-release suffix. */
   readonly supported: boolean
