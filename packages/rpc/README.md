@@ -123,6 +123,11 @@ The full list is in
 - [Documentation](https://github.com/Qbit-Org/qbit-rpc/blob/main/docs/rpc/README.md)
   and the [API report](https://github.com/Qbit-Org/qbit-rpc/blob/main/packages/rpc/etc/rpc.api.md),
   every export and its declaration
+- [API reference](https://qbit-org.github.io/qbit-rpc/): every export and member, with its
+  doc comment
+- [Examples](https://github.com/Qbit-Org/qbit-rpc/tree/main/examples): a
+  payout, a deposit watcher and a header walk, which CI compiles against the
+  packed package
 - [Changelog](https://github.com/Qbit-Org/qbit-rpc/blob/main/CHANGELOG.md),
   shared with `@qbit-oss/zmq`
 - [Security](https://github.com/Qbit-Org/qbit-rpc/blob/main/SECURITY.md): the

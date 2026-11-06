@@ -1,5 +1,6 @@
-# Build output and coverage reports.
+# Build output, the API reference and coverage reports.
 packages/*/lib
+api-docs
 coverage
 
 # Markdown is formatted by hand.

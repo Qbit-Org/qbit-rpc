@@ -17,6 +17,7 @@
     "typecheck:test": "pnpm -r --if-present typecheck:test",
     "api:check": "pnpm -r --if-present api:check",
     "api:update": "pnpm build && pnpm -r --if-present api:update",
+    "docs:api": "typedoc",
     "clean": "pnpm -r --if-present clean",
     "pack:check": "node scripts/check-pack.mjs",
     "release:check": "node scripts/check-release.mjs",
@@ -25,7 +26,7 @@
     "consumer:check": "node scripts/check-packed-consumer.mjs",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "verify": "pnpm format:check && pnpm build && pnpm api:check && pnpm test && pnpm test:release && pnpm test:scripts && pnpm typecheck && pnpm typecheck:test && pnpm pack:check && pnpm consumer:check"
+    "verify": "pnpm format:check && pnpm build && pnpm api:check && pnpm docs:api && pnpm test && pnpm test:release && pnpm test:scripts && pnpm typecheck && pnpm typecheck:test && pnpm pack:check && pnpm consumer:check"
   },
   "keywords": [
     "qbit",
@@ -45,7 +46,9 @@
   "homepage": "https://github.com/Qbit-Org/qbit-rpc#readme",
   "devDependencies": {
     "prettier": "3.9.10",
+    "typedoc": "0.28.20",
     "types-node-floor": "npm:@types/node@22.0.0",
+    "typescript": "^5.9.3",
     "typescript-floor": "npm:typescript@5.0.4"
   }
 }

@@ -23,6 +23,7 @@ const JSON_INTEGER = /^-?(?:0|[1-9][0-9]*)$/
  * become a float. `JSON.stringify` writes the original text back.
  */
 export class JsonNumber {
+  /** The number's text, as the node wrote it. */
   readonly source: string
 
   constructor(source: string) {
@@ -63,18 +64,22 @@ export class JsonNumber {
     return qbtBits(this.source, true)
   }
 
+  /** The number's text, as the node wrote it. */
   toString(): string {
     return this.source
   }
 
+  /** Lets `JSON.stringify` write the number's text as it is, without loss. */
   toJSON(): unknown {
     return json.rawJSON(this.source)
   }
 
+  /** Throws a `TypeError`: arithmetic and comparisons need an explicit conversion. */
   valueOf(): never {
     throw new TypeError('JsonNumber has no implicit numeric value: use toNumber(), toBigInt() or toBits()')
   }
 
+  /** What `util.inspect` and `console.log` show: `JsonNumber(<text>)`. */
   [inspect.custom](): string {
     return `JsonNumber(${this.source})`
   }

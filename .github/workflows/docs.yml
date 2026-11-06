@@ -1,0 +1,112 @@
+name: Docs
+
+# release/X.Y branches too, as in ci.yml.
+on:
+  pull_request:
+    branches:
+      - main
+      - 'release/**'
+  push:
+    branches:
+      - main
+      - 'release/**'
+    # Final release tags deploy the reference; a pre-release (v0.1.0-rc.0) does not.
+    tags:
+      - 'v*'
+      - '!v*-*'
+  workflow_dispatch:
+
+# Each job grants only what it needs.
+permissions: {}
+
+# A newer push to a pull request cancels the run it supersedes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # The TypeDoc reference of both packages, built once on the Node.js in .nvmrc
+  # and uploaded as the `api-reference` artifact. For a final release tag it is
+  # also uploaded for GitHub Pages, and the deploy job below publishes it, so
+  # the published reference is that release's. No path filter, so it can be a
+  # required check.
+  api-reference:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      # Same pnpm and Node.js as ci.yml: pnpm from package.json `packageManager`,
+      # Node.js from .nvmrc.
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          run_install: false
+
+      # No pnpm cache: other workflows write it, and this build's output is
+      # meant to be published.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+
+      - name: Check pnpm matches packageManager
+        run: |
+          expected="$(node -p "require('./package.json').packageManager.split('+')[0].slice('pnpm@'.length)")"
+          actual="$(pnpm --version)"
+          echo "packageManager pnpm $expected, running pnpm $actual"
+          test "$actual" = "$expected"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --config.engine-strict=true
+
+      # TypeDoc, which fails on any warning: an export or member without a doc
+      # comment, a {@link} it cannot resolve, a type that is used but not
+      # exported (see typedoc.json).
+      - name: Build and check the API reference
+        run: pnpm docs:api
+
+      - name: Upload the API reference
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: api-reference
+          path: api-docs
+          if-no-files-found: error
+          retention-days: 30
+
+      # Uploaded here so the deploy job, which holds the Pages and OIDC
+      # permissions, runs no repository or dependency code.
+      - name: Upload Pages artifact
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-') && github.repository == 'Qbit-Org/qbit-rpc'
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: api-docs
+
+  # A final release tag of this repository only: never pull requests, forks,
+  # main or a pre-release. Needs Pages enabled with GitHub Actions as its source,
+  # and v* tags allowed in the github-pages environment (RELEASING.md).
+  deploy:
+    needs: api-reference
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-') && github.repository == 'Qbit-Org/qbit-rpc'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    # Let a running deployment finish before the next one starts.
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+
+    steps:
+      - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

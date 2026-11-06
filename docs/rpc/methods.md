@@ -227,15 +227,30 @@ CallOptions)`, type-checks, and the client refuses `timeoutMs` there with a
 `ClientSatisfies<Copy>` is `true` when the client fits `Copy`, and otherwise an
 object naming each member of `Copy` that does not, with why. Check it in the
 type tests your CI compiles, so that a change on either side that breaks the
-fit fails there:
+fit fails there. Below, the first interface fits; the second declares the call
+options inside `getTxOut`'s own options, and its check fails with error TS1360,
+`Type 'boolean' does not satisfy the expected type '{ getTxOut: "parameters"; }'`:
 
 ```ts
-import type { ClientSatisfies } from '@qbit-oss/rpc'
-import type { CoreRpc } from '../src/core-wallet/rpc'
+import type { CallOptions, ClientSatisfies, TxOut } from '@qbit-oss/rpc'
 
+// The calls a package makes, declared on its side.
+interface CoreRpc {
+  getBlockCount(callOptions?: CallOptions): Promise<number>
+  getTxOut(
+    txid: string,
+    vout: number,
+    options?: { includeMempool?: boolean },
+    callOptions?: CallOptions
+  ): Promise<TxOut | null>
+}
 true satisfies ClientSatisfies<CoreRpc>
-// error TS1360: Type 'boolean' does not satisfy the expected type
-// '{ getTxOut: "parameters"; ...; lockUnspent: "parameters" | "returns"; ... }'.
+
+interface Drifted {
+  getTxOut(txid: string, vout: number, options?: { includeMempool?: boolean } & CallOptions): Promise<TxOut | null>
+}
+// @ts-expect-error TS1360: { getTxOut: 'parameters' }
+true satisfies ClientSatisfies<Drifted>
 ```
 
 | Reason | The member |

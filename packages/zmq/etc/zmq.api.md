@@ -12,14 +12,13 @@ export function parseZmqMessage(frames: readonly Uint8Array[]): ZmqMessage;
 
 // @public
 export class QbitZmqSubscriber implements AsyncIterable<ZmqEvent> {
-    // (undocumented)
     [Symbol.asyncIterator](): AsyncGenerator<ZmqEvent, void, undefined>;
     constructor(options: QbitZmqSubscriberOptions);
     close(): void;
     health(now?: number): ZmqHealth;
 }
 
-// @public (undocumented)
+// @public
 export interface QbitZmqSubscriberOptions {
     readonly heartbeatIntervalMs?: number;
     readonly heartbeatTimeoutMs?: number;
@@ -38,12 +37,9 @@ export interface QbitZmqSubscriberOptions {
 
 // @public
 export interface SequenceGap {
-    // (undocumented)
     readonly expected: number;
     readonly missed?: number;
-    // (undocumented)
     readonly received: number;
-    // (undocumented)
     readonly topic: ZmqTopic;
 }
 
@@ -67,27 +63,21 @@ export type ZmqEvent = {
 // @public
 export class ZmqFrameError extends Error {
     constructor(code: ZmqFrameErrorCode, topic?: ZmqTopic);
-    // (undocumented)
     readonly code: ZmqFrameErrorCode;
     static is(value: unknown): value is ZmqFrameError;
     readonly topic?: ZmqTopic;
 }
 
-// @public (undocumented)
+// @public
 export type ZmqFrameErrorCode = 'frame_count' | 'frame_type' | 'topic' | 'body_length' | 'label' | 'sequence_length';
 
-// @public (undocumented)
+// @public
 export interface ZmqHealth {
-    // (undocumented)
     readonly gaps: number;
     readonly lastMessageAt?: number;
-    // (undocumented)
     readonly malformed: number;
-    // (undocumented)
     readonly messages: number;
-    // (undocumented)
     readonly reconnects: number;
-    // (undocumented)
     readonly status: ZmqHealthStatus;
 }
 
@@ -124,7 +114,6 @@ export class ZmqSetupError extends Error {
     constructor(code: ZmqSetupErrorCode, message: string, options?: {
         cause?: unknown;
     });
-    // (undocumented)
     readonly code: ZmqSetupErrorCode;
     static is(value: unknown): value is ZmqSetupError;
 }
@@ -134,23 +123,19 @@ export type ZmqSetupErrorCode = 'module_load' | 'invalid_address' | 'unsupported
 
 // @public
 export interface ZmqSocket {
-    // (undocumented)
     close(): void;
-    // (undocumented)
     connect(url: string): void;
     readonly events?: {
         on(type: 'disconnect' | 'close' | 'handshake', listener: () => void): unknown;
     };
-    // (undocumented)
     receive(): Promise<readonly Uint8Array[]>;
-    // (undocumented)
     subscribe(topic: string): void;
 }
 
 // @public
 export type ZmqSocketFactory = (settings: ZmqSocketSettings) => ZmqSocket | Promise<ZmqSocket>;
 
-// @public (undocumented)
+// @public
 export interface ZmqSocketSettings {
     readonly handshakeIntervalMs?: number;
     readonly heartbeatIntervalMs?: number;

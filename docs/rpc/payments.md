@@ -14,7 +14,10 @@ Pay out from a testnet4 wallet, saving the signed transaction before it is
 broadcast. Before signing, it counts what signing takes from the
 [PQC signature budget](wallet.md#pqc-signature-budgets) of each key the PSBT
 spends from (see [checking PQC keys before signing](#checking-pqc-keys-before-signing));
-a test runs those lines as written.
+a test runs those lines as written. `store` stands for your own storage.
+[`examples/payout.ts`](../../examples/payout.ts) is the whole program: a
+store keyed by the payment request, so a re-run after a crash or a lost reply
+reconciles by the txid and never pays twice.
 
 ```ts
 import { QbitRpcClient, RpcUnknownOutcomeError } from '@qbit-oss/rpc'
@@ -45,7 +48,7 @@ if (budget !== undefined && budget !== 'normal' && budget !== 'warning') {
 const [preflight] = await rpc.testMempoolAccept([signed.hex])
 if (preflight?.allowed !== true) throw new Error(`rejected: ${preflight?.rejectReason}`)
 const { txid } = preflight // the txid of this hex; nothing is broadcast yet
-await saveSignedTransaction(txid, signed.hex) // your storage: persist both before broadcasting
+await store.save(txid, signed.hex) // your storage: persist both before broadcasting
 try {
   await rpc.sendRawTransaction(signed.hex) // resolves with the same txid
 } catch (error) {
@@ -187,9 +190,12 @@ const { packageMsg, txResults } = await rpc.submitPackage([parentHex, childHex])
 ```ts
 const bump = await rpc.psbtBumpFee(txid, { feeRateBitsPerKvB: 4_000n }) // 4 bits/vB
 const signed = await rpc.walletProcessPsbt(bump.psbt)
-if (!signed.complete) throw new Error('the wallet could not sign every input')
-await store(txid, signed.hex!) // before it leaves the node
-await rpc.sendRawTransaction(signed.hex!)
+if (!signed.complete || signed.hex === undefined) throw new Error('the wallet could not sign every input')
+const [preflight] = await rpc.testMempoolAccept([signed.hex])
+if (preflight?.allowed !== true) throw new Error(`the mempool would refuse it: ${preflight?.rejectReason}`)
+// Under its own txid, beside the original's record, before it leaves the node: the payment is both.
+await store.save(preflight.txid, signed.hex)
+await rpc.sendRawTransaction(signed.hex)
 ```
 
 `psbtBumpFee` builds a replacement (RBF) for one of the wallet's unconfirmed
@@ -218,7 +224,9 @@ random, so even a repeat call that takes no key can return another PSBT and
 txid: never reconcile by the txid of a bump.
 
 Reconcile by the original's txid and the txid of each replacement you actually
-broadcast, which is why the signed hex is stored first. After an unknown
+broadcast, which is why each signed hex is stored first, under its own txid,
+and the original's record kept: count them as one payment, paid once any one
+of them confirms. After an unknown
 outcome from `sendRawTransaction`, look both up (`getTransaction`) instead of
 building the payment again: they spend the same inputs, so at most one
 confirms, and sending the stored hex again returns the same txid while it is in
