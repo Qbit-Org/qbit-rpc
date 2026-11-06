@@ -247,20 +247,19 @@ export const HIDDEN_METHOD_CLASSES: Readonly<Record<string, MethodClass>> = Obje
 /**
  * The capability each kind needs. Node administration has its own,
  * `node-admin`, which no allowlisted method needs, so a client that broadcasts
- * cannot stop the node or ban a peer by stating `broadcast`. wallet-admin has
- * no capability of its own yet: wallet administration needs `wallet-write`.
+ * cannot stop the node or ban a peer by stating `broadcast`.
  */
 const KIND_CAPABILITY: Readonly<Record<MethodKind, 'read' | Capability>> = Object.freeze({
   read: 'read',
   'wallet-read': 'wallet-read',
   'wallet-write': 'wallet-write',
-  'wallet-admin': 'wallet-write',
+  'wallet-admin': 'wallet-admin',
   broadcast: 'broadcast',
   mining: 'mining',
   node: 'node-admin',
 })
 
-const WALLET_CAPABILITIES: readonly ('read' | Capability)[] = ['wallet-read', 'wallet-write']
+const WALLET_CAPABILITIES: readonly ('read' | Capability)[] = ['wallet-read', 'wallet-write', 'wallet-admin']
 
 /** What the kind does, for the message of a policy below it. */
 const KIND_DOES: Readonly<Record<MethodKind, string>> = Object.freeze({

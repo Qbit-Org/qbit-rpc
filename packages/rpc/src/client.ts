@@ -43,8 +43,12 @@ import { Limiter } from './limiter'
 import {
   LONG_POLL_MARGIN_MS,
   isLongPoll,
+  MAX_NODE_MESSAGE,
+  checkIgnoredOptions,
   longPollParams,
   longPollRetryable,
+  messageSecrets,
+  redact,
   refusedBeforeActing,
   requests,
   type AddressInfo,
@@ -62,14 +66,20 @@ import {
   type ChainTip,
   type ConfirmationTarget,
   type DataPqcHashProof,
+  type DataPqcHashSignature,
   type DataPqcHashVerification,
   type DecodedTransaction,
+  type DescriptorImport,
+  type DescriptorImportResult,
+  type DescriptorInfo,
+  type DescriptorRange,
   type FeeEstimateMode,
   type FinalizedPsbt,
   type FundedPsbt,
   type ListSinceBlockOptions,
   type ListTransactionsOptions,
   type ListUnspentOptions,
+  type LoadedWallet,
   type MempoolAcceptance,
   type MempoolEntry,
   type MempoolInfo,
@@ -80,6 +90,7 @@ import {
   type PackageSubmission,
   type ProcessedPsbt,
   type PsbtBumpFeeOptions,
+  type RescanResult,
   type RpcRequest,
   type SecurityLevel,
   type SighashType,
@@ -87,9 +98,11 @@ import {
   type SmartFeeEstimate,
   type TxOut,
   type TxSpendingPrevout,
+  type UnloadedWallet,
   type UnspentOutput,
   type WalletBalances,
   type WalletCreateFundedPsbtArgs,
+  type WalletDirEntry,
   type WalletHistoryEntry,
   type WalletInfo,
   type WalletTransaction,
@@ -132,7 +145,7 @@ export interface QbitRpcClientOptions {
    * cookie authentication. Default: connect to the URL's host directly.
    */
   readonly connect?: RpcConnect
-  /** The chain this client must talk to. `confirmChain()` checks it; wallet-write, broadcast and mining calls wait for that check. */
+  /** The chain this client must talk to. `confirmChain()` checks it; wallet-write, broadcast, mining and wallet-admin calls wait for that check. */
   readonly expectedChain: QbitChain
   /**
    * The genesis block hash the node must report (`getblockhash 0`) on every
@@ -156,14 +169,14 @@ export interface QbitRpcClientOptions {
    * through `call()` and `requests.raw()`. Each entry is the method's policy:
    * `capability`, `read` or one in `capabilities`, and `sideEffects`, which
    * has no default; one with side effects needs `wallet-write`, `broadcast`,
-   * `mining` or `node-admin`. The client treats the method as an allowlisted
-   * one with that policy: `wallet-write`, `broadcast`, `mining` and
-   * `node-admin` wait for the chain guard, and a method with side effects is
-   * never retried or batched, uses a fresh connection, and is an
-   * `RpcUnknownOutcomeError` when it may have run. A `node-admin` call needs
+   * `mining`, `wallet-admin` or `node-admin`. The client treats the method as
+   * an allowlisted one with that policy: `wallet-write`, `broadcast`, `mining`,
+   * `wallet-admin` and `node-admin` wait for the chain guard, and a method with
+   * side effects is never retried or batched, uses a fresh connection, and is
+   * an `RpcUnknownOutcomeError` when it may have run. A `node-admin` call needs
    * the chain's identity only: an unsupported qbit Core version does not
-   * refuse it, and it is never batched; node administration (`stop`, `setban`, `addnode`, ...) is
-   * reachable only this way, under `node-admin`. A method qbit Core
+   * refuse it, and it is never batched; node administration (`stop`, `setban`,
+   * `addnode`, ...) is reachable only this way, under `node-admin`. A method qbit Core
    * v1.0.0's `help` lists may not be declared below what it does: a wallet
    * method needs a wallet capability, and one that changes state needs
    * `sideEffects: true` under its kind's capability. A method `help` does not
@@ -180,7 +193,9 @@ export interface QbitRpcClientOptions {
    * Deadline for one operation (a call or a batch, with every retry, any wait
    * for a request slot and the cookie read). Default 30,000 ms. For
    * `walletpassphrase` and `walletlock` it is at least 120,000 ms (see
-   * {@link QbitRpcClient.walletPassphrase}): a shorter client `timeoutMs` does
+   * {@link QbitRpcClient.walletPassphrase}), and so for `keypoolrefill`,
+   * `importdescriptors`, `rescanblockchain`, `loadwallet` and `unloadwallet`
+   * (see the package README's wallet administration): a shorter client `timeoutMs` does
    * not shorten it, nor a long poll's, at least its wait plus 10 s (see
    * {@link QbitRpcClient.waitForNewBlock}). A call's own `timeoutMs` overrides
    * all of these. With `connect`, it also bounds a pooled connection still
@@ -204,7 +219,7 @@ export interface QbitRpcClientOptions {
   /** Delay before the first retry; it doubles for each further one, up to 10 s. Default 250 ms. */
   readonly retryDelayMs?: number
   /**
-   * How long a chain confirmation stays fresh. A wallet-write, broadcast or mining call
+   * How long a chain confirmation stays fresh. A wallet-write, broadcast, mining or wallet-admin call
    * made later first re-runs the chain check, under the call's own deadline; if
    * that check fails, the call is not sent and rejects with `RpcChainGuardError`
    * (`reason: 'check_failed'`, the failure as `cause`). A connection error, an
@@ -232,7 +247,7 @@ export interface QbitRpcClientOptions {
    */
   readonly directNode?: boolean
   /**
-   * Let wallet-write, broadcast and mining calls go to a node of a qbit Core version
+   * Let wallet-write, broadcast, mining and wallet-admin calls go to a node of a qbit Core version
    * this package does not support. Every chain check also reads the node's
    * version (`getnetworkinfo`); by default one outside qbit Core 1.0.x
    * releases refuses them, as another chain does, with `RpcChainGuardError`
@@ -257,7 +272,7 @@ export interface CallOptions {
    * before it was sent an `RpcAbortedError`.
    */
   readonly signal?: AbortSignal
-  /** Overrides the client's `timeoutMs`, and a method's own default (`walletPassphrase`'s, `walletLock`'s), for this operation. */
+  /** Overrides the client's `timeoutMs`, and a method's own default (`walletPassphrase`'s, `keypoolRefill`'s, ...), for this operation. */
   readonly timeoutMs?: number
 }
 
@@ -276,19 +291,19 @@ export type BatchResults<T extends readonly RpcRequest<unknown>[]> = {
 /**
  * The chain guard's state:
  *
- * - `unconfirmed`: `confirmChain()` has not succeeded yet. Wallet-write, broadcast and
- *   mining calls are refused.
+ * - `unconfirmed`: `confirmChain()` has not succeeded yet. Wallet-write, broadcast,
+ *   mining and wallet-admin calls are refused.
  * - `confirmed`: the node reported `expectedChain`, its genesis block and, on
  *   signet, its challenge, within `chainCheckMaxAgeMs`.
  * - `stale`: it did, but longer ago, or a connection error, an HTTP 401 or a
- *   cookie change happened since. The next wallet-write, broadcast or mining call
+ *   cookie change happened since. The next wallet-write, broadcast, mining or wallet-admin call
  *   checks the chain again before it is sent.
  * - `mismatch`: the node reported another chain, genesis block or signet
- *   challenge. Wallet-write, broadcast and mining calls are refused until
+ *   challenge. Wallet-write, broadcast, mining and wallet-admin calls are refused until
  *   `confirmChain()` matches again.
  * - `unsupported_version`: the node reported the expected chain, but a qbit
  *   Core version this package does not support (see `nodeVersion`), and
- *   `allowUnsupportedNodeVersion` is not set. Wallet-write, broadcast and mining calls
+ *   `allowUnsupportedNodeVersion` is not set. Wallet-write, broadcast, mining and wallet-admin calls
  *   are refused until `confirmChain()` finds a supported version.
  */
 export type ChainStatus = 'unconfirmed' | 'confirmed' | 'stale' | 'mismatch' | 'unsupported_version'
@@ -348,7 +363,6 @@ const NODE_ERROR_STATUSES: ReadonlySet<number> = new Set([400, 404, 500])
 const MAX_RETRY_DELAY_MS = 10_000
 const MAX_BATCH = 1000
 const RPC_IN_WARMUP = -28
-const MAX_NODE_MESSAGE = 1000
 /** Chain checks one guarded attempt or `confirmChain()` runs while each answer is doubted. */
 const MAX_CHAIN_CHECKS = 3
 
@@ -424,7 +438,7 @@ function checkInteger<F extends number | undefined>(
  * A JSON-RPC client for one qbit Core node (and optionally one wallet).
  *
  * Every method is checked against an allowlist and the client's capabilities
- * before anything is sent, wallet-write, broadcast and mining calls also need a
+ * before anything is sent, wallet-write, broadcast, mining and wallet-admin calls also need a
  * confirmed chain, and every typed result is validated before it is returned.
  * Amounts are `bigint` bits. See the package README for the failure model.
  *
@@ -590,8 +604,8 @@ export class QbitRpcClient {
    * genesis block hash with `expectedGenesisHash` and, on signet, its
    * `signet_challenge` with `expectedSignetChallenge` (a missing one differs),
    * and read its version into `nodeVersion`. On a match of all three, on a
-   * supported version (or with `allowUnsupportedNodeVersion`), wallet-write, broadcast and
-   * mining calls are allowed; once the confirmation goes stale they re-run
+   * supported version (or with `allowUnsupportedNodeVersion`), wallet-write, broadcast,
+   * mining and wallet-admin calls are allowed; once the confirmation goes stale they re-run
    * this check before they are sent. On a mismatch, or an unsupported version,
    * they stay refused and this throws `RpcChainGuardError` (`mismatch` or
    * `unsupported_version`), as it does when any check finds one while this
@@ -781,8 +795,21 @@ export class QbitRpcClient {
   validateAddress(address: string, callOptions?: CallOptions): Promise<AddressValidation> {
     return this.#lazy(() => requests.validateAddress(address), callOptions)
   }
+  /** See {@link requests.verifyDataPqcHash}: it takes a `signDataPqcHash()` result as it is. */
   verifyDataPqcHash(proof: DataPqcHashProof, callOptions?: CallOptions): Promise<DataPqcHashVerification> {
     return this.#lazy(() => requests.verifyDataPqcHash(proof), callOptions)
+  }
+  /** See {@link requests.getDescriptorInfo}. */
+  getDescriptorInfo(descriptor: string, callOptions?: CallOptions): Promise<DescriptorInfo> {
+    return this.#lazy(() => requests.getDescriptorInfo(descriptor), callOptions)
+  }
+  /** See {@link requests.deriveAddresses}. */
+  deriveAddresses(
+    descriptor: string,
+    options?: { readonly range?: DescriptorRange },
+    callOptions?: CallOptions
+  ): Promise<string[]> {
+    return this.#lazy(() => requests.deriveAddresses(descriptor, options), callOptions)
   }
   /** See {@link requests.testMempoolAccept}. */
   testMempoolAccept(
@@ -961,6 +988,81 @@ export class QbitRpcClient {
    */
   unlockUnspent(outputs: readonly Outpoint[], callOptions?: CallOptions): Promise<void> {
     return this.#lazy(() => requests.unlockUnspent(outputs), callOptions).then(() => undefined)
+  }
+  /** See {@link requests.signDataPqcHash}: each signature counts against the key's PQC signature budget. */
+  signDataPqcHash(
+    address: string,
+    messageHash: string,
+    options?: {
+      readonly pubkey?: string
+      readonly leafScript?: string
+      readonly controlBlock?: string
+      readonly includePqcUsage?: boolean
+    },
+    callOptions?: CallOptions
+  ): Promise<DataPqcHashSignature> {
+    return this.#lazy(() => requests.signDataPqcHash(address, messageHash, options), callOptions)
+  }
+  /** See {@link requests.createWallet}. Needs `wallet-admin`, as do the eight methods after it. */
+  createWallet(
+    walletName: string,
+    options?: {
+      readonly disablePrivateKeys?: boolean
+      readonly blank?: boolean
+      readonly passphrase?: string
+      readonly avoidReuse?: boolean
+      readonly loadOnStartup?: boolean
+    },
+    callOptions?: CallOptions
+  ): Promise<LoadedWallet> {
+    return this.#lazy(() => requests.createWallet(walletName, options), callOptions)
+  }
+  /** See {@link requests.loadWallet}. */
+  loadWallet(
+    filename: string,
+    options?: { readonly loadOnStartup?: boolean },
+    callOptions?: CallOptions
+  ): Promise<LoadedWallet> {
+    return this.#lazy(() => requests.loadWallet(filename, options), callOptions)
+  }
+  /** See {@link requests.unloadWallet}: its default deadline is 120 s. */
+  unloadWallet(
+    walletName: string,
+    options?: { readonly loadOnStartup?: boolean },
+    callOptions?: CallOptions
+  ): Promise<UnloadedWallet> {
+    return this.#lazy(() => requests.unloadWallet(walletName, options), callOptions)
+  }
+  listWalletDir(callOptions?: CallOptions): Promise<WalletDirEntry[]> {
+    return this.#single(requests.listWalletDir(), callOptions)
+  }
+  /** See {@link requests.importDescriptors}: its default deadline is 120 s. */
+  importDescriptors(
+    descriptors: readonly DescriptorImport[],
+    callOptions?: CallOptions
+  ): Promise<DescriptorImportResult[]> {
+    return this.#lazy(() => requests.importDescriptors(descriptors), callOptions)
+  }
+  /** See {@link requests.rescanBlockchain}: its default deadline is 120 s. */
+  rescanBlockchain(
+    options?: { readonly startHeight?: number; readonly stopHeight?: number },
+    callOptions?: CallOptions
+  ): Promise<RescanResult> {
+    return this.#lazy(() => requests.rescanBlockchain(options), callOptions)
+  }
+  /** See {@link requests.backupWallet}. */
+  backupWallet(destination: string, callOptions?: CallOptions): Promise<void> {
+    return this.#lazy(() => requests.backupWallet(destination), callOptions).then(() => undefined)
+  }
+  /** See {@link requests.walletPassphraseChange}. */
+  walletPassphraseChange(oldPassphrase: string, newPassphrase: string, callOptions?: CallOptions): Promise<void> {
+    return this.#lazy(() => requests.walletPassphraseChange(oldPassphrase, newPassphrase), callOptions).then(
+      () => undefined
+    )
+  }
+  /** See {@link requests.keypoolRefill}: its default deadline is 120 s. */
+  keypoolRefill(options?: { readonly newSize?: number }, callOptions?: CallOptions): Promise<void> {
+    return this.#lazy(() => requests.keypoolRefill(options), callOptions).then(() => undefined)
   }
 
   /** Close pooled keep-alive connections. The client stays usable; later calls open new ones. */
@@ -1349,6 +1451,12 @@ export class QbitRpcClient {
     const settings = this.#callSettings(callOptions, ownValue(policy, 'timeoutMs'), waitMs)
     // Sent at most once: a call with side effects, and a long poll a retry would not repeat.
     const once = policy.sideEffects || (waitMs !== undefined && !longPollRetryable(request))
+    // Serialized once: what the node receives is what the checks below read.
+    const body = stringifyRequest({ jsonrpc: '2.0', id, method, params: request.params })
+    const sent = sentParams(body)
+    checkIgnoredOptions(method, sent)
+    const secrets = messageSecrets(method, sent)
+    const redactor = (message: string): string => redact(message, secrets)
     let attempts = 0
     return this.#operation(method, settings, once, async attempt => {
       const retry = attempts++ > 0
@@ -1373,7 +1481,7 @@ export class QbitRpcClient {
             throw this.#guardFailure(method, error, exempt)
           }
         }
-        let params = request.params
+        let sending = body
         if (waitMs !== undefined) {
           // Each attempt runs under what is left of the deadline: it asks the node
           // to wait no longer than that, less the margin for the reply, and with
@@ -1383,11 +1491,20 @@ export class QbitRpcClient {
           const margin = LONG_POLL_MARGIN_MS - (retry ? 0 : LONG_POLL_SLACK_MS)
           const left = Math.floor(attempt.deadline - performance.now()) - margin
           if (left < 1) throw new Failure(new RpcTimeoutError(method, attempt.timeoutMs), false, false)
-          if (left < waitMs) params = longPollParams(request, left)
+          if (left < waitMs) {
+            sending = stringifyRequest({ jsonrpc: '2.0', id, method, params: longPollParams(request, left) })
+          }
         }
-        const body = stringifyRequest({ jsonrpc: '2.0', id, method, params })
-        const text = await this.#exchange(method, body, attempt.signal, policy.sideEffects, id, authorization.header)
-        const reply = this.#envelope(method, parseOrProtocolError(method, text), id, 'response')
+        const text = await this.#exchange(
+          method,
+          sending,
+          attempt.signal,
+          policy.sideEffects,
+          id,
+          authorization.header,
+          redactor
+        )
+        const reply = this.#envelope(method, parseOrProtocolError(method, text), id, 'response', redactor)
         if (!reply.ok) {
           const unknown = nodeErrorUnknown(method, policy.sideEffects, reply.error)
           throw new Failure(reply.error, unknown, !policy.sideEffects && reply.error.rpcCode === RPC_IN_WARMUP)
@@ -1454,6 +1571,14 @@ export class QbitRpcClient {
       }
     })
     const body = `[${bodies.join(',')}]`
+    // Read back from the body, as for a single call: each entry's checks and
+    // redaction follow what is sent, a copied or hand-built entry's included.
+    const sent = bodies.map(sentParams)
+    list.forEach((entry, index) => checkIgnoredOptions(entry.method, sent[index]))
+    const redactors = list.map((entry, index) => {
+      const secrets = messageSecrets(entry.method, sent[index])
+      return (message: string): string => redact(message, secrets)
+    })
     return this.#operation(label, settings, false, async attempt => {
       let text: string
       try {
@@ -1468,7 +1593,7 @@ export class QbitRpcClient {
         if (!byId.has(id)) {
           return { ok: false, error: protocolError(entry.method, `response[id=${id}]`, 'a reply for this request') }
         }
-        const reply = this.#envelope(entry.method, byId.get(id), id, `response[id=${id}]`)
+        const reply = this.#envelope(entry.method, byId.get(id), id, `response[id=${id}]`, redactors[index])
         if (!reply.ok) return { ok: false, error: reply.error }
         try {
           // Called on the caller's entry, as entry.parse(result) would be.
@@ -1609,7 +1734,8 @@ export class QbitRpcClient {
     signal: AbortSignal,
     sideEffects: boolean,
     id: number | undefined,
-    authorization: string
+    authorization: string,
+    redact: (message: string) => string = unchanged
   ): Promise<string> {
     let reply
     try {
@@ -1634,7 +1760,7 @@ export class QbitRpcClient {
     // in between read the request and may have forwarded it, so it is that
     // status's error, and an unknown outcome for side-effecting calls. So is
     // anything else under a 5xx, which may come from a proxy after the node acted.
-    const legacy = id === undefined ? undefined : legacyError(method, reply.body, id)
+    const legacy = id === undefined ? undefined : legacyError(method, reply.body, id, redact)
     if (legacy !== undefined && NODE_ERROR_STATUSES.has(reply.status)) {
       throw new Failure(legacy, nodeErrorUnknown(method, sideEffects, legacy), false)
     }
@@ -1683,7 +1809,8 @@ export class QbitRpcClient {
     method: string,
     value: unknown,
     id: number,
-    path: string
+    path: string,
+    redact: (message: string) => string = unchanged
   ): { readonly ok: true; readonly result: unknown } | { readonly ok: false; readonly error: RpcError } {
     if (!isJsonObject(value)) throw new Failure(protocolError(method, path, 'a JSON-RPC reply object'), true, false)
     const reply = value
@@ -1708,7 +1835,7 @@ export class QbitRpcClient {
     if (hasResult) return { ok: true, result: ownValue(reply, 'result') }
     const error = ownValue(reply, 'error')
     // Any other error (an array, a number, a string) is malformed: an unknown outcome for a side-effecting call.
-    const nodeError = isJsonObject(error) ? nodeErrorFrom(method, error) : undefined
+    const nodeError = isJsonObject(error) ? nodeErrorFrom(method, error, redact) : undefined
     if (nodeError === undefined) {
       throw new Failure(
         protocolError(method, `${path}.error`, 'an object with an integer code and a message'),
@@ -1729,7 +1856,12 @@ function nodeErrorUnknown(method: string, sideEffects: boolean, error: RpcError)
   return sideEffects && !refusedBeforeActing(method, error.rpcCode, error.message)
 }
 
-function legacyError(method: string, body: string, id: number): RpcError | undefined {
+function legacyError(
+  method: string,
+  body: string,
+  id: number,
+  redact: (message: string) => string
+): RpcError | undefined {
   let reply: unknown
   try {
     reply = parseJsonLossless(body)
@@ -1743,17 +1875,31 @@ function legacyError(method: string, body: string, id: number): RpcError | undef
   const result = ownValue(reply, 'result')
   if (result !== undefined && result !== null) return undefined
   const error = ownValue(reply, 'error')
-  return isJsonObject(error) ? nodeErrorFrom(method, error) : undefined
+  return isJsonObject(error) ? nodeErrorFrom(method, error, redact) : undefined
 }
 
-/** The node's error, from an object parseJsonLossless made. */
-function nodeErrorFrom(method: string, error: Readonly<Record<string, unknown>>): RpcError | undefined {
+const unchanged = (message: string): string => message
+
+/**
+ * The params of a single request's body, parsed back as the node will read
+ * them: its objects without a prototype, every number a `JsonNumber`.
+ */
+function sentParams(body: string): unknown {
+  return ownValue(parseJsonLossless(body) as { readonly params?: unknown }, 'params')
+}
+
+/** The node's error, from an object parseJsonLossless made, its message redacted (see `messageSecrets`) before it is capped. */
+function nodeErrorFrom(
+  method: string,
+  error: Readonly<Record<string, unknown>>,
+  redact: (message: string) => string
+): RpcError | undefined {
   const code = ownValue(error, 'code')
   const message = ownValue(error, 'message')
   if (!(code instanceof JsonNumber) || !/^-?(?:0|[1-9][0-9]{0,9})$/.test(code.source) || typeof message !== 'string') {
     return undefined
   }
-  return new RpcError(method, Number(code.source), message.slice(0, MAX_NODE_MESSAGE))
+  return new RpcError(method, Number(code.source), redact(message).slice(0, MAX_NODE_MESSAGE))
 }
 
 function protocolError(method: string, path: string, expected: string): RpcResponseError {

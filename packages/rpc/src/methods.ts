@@ -1090,6 +1090,349 @@ function parseDataPqcVerification(value: unknown): DataPqcHashVerification {
   })
 }
 
+/**
+ * `signdatapqchash`: the proof, which `verifyDataPqcHash` takes as it is, what
+ * the key signed, and, with `includePqcUsage`, the signing key's PQC usage fields.
+ */
+export interface DataPqcHashSignature extends DataPqcHashProof, PqcUsage {
+  /** The qbit data-signature hash the key signed, which commits to `messageHash`. */
+  readonly datasigHash: string
+  /** `QbitDataSigPQC` in qbit Core v1.0.0. */
+  readonly domain: string
+  /** `SLH-DSA-SHA2-128s-bounded30` in qbit Core v1.0.0. */
+  readonly algorithm: string
+  /** The P2MR Merkle root the address commits to. */
+  readonly p2mrMerkleRoot: string
+  /** PQC threshold warnings, with `includePqcUsage`, when the node emitted any. */
+  readonly warnings?: readonly string[]
+}
+
+/** What `signdatapqchash` was asked for, which its reply must repeat; the hex in lowercase. */
+interface DataPqcSigningRequest {
+  readonly address: string
+  readonly messageHash: string
+  readonly pubkey: string | undefined
+  readonly leafScript: string | undefined
+  readonly controlBlock: string | undefined
+}
+
+/**
+ * Whether `echoed` names the address `asked` named. A bech32 or bech32m
+ * address is the same in either case (BIP 173), though written all in one, so
+ * for one of those the case does not count: qbit Core v1.0.0 echoes the
+ * address as it was sent (seen on regtest, an all-uppercase one included), and
+ * a node that printed it in lowercase would still name the key that signed.
+ */
+function sameAddress(echoed: string, asked: string): boolean {
+  if (echoed === asked) return true
+  const oneCase = asked === asked.toLowerCase() || asked === asked.toUpperCase()
+  return oneCase && /^[a-z0-9]+1[a-z0-9]+$/i.test(asked) && echoed.toLowerCase() === asked.toLowerCase()
+}
+
+function parseDataPqcSignature(asked: DataPqcSigningRequest): (value: unknown) => DataPqcHashSignature {
+  /** A reply field that must be the one asked for, when one was. */
+  const same =
+    (expected: string | undefined, parse: (value: unknown, path: string) => string, what: string) =>
+    (value: unknown, path: string): string => {
+      const parsed = parse(value, path)
+      if (expected !== undefined && parsed !== expected) throw new ResultIssue(path, what)
+      return parsed
+    }
+  return value => {
+    const o = object(value, R)
+    return compact<DataPqcHashSignature>({
+      address: field(o, 'address', R, (v, p) => {
+        const echoed = string(v, p)
+        if (!sameAddress(echoed, asked.address)) throw new ResultIssue(p, 'the requested address')
+        return echoed
+      }),
+      messageHash: field(o, 'message_hash', R, same(asked.messageHash, hex(32), 'the requested hash')),
+      signature: field(o, 'signature', R, (v, p) => {
+        const signature = hex()(v, p)
+        if (signature === '') throw new ResultIssue(p, 'a non-empty signature')
+        return signature
+      }),
+      pubkey: field(o, 'pubkey', R, same(asked.pubkey, hex(32), 'the requested pubkey')),
+      leafScript: field(o, 'leaf_script', R, same(asked.leafScript, hex(), 'the requested leaf script')),
+      controlBlock: field(o, 'control_block', R, same(asked.controlBlock, hex(), 'the requested control block')),
+      leafVersion: field(o, 'leaf_version', R, integer(0, 255)),
+      proofMode: field(o, 'proof_mode', R, oneOf(['p2mr-pubkey'] as const)),
+      datasigHash: field(o, 'datasig_hash', R, hex(32)),
+      domain: field(o, 'domain', R, string),
+      algorithm: field(o, 'algorithm', R, string),
+      p2mrMerkleRoot: field(o, 'p2mr_merkle_root', R, hex(32)),
+      ...pqcUsage(o),
+      warnings: optional(o, 'warnings', R, warnings),
+    })
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Descriptors
+// ---------------------------------------------------------------------------
+
+/** qbit Core v1.0.0's descriptor characters, in its order (`DescriptorChecksum`, src/script/descriptor.cpp). */
+const DESCRIPTOR_CHARSET =
+  "0123456789()[],'/*abcdefgh@:$%{}" + 'IJKLMNOPQRSTUVWXYZ&+-.;<=>?!^_|~' + 'ijklmnopqrstuvwxyzABCDEFGH`#"\\ '
+const DESCRIPTOR_CHECKSUM_CHARSET = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l'
+const DESCRIPTOR_CHECKSUM = /^[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{8}$/
+const POLYMOD_GENERATOR = [0xf5dee51989n, 0xa9fdca3312n, 0x1bab10e32dn, 0x3706b1677an, 0x644d626ffdn] as const
+
+function polyMod(c: bigint, value: number): bigint {
+  const top = c >> 35n
+  let next = ((c & 0x7ffffffffn) << 5n) ^ BigInt(value)
+  POLYMOD_GENERATOR.forEach((generator, bit) => {
+    if ((top >> BigInt(bit)) & 1n) next ^= generator
+  })
+  return next
+}
+
+/**
+ * The checksum qbit Core appends to `body` after a `#` (BIP 380), or undefined
+ * when `body` holds a character descriptors do not use, which the node refuses.
+ */
+export function descriptorChecksum(body: string): string | undefined {
+  let c = 1n
+  let groups = 0
+  let count = 0
+  for (const char of body) {
+    const position = DESCRIPTOR_CHARSET.indexOf(char)
+    if (position < 0) return undefined
+    c = polyMod(c, position & 31)
+    groups = groups * 3 + (position >> 5)
+    if (++count === 3) {
+      c = polyMod(c, groups)
+      groups = 0
+      count = 0
+    }
+  }
+  if (count > 0) c = polyMod(c, groups)
+  for (let i = 0; i < 8; i += 1) c = polyMod(c, 0)
+  c ^= 1n
+  let checksum = ''
+  for (let i = 0; i < 8; i += 1) checksum += DESCRIPTOR_CHECKSUM_CHARSET[Number((c >> BigInt(5 * (7 - i))) & 31n)]
+  return checksum
+}
+
+/** A descriptor's text before its `#checksum`, and the checksum when it has one. */
+function splitDescriptor(descriptor: string): { readonly body: string; readonly checksum: string | undefined } {
+  const at = descriptor.indexOf('#')
+  return at < 0
+    ? { body: descriptor, checksum: undefined }
+    : { body: descriptor.slice(0, at), checksum: descriptor.slice(at + 1) }
+}
+
+/**
+ * A descriptor argument as qbit Core parses it: non-empty, of descriptor
+ * characters only, with at most one `#`, then its 8-character checksum, which
+ * is checked here; `requireChecksum` refuses one without, as `deriveaddresses`
+ * and `importdescriptors` do. A descriptor can hold private keys, so the
+ * messages never quote it.
+ */
+function argDescriptor(value: unknown, name: string, requireChecksum: boolean): string {
+  if (typeof value !== 'string' || value === '') throw new TypeError(`${name} must be a non-empty string`)
+  const { body, checksum } = splitDescriptor(value)
+  const computed = descriptorChecksum(body)
+  if (body === '' || computed === undefined) {
+    throw new TypeError(`${name} must be a descriptor: it holds a character descriptors do not use`)
+  }
+  if (checksum === undefined) {
+    if (requireChecksum) {
+      throw new TypeError(`${name} needs its checksum, # and 8 characters, which getDescriptorInfo() returns`)
+    }
+  } else if (checksum !== computed) {
+    throw new TypeError(
+      `${name}'s checksum ${DESCRIPTOR_CHECKSUM.test(checksum) ? 'does not match the descriptor: look for a typo in either' : 'must be 8 checksum characters after one #'}`
+    )
+  }
+  return value
+}
+
+/** Whether a descriptor derives a range of scripts: a key path ending in `*`, the only place descriptors use one. */
+const isRanged = (descriptor: string): boolean => splitDescriptor(descriptor).body.includes('*')
+
+/** Whether a descriptor has multipath key paths (`<0;1>`, BIP 389), the only place descriptors use `<`. */
+const isMultipath = (descriptor: string): boolean => splitDescriptor(descriptor).body.includes('<')
+
+/** The shortest run of letters and digits redacted from the node's messages: every private key encoding is longer. */
+const MIN_SECRET_LENGTH = 16
+const REDACTED = '[redacted]'
+/** The most of a node's message an error or a result keeps. */
+export const MAX_NODE_MESSAGE = 1000
+
+/**
+ * The key material `descriptors` may hold, as the node quotes it in a message
+ * (`key '...' is not valid`, `Could not add descriptor '...'`): each run of 16
+ * or more letters and digits, longest first. Extended keys, WIF keys and hex
+ * keys are such runs; so are public keys and hashes, which are redacted too.
+ */
+function descriptorSecrets(descriptors: readonly string[]): readonly string[] {
+  const secrets = new Set<string>()
+  for (const descriptor of descriptors) {
+    for (const run of descriptor.split(/[^0-9A-Za-z]+/)) if (run.length >= MIN_SECRET_LENGTH) secrets.add(run)
+  }
+  return [...secrets].sort((a, b) => b.length - a.length)
+}
+
+/**
+ * Refuses, with a `TypeError`, an option of IGNORED_OPTIONS in `params`, the
+ * params of a call to `method` as the client sends them: the request body
+ * parsed back, so after `toJSON()`, without the values JSON leaves out, and
+ * with each getter read once, by the serialization the node receives.
+ */
+export function checkIgnoredOptions(method: string, params: unknown): void {
+  const ignored = Object.hasOwn(IGNORED_OPTIONS, method) ? IGNORED_OPTIONS[method] : undefined
+  if (ignored === undefined || !Array.isArray(params)) return
+  // The params parsed back from the body: an array without holes, its objects without a prototype.
+  const options: unknown = ignored.param < params.length ? params[ignored.param] : undefined
+  if (typeof options !== 'object' || options === null) return
+  for (const [key, read] of Object.entries(ignored.keys)) {
+    if (Object.hasOwn(options, key)) {
+      throw new TypeError(
+        `${method} option ${key} is accepted and then ignored by qbit Core v1.0.0: send ${read}, or use ${ignored.typed}()`
+      )
+    }
+  }
+}
+
+/**
+ * `text` with every secret replaced by `[redacted]`, in any case, as the node
+ * may print hex key material in another case than it was sent in. Secrets are
+ * runs of letters and digits, so they need no escaping in a pattern.
+ */
+export function redact(text: string, secrets: readonly string[]): string {
+  if (secrets.length === 0) return text
+  return text.replace(new RegExp(secrets.join('|'), 'gi'), REDACTED)
+}
+
+/**
+ * The key material that the descriptors of a call to `method` may hold, to
+ * redact from the node's messages about it: those of `importdescriptors`,
+ * `deriveaddresses` and `getdescriptorinfo`. The client reads `params` from
+ * the request body it sends, parsed back, so a copy of a request, one built by
+ * hand, a descriptor passed as a `String` or behind `toJSON()`, and params
+ * changed after the request was built are all redacted by what was sent.
+ */
+export function messageSecrets(method: string, params: unknown): readonly string[] {
+  return Array.isArray(params) ? descriptorSecrets(rawDescriptors(method, params)) : []
+}
+
+/** The descriptors of a call's parameters, for redaction; any that are not strings are left out. */
+function rawDescriptors(method: string, params: readonly unknown[]): string[] {
+  const first = params.length > 0 ? params[0] : undefined
+  if ((method === 'deriveaddresses' || method === 'getdescriptorinfo') && typeof first === 'string') return [first]
+  if (method !== 'importdescriptors' || !Array.isArray(first)) return []
+  return first.flatMap((entry: unknown) => {
+    const desc =
+      typeof entry === 'object' && entry !== null && Object.hasOwn(entry, 'desc')
+        ? (entry as Record<string, unknown>)['desc']
+        : undefined
+    return typeof desc === 'string' ? [desc] : []
+  })
+}
+
+/** A descriptor range: its last index, from 0, or `[begin, end]`, both included. */
+export type DescriptorRange = number | readonly [begin: number, end: number]
+
+/**
+ * A range as qbit Core's `ParseDescriptorRange` takes it: from 0 to
+ * 2,147,483,647, begin at most end, and at most 1,000,000 indexes. Sent as
+ * `[begin, end]`.
+ */
+function rangeParam(value: unknown, name: string): [number, number] {
+  let begin = 0
+  let end: number
+  if (typeof value === 'number') end = argInteger(value, name, 0, 0x7fff_ffff)
+  else {
+    if (!Array.isArray(value) || value.length !== 2) {
+      throw new TypeError(`${name} must be an end index or [begin, end]`)
+    }
+    begin = argInteger(value[0], `${name}[0]`, 0, 0x7fff_ffff)
+    end = argInteger(value[1], `${name}[1]`, 0, 0x7fff_ffff)
+    if (begin > end) throw new RangeError(`${name} must not begin after its end`)
+  }
+  // For both forms, as ParseDescriptorRange (src/rpc/util.cpp) checks: an end index n is [0, n].
+  if (end - begin >= 1_000_000) {
+    throw new RangeError(
+      `${name} must span at most 1,000,000 indexes${typeof value === 'number' ? ': an end index of at most 999999' : ''}`
+    )
+  }
+  return [begin, end]
+}
+
+/** The number of indexes in a range sent as `[begin, end]`. */
+const rangeSize = ([begin, end]: readonly [number, number]): number => end - begin + 1
+
+/** `getdescriptorinfo`. The descriptor is qbit Core's canonical form, without private keys. */
+export interface DescriptorInfo {
+  /** The canonical form, with its checksum; for a multipath descriptor, the first path's. */
+  readonly descriptor: string
+  /** Each path's descriptor, with its checksum, for a multipath descriptor (`<0;1>`) only. */
+  readonly multipathExpansion?: readonly string[]
+  /** The checksum of the descriptor as passed, checked here against it. */
+  readonly checksum: string
+  readonly isRange: boolean
+  readonly isSolvable: boolean
+  /** For a P2MR descriptor only: whether the wallet can build its satisfaction within P2MR v1's limits. */
+  readonly hasP2mrStandardSatisfaction?: boolean
+  readonly hasPrivateKeys: boolean
+}
+
+/** A descriptor qbit Core returns: with a checksum, which must be its own. */
+function returnedDescriptor(value: unknown, path: string): string {
+  const descriptor = string(value, path)
+  const { body, checksum } = splitDescriptor(descriptor)
+  if (checksum === undefined || descriptorChecksum(body) !== checksum) {
+    throw new ResultIssue(path, 'a descriptor with its own checksum')
+  }
+  return descriptor
+}
+
+function parseDescriptorInfo(asked: string): (value: unknown) => DescriptorInfo {
+  const multipath = isMultipath(asked)
+  return value => {
+    const o = object(value, R)
+    const info = compact<DescriptorInfo>({
+      descriptor: field(o, 'descriptor', R, returnedDescriptor),
+      multipathExpansion: optional(o, 'multipath_expansion', R, (v, p) => array(v, p, returnedDescriptor)),
+      checksum: field(o, 'checksum', R, (v, p) => {
+        if (v !== descriptorChecksum(splitDescriptor(asked).body))
+          throw new ResultIssue(p, 'the requested descriptor’s checksum')
+        return v as string
+      }),
+      isRange: field(o, 'isrange', R, (v, p) => {
+        if (boolean(v, p) !== isRanged(asked)) throw new ResultIssue(p, 'true exactly when the descriptor has a *')
+        return v as boolean
+      }),
+      isSolvable: field(o, 'issolvable', R, boolean),
+      hasP2mrStandardSatisfaction: optional(o, 'has_p2mr_standard_satisfaction', R, boolean),
+      hasPrivateKeys: field(o, 'hasprivatekeys', R, boolean),
+    })
+    if ((info.multipathExpansion !== undefined) !== multipath || (info.multipathExpansion?.length ?? 2) < 2) {
+      throw new ResultIssue(
+        `${R}.multipath_expansion`,
+        multipath ? 'a descriptor per path, for a multipath descriptor' : 'nothing, for a descriptor without <'
+      )
+    }
+    return info
+  }
+}
+
+/** `deriveaddresses`: one address per index, or a multiple of that for `combo()`, which gives several. */
+function parseDerivedAddresses(descriptor: string, indexes: number): (value: unknown) => string[] {
+  const combo = splitDescriptor(descriptor).body.startsWith('combo(')
+  return value => {
+    const addresses = array(value, R, (v, p) => parseAddress(v, p))
+    if (combo ? addresses.length === 0 || addresses.length % indexes !== 0 : addresses.length !== indexes) {
+      throw new ResultIssue(
+        R,
+        combo ? `addresses for each of the ${indexes} indexes` : `${indexes} addresses, one per index`
+      )
+    }
+    return addresses
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Broadcast
 // ---------------------------------------------------------------------------
@@ -2533,6 +2876,213 @@ function parseAddress(value: unknown, path = R): string {
 }
 
 // ---------------------------------------------------------------------------
+// Wallet administration
+// ---------------------------------------------------------------------------
+
+/** `createwallet` and `loadwallet`: the wallet's name, as it was asked for, and any warnings. */
+export interface LoadedWallet {
+  /** The name or path passed, which names the wallet from then on. */
+  readonly name: string
+  readonly warnings?: readonly string[]
+}
+
+function parseLoadedWallet(requestedName: string): (value: unknown) => LoadedWallet {
+  return value => {
+    const o = object(value, R)
+    const name = field(o, 'name', R, string)
+    if (name !== requestedName) throw new ResultIssue(`${R}.name`, 'the requested wallet name')
+    return compact<LoadedWallet>({ name, warnings: optional(o, 'warnings', R, strings) })
+  }
+}
+
+/** `unloadwallet`: any warnings, such as about a startup list it could not update. */
+export interface UnloadedWallet {
+  readonly warnings?: readonly string[]
+}
+
+function parseUnloadedWallet(value: unknown): UnloadedWallet {
+  return compact<UnloadedWallet>({ warnings: optional(object(value, R), 'warnings', R, strings) })
+}
+
+/** A wallet in the node's wallet directory (`listwalletdir`), loaded or not. */
+export interface WalletDirEntry {
+  readonly name: string
+  /** Such as a legacy wallet's, which must be migrated before it loads. */
+  readonly warnings?: readonly string[]
+}
+
+function parseWalletDir(value: unknown): WalletDirEntry[] {
+  const wallet = (entry: unknown, path: string): WalletDirEntry => {
+    const o = object(entry, path)
+    return compact<WalletDirEntry>({
+      name: field(o, 'name', path, string),
+      warnings: optional(o, 'warnings', path, strings),
+    })
+  }
+  return field(object(value, R), 'wallets', R, (v, p) => array(v, p, wallet))
+}
+
+/** One descriptor for `importDescriptors`. */
+export interface DescriptorImport {
+  /** The descriptor, with its checksum. It can hold private keys: see the package README. */
+  readonly desc: string
+  /**
+   * Unix time in seconds from which to rescan for the descriptor's
+   * transactions, 0 for the whole chain, or `'now'`, the tip's median time,
+   * for keys never used. The call rescans once, from 2 hours before the
+   * earliest of its descriptors' timestamps and the tip's time: always the
+   * last 2 hours of blocks at least.
+   */
+  readonly timestamp: number | 'now'
+  /** Make it the active descriptor of its output type, receiving or (with `internal`) change. Ranged only. */
+  readonly active?: boolean
+  /** The indexes to derive, for a ranged descriptor (one with `*`); left out, the first `-keypool` (1,000). */
+  readonly range?: DescriptorRange
+  /**
+   * The next index to hand out, for a ranged descriptor: within `range`, which
+   * it needs, as the default range depends on the node's `-keypool`.
+   */
+  readonly nextIndex?: number
+  /** Treat its outputs as change. Not for a multipath descriptor, whose second path is the change one. */
+  readonly internal?: boolean
+  /** A label for its address: only for a descriptor without a range or multipath that is not `internal`. */
+  readonly label?: string
+}
+
+/** The node's answer to one descriptor of `importDescriptors`. */
+export type DescriptorImportResult =
+  | { readonly success: true; readonly warnings?: readonly string[] }
+  | {
+      readonly success: false
+      /** The node's error for this descriptor, its message redacted of key material. */
+      readonly error: { readonly rpcCode: number; readonly message: string }
+      readonly warnings?: readonly string[]
+    }
+
+const DESCRIPTOR_IMPORT = keysOf<DescriptorImport>({
+  desc: true,
+  timestamp: true,
+  active: true,
+  range: true,
+  nextIndex: true,
+  internal: true,
+  label: true,
+})
+
+/**
+ * `importdescriptors`' requests, refusing before sending what qbit Core v1.0.0
+ * would refuse or ignore for one descriptor while importing the others:
+ * `range`, `nextIndex` and `active` without a range (`*`), `nextIndex` without
+ * `range` or outside it, a label on a ranged, multipath or internal descriptor,
+ * the label `*`, and `internal` on a multipath one.
+ */
+function descriptorImportsParam(value: unknown): { readonly desc: string }[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new TypeError('descriptors must be a non-empty array of { desc, timestamp, ... }')
+  }
+  return ownElements(value, 'descriptors').map((entry: unknown, i) => {
+    const name = `descriptors[${i}]`
+    const o = argOptions(entry, name, DESCRIPTOR_IMPORT)
+    const desc = argDescriptor(o['desc'], `${name}.desc`, true)
+    const timestamp = o['timestamp']
+    if (timestamp !== 'now') {
+      // Block times are uint32 seconds: a larger value is most likely milliseconds.
+      if (
+        typeof timestamp !== 'number' ||
+        !Number.isSafeInteger(timestamp) ||
+        timestamp < 0 ||
+        timestamp > 0xffff_ffff
+      ) {
+        throw new RangeError(`${name}.timestamp must be 'now' or Unix time in seconds, an integer from 0 to 4294967295`)
+      }
+    }
+    const range = opt(o['range'], v => rangeParam(v, `${name}.range`))
+    const nextIndex = opt(o['nextIndex'], v => argInteger(v, `${name}.nextIndex`, 0, 0x7fff_ffff))
+    const active = opt(o['active'], v => argBoolean(v, `${name}.active`))
+    const internal = opt(o['internal'], v => argBoolean(v, `${name}.internal`))
+    const label = opt(o['label'], v => argString(v, `${name}.label`))
+    if (!isRanged(desc)) {
+      if (range !== undefined || nextIndex !== undefined || active === true) {
+        throw new TypeError(`${name}: range, nextIndex and active are for a ranged descriptor, one with *`)
+      }
+    } else if (label !== undefined) {
+      throw new TypeError(`${name}.label is for a descriptor without *: qbit Core refuses it with a range`)
+    }
+    if (nextIndex !== undefined && range === undefined && isRanged(desc)) {
+      // Without range qbit Core uses [0, -keypool) (src/wallet/rpc/backup.cpp:879-881), which the client
+      // cannot know, and refuses a nextIndex outside it for this descriptor while importing the others.
+      throw new TypeError(
+        `${name}.nextIndex needs range: without it qbit Core derives the node's -keypool keys, which this client cannot check nextIndex against`
+      )
+    }
+    if (range !== undefined && nextIndex !== undefined && (nextIndex < range[0] || nextIndex > range[1])) {
+      throw new RangeError(`${name}.nextIndex must be within range`)
+    }
+    if (isMultipath(desc) && (label !== undefined || internal !== undefined)) {
+      throw new TypeError(`${name}: a multipath descriptor takes neither label nor internal; its second path is change`)
+    }
+    if (label !== undefined && internal === true) throw new TypeError(`${name}.label is not for an internal descriptor`)
+    if (label === '*') throw new RangeError(`${name}.label must not be *`)
+    return {
+      desc,
+      ...compact<Record<string, unknown>>({ timestamp, active, range, next_index: nextIndex, internal, label }),
+    }
+  })
+}
+
+function parseDescriptorImports(
+  count: number,
+  secrets: readonly string[]
+): (value: unknown) => DescriptorImportResult[] {
+  // Redacted, then capped, as the client does an RpcError's message.
+  const redacted = (v: unknown, p: string): string[] =>
+    strings(v, p).map(text => redact(text, secrets).slice(0, MAX_NODE_MESSAGE))
+  const result = (entry: unknown, path: string): DescriptorImportResult => {
+    const o = object(entry, path)
+    const success = field(o, 'success', path, boolean)
+    const warned = optional(o, 'warnings', path, redacted)
+    const error = optional(o, 'error', path, (v, p) => {
+      const e = object(v, p)
+      return compact<{ readonly rpcCode: number; readonly message: string }>({
+        rpcCode: field(e, 'code', p, int32),
+        message: redact(field(e, 'message', p, string), secrets).slice(0, MAX_NODE_MESSAGE),
+      })
+    })
+    if (success) {
+      if (error !== undefined) throw new ResultIssue(`${path}.error`, 'no error, for a success')
+      return compact<Extract<DescriptorImportResult, { readonly success: true }>>({ success, warnings: warned })
+    }
+    if (error === undefined) throw new ResultIssue(`${path}.error`, 'the error of a failure (the field is missing)')
+    return compact<Extract<DescriptorImportResult, { readonly success: false }>>({ success, error, warnings: warned })
+  }
+  return value => {
+    const results = array(value, R, result)
+    if (results.length !== count) throw new ResultIssue(R, `${count} results, one per descriptor`)
+    return results
+  }
+}
+
+/** `rescanblockchain`: the heights it scanned. */
+export interface RescanResult {
+  readonly startHeight: number
+  /** The last block scanned; null in the rare case a reorg left it no block to scan. */
+  readonly stopHeight: number | null
+}
+
+function parseRescan(startHeight: number, stopHeight: number | undefined): (value: unknown) => RescanResult {
+  return value => {
+    const o = object(value, R)
+    const start = field(o, 'start_height', R, int32)
+    if (start !== startHeight) throw new ResultIssue(`${R}.start_height`, 'the requested start height')
+    const last = integer(start, stopHeight ?? 0x7fff_ffff)
+    return compact<RescanResult>({
+      startHeight: start,
+      stopHeight: field(o, 'stop_height', R, (v, p) => (v === null ? null : last(v, p))),
+    })
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Request builders
 // ---------------------------------------------------------------------------
 
@@ -2581,6 +3131,41 @@ const DATA_PQC_HASH_PROOF = keysOf<DataPqcHashProof>({
   leafVersion: true,
   proofMode: true,
 })
+
+/** The fields of a `signDataPqcHash()` result beyond its proof: allowed, and not read, by `verifyDataPqcHash`. */
+const DATA_PQC_HASH_SIGNATURE_EXTRAS = keysOf<DataPqcHashSignature>({
+  address: true,
+  messageHash: true,
+  signature: true,
+  pubkey: true,
+  leafScript: true,
+  controlBlock: true,
+  leafVersion: true,
+  proofMode: true,
+  datasigHash: true,
+  domain: true,
+  algorithm: true,
+  p2mrMerkleRoot: true,
+  warnings: true,
+  pqcKeyStates: true,
+  pqcOverallLimitState: true,
+  pqcSignatureCount: true,
+  pqcSignatureLimit: true,
+  pqcSignaturesRemaining: true,
+  pqcLimitState: true,
+}).filter(key => !DATA_PQC_HASH_PROOF.includes(key))
+
+/**
+ * A P2MR control block as qbit Core v1.0.0 takes it: the control byte, then
+ * up to 128 32-byte nodes (`P2MR_CONTROL_*`, src/script/interpreter.h); lowercased.
+ */
+function controlBlockParam(value: unknown, name: string): string {
+  const block = argHex(value, name)
+  if ((block.length / 2 - 1) % 32 !== 0 || block.length / 2 > 1 + 32 * 128) {
+    throw new TypeError(`${name} must be 1 + 32 × n bytes, n from 0 to 128`)
+  }
+  return block.toLowerCase()
+}
 
 function fundedPsbtOptions(value: unknown): Record<string, unknown> | undefined {
   if (value === undefined) return undefined
@@ -2669,16 +3254,22 @@ export const requests = {
    * `JsonNumber`. For `sendrawtransaction` and `submitpackage` the txids are
    * computed from the hex, as the typed methods do, and for `submitblock`,
    * `submitheader` (opened with `extraMethods`) and `submitauxblock` the block
-   * hash, so an unknown outcome still names them. For a long poll (`waitfornewblock`, `waitforblockheight`,
-   * `waitforblock`) the wait is read from its timeout parameter, which must be
-   * 1 to 3,590,000 ms: absent or 0, the node would wait with no end, so it is a
-   * `RangeError`. The call's deadline is then at least the wait plus 10 s, as
-   * for the typed long polls.
+   * hash, so an unknown outcome still names them. For a long poll
+   * (`waitfornewblock`, `waitforblockheight`, `waitforblock`) the wait is read
+   * from its timeout parameter, which must be 1 to 3,590,000 ms: absent or 0,
+   * the node would wait with no end, so it is a `RangeError`. The call's
+   * deadline is then at least the wait plus 10 s, as for the typed long polls.
+   * When the client sends it, it refuses an option qbit Core accepts and then
+   * ignores (a `TypeError`), and redacts the node's error about
+   * `importdescriptors`, `deriveaddresses` or `getdescriptorinfo` of the key
+   * material of the descriptors sent, as for the typed methods; an
+   * `importdescriptors` result is the node's as it is, and can quote a
+   * descriptor in full.
    *
    * The params are serialized here, once, and the request holds them as they
    * will be sent: parsed back without loss, every number a `JsonNumber` and
    * every object without a prototype. So a `toJSON` or a getter in them runs
-   * once, and cannot pass the check below and then send something else; the
+   * once, and what the client checks when it sends them is what it sends; the
    * txids and the wait are read from them too. The depth limit counts the
    * request envelope they are sent in, as `call()` sends them; `batch()`
    * refuses an entry its array takes over the limit.
@@ -2686,19 +3277,6 @@ export const requests = {
   raw(method: string, params: readonly unknown[] = []): RpcRequest<unknown> {
     argString(method, 'method', { nonEmpty: true })
     const list = parseJsonLossless(stringifyRequest(argArray(params, 'params'), 1)) as unknown[]
-    const ignored = Object.hasOwn(IGNORED_OPTIONS, method) ? IGNORED_OPTIONS[method] : undefined
-    if (ignored !== undefined) {
-      // The options as they will be sent: after toJSON(), and without the
-      // undefined, function and symbol values JSON.stringify leaves out.
-      const options = list[ignored.param]
-      for (const [key, read] of Object.entries(ignored.keys)) {
-        if (typeof options === 'object' && options !== null && Object.hasOwn(options, key)) {
-          throw new TypeError(
-            `${method} option ${key} is accepted and then ignored by qbit Core v1.0.0: send ${read}, or use ${ignored.typed}()`
-          )
-        }
-      }
-    }
     const parse = (result: unknown): unknown => result
     const hexTx = list[0]
     const txid = method === 'sendrawtransaction' && typeof hexTx === 'string' ? rawTransactionTxid(hexTx) : undefined
@@ -2912,8 +3490,12 @@ export const requests = {
 
   validateAddress: (address: string): RpcRequest<AddressValidation> =>
     request('validateaddress', [argString(address, 'address')], parseAddressValidation),
+  /** Takes a `signDataPqcHash()` result as it is: its fields beyond the proof's are allowed, and not read. */
   verifyDataPqcHash(proof: DataPqcHashProof): RpcRequest<DataPqcHashVerification> {
-    const p = argOptions(proof, 'proof', DATA_PQC_HASH_PROOF, { callOptions: true })
+    const p = argOptions(proof, 'proof', DATA_PQC_HASH_PROOF, {
+      ignored: DATA_PQC_HASH_SIGNATURE_EXTRAS,
+      callOptions: true,
+    })
     return request(
       'verifydatapqchash',
       [
@@ -2929,6 +3511,46 @@ export const requests = {
         },
       ],
       parseDataPqcVerification
+    )
+  },
+  /**
+   * Analyse a descriptor: its canonical form, without private keys, and its
+   * checksum, checked here against the descriptor. The checksum may be left
+   * out. A descriptor can hold private keys: they travel only in the request
+   * body, and the node's error, which can quote a key, is redacted.
+   */
+  getDescriptorInfo(descriptor: string): RpcRequest<DescriptorInfo> {
+    const desc = argDescriptor(descriptor, 'descriptor', false)
+    return request('getdescriptorinfo', [desc], parseDescriptorInfo(desc))
+  },
+  /**
+   * The addresses a descriptor derives, one per index of `range`, which a
+   * ranged descriptor (one with `*`) needs and any other refuses. The
+   * descriptor needs its checksum. On a P2MR chain a ranged descriptor derives
+   * from private key material, `pqc(<xprv>/...)`: it is redacted from the
+   * node's error as `getDescriptorInfo`'s is. A multipath descriptor (`<0;1>`)
+   * is refused: derive each of `getDescriptorInfo()`'s `multipathExpansion`.
+   */
+  deriveAddresses(descriptor: string, options?: { readonly range?: DescriptorRange }): RpcRequest<string[]> {
+    const desc = argDescriptor(descriptor, 'descriptor', true)
+    if (isMultipath(desc)) {
+      throw new TypeError(
+        "descriptor must not be multipath (<0;1>): derive each path's descriptor, getDescriptorInfo()'s multipathExpansion"
+      )
+    }
+    const o = methodOptions(options, ['range'])
+    const range = opt(o['range'], v => rangeParam(v, 'options.range'))
+    if (isRanged(desc) !== (range !== undefined)) {
+      throw new TypeError(
+        range === undefined
+          ? 'options.range is required for a ranged descriptor, one with *'
+          : 'options.range is only for a ranged descriptor, one with *'
+      )
+    }
+    return request(
+      'deriveaddresses',
+      [desc, range],
+      parseDerivedAddresses(desc, range === undefined ? 1 : rangeSize(range))
     )
   },
 
@@ -3351,5 +3973,197 @@ export const requests = {
    */
   unlockUnspent(outputs: readonly Outpoint[]): RpcRequest<true> {
     return request('lockunspent', [true, outpointsParam(outputs)], parseTrue)
+  },
+  /**
+   * Sign a 32-byte hash with the PQC key that a wallet P2MR address commits
+   * to, for sign-in or attestation: `verifyDataPqcHash` takes the result as
+   * it is. Every signature counts against the key's signature budget (2^30),
+   * so a failure after sending is an `RpcUnknownOutcomeError`, and a call
+   * again signs again. `includePqcUsage` adds the key's budget fields, which
+   * qbit Core advises enabling only for local diagnostics. `pubkey`,
+   * `leafScript` and `controlBlock` choose the leaf when the address commits to
+   * more than one. Rejects with `RpcError` -13 while the wallet is locked, and
+   * -4 for an address the wallet does not have.
+   */
+  signDataPqcHash(
+    address: string,
+    messageHash: string,
+    options?: {
+      readonly pubkey?: string
+      readonly leafScript?: string
+      readonly controlBlock?: string
+      readonly includePqcUsage?: boolean
+    }
+  ): RpcRequest<DataPqcHashSignature> {
+    const o = methodOptions(options, ['pubkey', 'leafScript', 'controlBlock', 'includePqcUsage'])
+    const asked: DataPqcSigningRequest = {
+      address: argString(address, 'address', { nonEmpty: true }),
+      messageHash: argHex(messageHash, 'messageHash', 32).toLowerCase(),
+      pubkey: opt(o['pubkey'], v => argHex(v, 'options.pubkey', 32).toLowerCase()),
+      leafScript: opt(o['leafScript'], v => argHex(v, 'options.leafScript').toLowerCase()),
+      controlBlock: opt(o['controlBlock'], v => controlBlockParam(v, 'options.controlBlock')),
+    }
+    // Key names as qbit Core v1.0.0's signdatapqchash reads them: it ignores any other.
+    const signOptions = compact<Record<string, unknown>>({
+      pubkey: asked.pubkey,
+      leaf_script: asked.leafScript,
+      control_block: asked.controlBlock,
+      include_pqc_usage: opt(o['includePqcUsage'], v => argBoolean(v, 'options.includePqcUsage')),
+    })
+    return request(
+      'signdatapqchash',
+      [asked.address, asked.messageHash, Object.keys(signOptions).length > 0 ? signOptions : undefined],
+      parseDataPqcSignature(asked)
+    )
+  },
+
+  /**
+   * Create and load a wallet; a name with a path creates it there. With
+   * `passphrase` it is encrypted, never echoed, and its first unlock runs its
+   * deferred keypool top-up (see `walletPassphrase`); an empty one is refused,
+   * as qbit Core would create the wallet unencrypted. A failure after sending
+   * is an `RpcUnknownOutcomeError`: `listWalletDir()` shows whether it exists.
+   * Rejects with `RpcError` -4 when it exists already.
+   */
+  createWallet(
+    walletName: string,
+    options?: {
+      readonly disablePrivateKeys?: boolean
+      readonly blank?: boolean
+      readonly passphrase?: string
+      readonly avoidReuse?: boolean
+      readonly loadOnStartup?: boolean
+    }
+  ): RpcRequest<LoadedWallet> {
+    const name = argString(walletName, 'walletName')
+    const o = methodOptions(options, ['disablePrivateKeys', 'blank', 'passphrase', 'avoidReuse', 'loadOnStartup'])
+    const disablePrivateKeys = opt(o['disablePrivateKeys'], v => argBoolean(v, 'options.disablePrivateKeys'))
+    const passphrase = opt(o['passphrase'], v => {
+      if (typeof v !== 'string' || v === '') {
+        throw new TypeError(
+          'options.passphrase must be a non-empty string: qbit Core creates an unencrypted wallet for an empty one'
+        )
+      }
+      return v
+    })
+    if (passphrase !== undefined && disablePrivateKeys === true) {
+      throw new TypeError(
+        'options.passphrase excludes options.disablePrivateKeys: a wallet without private keys has nothing to encrypt'
+      )
+    }
+    return request(
+      'createwallet',
+      [
+        name,
+        disablePrivateKeys,
+        opt(o['blank'], v => argBoolean(v, 'options.blank')),
+        passphrase,
+        opt(o['avoidReuse'], v => argBoolean(v, 'options.avoidReuse')),
+        // descriptors: qbit Core creates descriptor wallets only.
+        undefined,
+        opt(o['loadOnStartup'], v => argBoolean(v, 'options.loadOnStartup')),
+      ],
+      parseLoadedWallet(name)
+    )
+  },
+  /**
+   * Load a wallet from the wallet directory, or a path. `loadOnStartup` true
+   * adds it to the node's startup list and false removes it. Rejects with
+   * `RpcError` -35 when it is loaded already, and -18 when it does not exist.
+   */
+  loadWallet(filename: string, options?: { readonly loadOnStartup?: boolean }): RpcRequest<LoadedWallet> {
+    const name = argString(filename, 'filename')
+    const o = methodOptions(options, ['loadOnStartup'])
+    return request(
+      'loadwallet',
+      [name, opt(o['loadOnStartup'], v => argBoolean(v, 'options.loadOnStartup'))],
+      parseLoadedWallet(name)
+    )
+  },
+  /**
+   * Unload a wallet. With a client `wallet`, the name must be that one (-8
+   * otherwise). The node answers once every call still running on the wallet
+   * has ended, so its default deadline is 120 s. Rejects with `RpcError` -18
+   * when it is not loaded, and -4 while it rescans.
+   */
+  unloadWallet(walletName: string, options?: { readonly loadOnStartup?: boolean }): RpcRequest<UnloadedWallet> {
+    const o = methodOptions(options, ['loadOnStartup'])
+    return request(
+      'unloadwallet',
+      [argString(walletName, 'walletName'), opt(o['loadOnStartup'], v => argBoolean(v, 'options.loadOnStartup'))],
+      parseUnloadedWallet
+    )
+  },
+  /** The wallets in the node's wallet directory, loaded or not. */
+  listWalletDir: (): RpcRequest<WalletDirEntry[]> => request('listwalletdir', [], parseWalletDir),
+  /**
+   * Import descriptors into the wallet, then rescan once from the earliest
+   * `timestamp`. One result per descriptor, in order: a refused one does not
+   * stop the others. Each is checked before sending (see
+   * {@link DescriptorImport}), with its checksum. Descriptors can hold private
+   * keys: they travel only in the request body, and the node's messages,
+   * which can quote a descriptor in full, are redacted. The default deadline
+   * is 120 s: see the package README. Needs the wallet unlocked (`RpcError`
+   * -13).
+   */
+  importDescriptors(descriptors: readonly DescriptorImport[]): RpcRequest<DescriptorImportResult[]> {
+    // Frozen, so what is sent is what the result's messages are redacted of.
+    const params = Object.freeze(descriptorImportsParam(descriptors).map(entry => Object.freeze(entry)))
+    const secrets = descriptorSecrets(params.map(entry => entry.desc))
+    return request('importdescriptors', [params], parseDescriptorImports(params.length, secrets))
+  },
+  /**
+   * Rescan the chain from `startHeight` (default 0) to `stopHeight` (default
+   * the tip) for the wallet's transactions. The default deadline is 120 s:
+   * see the package README. Rejects with `RpcError` -8 for a height past the
+   * wallet's tip, -4 while a rescan runs, and -13 while the wallet is locked.
+   */
+  rescanBlockchain(options?: {
+    readonly startHeight?: number
+    readonly stopHeight?: number
+  }): RpcRequest<RescanResult> {
+    const o = methodOptions(options, ['startHeight', 'stopHeight'])
+    const startHeight = opt(o['startHeight'], v => argInteger(v, 'options.startHeight', 0, 0x7fff_ffff))
+    const stopHeight = opt(o['stopHeight'], v => argInteger(v, 'options.stopHeight', 0, 0x7fff_ffff))
+    if (stopHeight !== undefined && stopHeight < (startHeight ?? 0)) {
+      throw new RangeError('options.stopHeight must not be below options.startHeight')
+    }
+    return request('rescanblockchain', [startHeight, stopHeight], parseRescan(startHeight ?? 0, stopHeight))
+  },
+  /**
+   * Copy the wallet to `destination`, a file path on the node's host, which
+   * it overwrites; a relative one is resolved against `qbitd`'s working
+   * directory. qbit Core v1.0.0 refuses a directory, and a path whose
+   * directory does not exist, with `RpcError` -4.
+   */
+  backupWallet: (destination: string): RpcRequest<null> =>
+    request('backupwallet', [argString(destination, 'destination', { nonEmpty: true })], parseNull),
+  /**
+   * Change an encrypted wallet's passphrase. Neither passphrase is ever logged
+   * or put in an error. Rejects with `RpcError` -14 for a wrong old
+   * passphrase, and -15 for an unencrypted wallet.
+   */
+  walletPassphraseChange: (oldPassphrase: string, newPassphrase: string): RpcRequest<null> =>
+    request(
+      'walletpassphrasechange',
+      [
+        argString(oldPassphrase, 'oldPassphrase', { nonEmpty: true }),
+        argString(newPassphrase, 'newPassphrase', { nonEmpty: true }),
+      ],
+      parseNull
+    ),
+  /**
+   * Derive keys until each active descriptor's keypool holds `newSize`
+   * (default `-keypool`, 1,000). The default deadline is 120 s: see the
+   * package README. Needs the wallet unlocked (`RpcError` -13).
+   */
+  keypoolRefill(options?: { readonly newSize?: number }): RpcRequest<null> {
+    const o = methodOptions(options, ['newSize'])
+    // 0 is qbit Core's "the -keypool default": leave newSize out for that.
+    return request(
+      'keypoolrefill',
+      [opt(o['newSize'], v => argInteger(v, 'options.newSize', 1, 0x7fff_ffff))],
+      parseNull
+    )
   },
 }

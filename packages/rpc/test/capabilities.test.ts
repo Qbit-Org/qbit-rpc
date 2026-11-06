@@ -62,6 +62,15 @@ describe('capabilities', () => {
       [rpc.submitBlock(TX_HEX), 'mining'],
       [rpc.createAuxBlock('qbrt1zaddress'), 'mining'],
       [rpc.submitAuxBlock(HASH_A, TX_HEX), 'mining'],
+      [rpc.signDataPqcHash('qbrt1zaddress', HASH_A), 'wallet-write'],
+      [rpc.createWallet('w'), 'wallet-admin'],
+      [rpc.loadWallet('w'), 'wallet-admin'],
+      [rpc.unloadWallet('w'), 'wallet-admin'],
+      [rpc.listWalletDir(), 'wallet-admin'],
+      [rpc.rescanBlockchain(), 'wallet-admin'],
+      [rpc.backupWallet('w.dat'), 'wallet-admin'],
+      [rpc.walletPassphraseChange('a', 'b'), 'wallet-admin'],
+      [rpc.keypoolRefill(), 'wallet-admin'],
     ]
     for (const [promise, capability] of cases) {
       const error = await refusal(promise)

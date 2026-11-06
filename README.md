@@ -11,8 +11,8 @@ application.
 - [`@qbit-oss/rpc`](packages/rpc/README.md) to read chain and wallet state from
   `qbitd`, fund and sign PSBTs with its wallet, and broadcast. Every method is
   allowlisted, by the package or by the client's own `extraMethods`, and gated
-  by capabilities the client opts into, wallet-write, broadcast and
-  mining calls wait until the node's chain is confirmed, results are
+  by capabilities the client opts into, wallet-write, broadcast,
+  mining and wallet-admin calls wait until the node's chain is confirmed, results are
   validated, and amounts are exact `bigint` bits. No runtime dependencies.
 - [`@qbit-oss/zmq`](packages/zmq/README.md) to be woken by `qbitd`'s ZMQ
   notifications (new blocks, mempool changes) and told when you missed some. It
@@ -49,7 +49,7 @@ against v1.0.0, the release `scripts/qbit-core-release.mjs` names, by CI's
 against it, in a release of these packages that says so.
 
 `@qbit-oss/rpc` checks the node's version with every chain check and exposes it
-as `rpc.nodeVersion`. On another version it refuses wallet-write, broadcast and mining
+as `rpc.nodeVersion`. On another version it refuses wallet-write, broadcast, mining and wallet-admin
 calls with `RpcChainGuardError` `reason: 'unsupported_version'`, unless the
 client sets `allowUnsupportedNodeVersion`; reads go on, and every reply is
 still validated. Which values a later qbit Core may add pass through, and which
@@ -111,7 +111,7 @@ const rpc = new QbitRpcClient({
   capabilities: ['wallet-read', 'wallet-write', 'broadcast'],
 })
 
-await rpc.confirmChain() // wallet-write, broadcast and mining calls are refused until this matches
+await rpc.confirmChain() // wallet-write, broadcast, mining and wallet-admin calls are refused until this matches
 
 const funded = await rpc.walletCreateFundedPsbt({
   outputs: [{ address: 'tq1...', amountBits: 150_000_000n }], // 1.5 QBT
@@ -196,7 +196,10 @@ for await (const event of zmq) {
 | Preflight and broadcast | `rpc.testMempoolAccept([hex])`, `rpc.sendRawTransaction(hex)` (the node's 0.10 QBT/kvB fee-rate cap, or `{ maxFeeRateBitsPerKvB }`) |
 | Keep coins out of coin selection | `rpc.lockUnspent(outputs, { persistent: true })`, `rpc.unlockUnspent(outputs)` |
 | Unlock an encrypted wallet | `rpc.walletPassphrase(passphrase, seconds)`, `rpc.walletLock()`; a new wallet's first unlock is slow, see [its deadline](packages/rpc/README.md#unlocking-an-encrypted-wallet) |
+| Sign in or attest with a wallet address | `rpc.signDataPqcHash(address, hash)` (`wallet-write`; each signature uses one of the key's PQC budget), then anyone's `rpc.verifyDataPqcHash(signed)`; see [signing a data hash](packages/rpc/README.md#signing-a-data-hash) |
 | Verify a data-hash PQC proof | `rpc.verifyDataPqcHash(proof)` |
+| Set up and keep wallets | with `capabilities: ['wallet-admin']`: `rpc.createWallet(name, { passphrase })`, `loadWallet`, `unloadWallet`, `listWalletDir`, `backupWallet(path)`, `walletPassphraseChange`, `keypoolRefill`; some take minutes, see [wallet administration](packages/rpc/README.md#wallet-administration) |
+| Import descriptors, rescan | `rpc.importDescriptors([{ desc, timestamp }])`, `rpc.rescanBlockchain({ startHeight })` (`wallet-admin`); `rpc.getDescriptorInfo(desc)` and `rpc.deriveAddresses(desc, { range })` need none; see [descriptors](packages/rpc/README.md#descriptors) |
 | Read a block, by hash | `rpc.getBlock(hash)`, `rpc.getBlockWithTransactions(hash)` (a full block can pass the default `maxResponseBytes`: [large replies](packages/rpc/README.md#large-replies)), `rpc.getBlockHex(hash)` |
 | Detect reorgs | `rpc.getChainTips()` |
 | Fee floor and mempool | `rpc.getMempoolInfo()` → `mempoolMinFeeBitsPerKvB`, `rpc.getRawMempool()`, `rpc.getTxSpendingPrevout(outputs)` |
@@ -279,7 +282,7 @@ Each tarball holds exactly `package.json`, `README.md`, `LICENSE` and, in
 map for each and the declarations for each (`index.d.ts`, `index.d.mts`). The
 maps carry every source file in `sourcesContent`, so `src/` is not shipped:
 run Node.js with `--enable-source-maps` to see `src/*.ts` lines in stack traces.
-`@qbit-oss/rpc` is about 1.86 MB unpacked (479 KB packed), most of it the two
+`@qbit-oss/rpc` is about 2.09 MB unpacked (539 KB packed), most of it the two
 maps; `@qbit-oss/zmq` about 227 KB (61 KB packed). `pack:check` fails on any
 other file, on a map that does not carry its sources, and above a ceiling of
 2,270,000 and 280,000 bytes unpacked.

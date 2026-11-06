@@ -1,10 +1,12 @@
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { readFileSync } from 'node:fs'
+import { readFileSync, statSync } from 'node:fs'
 import { createServer, request as httpRequest } from 'node:http'
 import { connect as netConnect, type AddressInfo } from 'node:net'
+import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { createServer as createTlsServer } from 'node:tls'
+import { inspect } from 'node:util'
 
 import { describe, expect, it } from 'vitest'
 
@@ -23,6 +25,7 @@ import {
   type QbitRpcClientOptions,
 } from '../../src'
 import { QBIT_GENESIS_HASHES } from '../../src/capabilities'
+import { descriptorChecksum } from '../../src/methods'
 import { buildAuxPow, buildBlock } from '../helpers/block-builder'
 import { HIDDEN_METHOD_CLASSES, METHOD_CLASSES } from '../../src/method-classes'
 import { testPki } from '../helpers/certificates'
@@ -34,14 +37,36 @@ const env = process.env
 const enabled = env['RUN_QBIT_REGTEST_SMOKE'] === '1'
 const url = env['QBIT_REGTEST_RPC_URL'] ?? ''
 const cookieFile = env['QBIT_REGTEST_COOKIE_FILE'] ?? ''
+const datadir = env['QBIT_REGTEST_DATADIR'] ?? ''
 const [cliPath = '', ...cliArgs] = (env['QBIT_REGTEST_CLI'] ?? '').split(' ')
 /** qbit Core v1.0.0's regtest genesis block (src/kernel/chainparams.cpp). */
 const REGTEST_GENESIS = '0ee96aa77c4b600850e349344fa21b107e805f5370ddc7a6189db12cf69acce6'
 /** A case with a first unlock: past walletPassphrase's 120 s deadline, so a slow one fails as the client's error. */
 const FIRST_UNLOCK_TEST_MS = 180_000
+/** A case that derives a keypool or a descriptor range: past the 120 s default deadline of the calls that do. */
+const KEY_DERIVATION_TEST_MS = 180_000
 
 function cli(...args: string[]): string {
   return execFileSync(cliPath, [...cliArgs, ...args], { encoding: 'utf8' }).trim()
+}
+
+/** The node's error for a qbit-cli call that fails, kept out of the test's output. */
+function cliError(...args: string[]): string {
+  try {
+    execFileSync(cliPath, [...cliArgs, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+  } catch (error) {
+    return String((error as { stderr?: unknown }).stderr)
+  }
+  throw new Error(`qbit-cli ${args[0]} succeeded`)
+}
+
+/** The smoke wallet's active receiving descriptor, with its private key, and that key. */
+function receivingDescriptor(): { readonly desc: string; readonly key: string } {
+  const listed = JSON.parse(cli('-rpcwallet=smoke', 'listdescriptors', 'true')) as {
+    descriptors: { desc: string; active: boolean; internal?: boolean }[]
+  }
+  const desc = listed.descriptors.find(d => d.active && d.internal !== true)!.desc
+  return { desc, key: /pqc\(([0-9A-Za-z]+)\//.exec(desc)![1]! }
 }
 
 function client(options: Partial<QbitRpcClientOptions> = {}): QbitRpcClient {
@@ -515,25 +540,65 @@ describe.runIf(enabled)('qbit Core v1.0.0 regtest', () => {
     }
   )
 
-  it('verifies a data-hash PQC proof', async () => {
-    const address = cli('-rpcwallet=smoke', 'getnewaddress', '', 'p2mr')
+  it('signs a data hash with a wallet key, and verifies the proof as it is', async () => {
+    const wallet = client({ wallet: 'smoke', capabilities: ['wallet-read', 'wallet-write'] })
+    await wallet.confirmChain()
+    const address = await wallet.getNewAddress({ addressType: 'p2mr' })
     const messageHash = '11'.repeat(32)
-    const proof = JSON.parse(cli('-rpcwallet=smoke', 'signdatapqchash', address, messageHash)) as Record<
-      string,
-      unknown
-    >
-    const rpc = client()
-    const verified = await rpc.verifyDataPqcHash({
-      address: proof['address'] as string,
-      messageHash: proof['message_hash'] as string,
-      signature: proof['signature'] as string,
-      pubkey: proof['pubkey'] as string,
-      leafScript: proof['leaf_script'] as string,
-      controlBlock: proof['control_block'] as string,
-      leafVersion: proof['leaf_version'] as number,
+    const signed = await wallet.signDataPqcHash(address, messageHash, { includePqcUsage: true })
+    expect(signed).toMatchObject({
+      address,
+      messageHash,
       proofMode: 'p2mr-pubkey',
+      domain: 'QbitDataSigPQC',
+      algorithm: 'SLH-DSA-SHA2-128s-bounded30',
+      pqcSignatureCount: 1,
+      pqcSignatureLimit: 2 ** 30,
+      pqcLimitState: 'normal',
+      pqcOverallLimitState: 'normal',
     })
-    expect(verified).toMatchObject({ valid: true, address, messageHash })
+    const rpc = client()
+    expect(await rpc.verifyDataPqcHash(signed)).toMatchObject({
+      valid: true,
+      address,
+      messageHash,
+      datasigHash: signed.datasigHash,
+      pubkey: signed.pubkey,
+      p2mrMerkleRoot: signed.p2mrMerkleRoot,
+    })
+    expect(await rpc.verifyDataPqcHash({ ...signed, messageHash: '22'.repeat(32) })).toMatchObject({ valid: false })
+    // Each signature uses one of the key's budget, which getaddressinfo reports too.
+    const again = await wallet.signDataPqcHash(address, messageHash.toUpperCase(), {
+      pubkey: signed.pubkey,
+      includePqcUsage: true,
+    })
+    expect(again).toMatchObject({ messageHash, pqcSignatureCount: 2, pqcSignaturesRemaining: 2 ** 30 - 2 })
+    expect((await wallet.getAddressInfo(address)).pqcSignatureCount).toBe(2)
+    expect(await wallet.signDataPqcHash(address, messageHash)).not.toHaveProperty('pqcKeyStates')
+    // A bech32m address in capitals is the same address: the node signs, and
+    // echoes it as it was sent, which the reply check takes.
+    const upper = await wallet.signDataPqcHash(address.toUpperCase(), messageHash)
+    expect(upper).toMatchObject({ address: address.toUpperCase(), pubkey: signed.pubkey })
+    expect((await wallet.getAddressInfo(address)).pqcSignatureCount).toBe(4)
+    // The node ignores an option name it does not read, so call() refuses it.
+    const ignored = JSON.parse(
+      cli('-rpcwallet=smoke', 'signdatapqchash', address, messageHash, '{"includePqcUsage":true}')
+    ) as Record<string, unknown>
+    expect(ignored).toMatchObject({ address, message_hash: messageHash })
+    expect(ignored).not.toHaveProperty('pqc_key_states')
+    await expect(wallet.call('signdatapqchash', [address, messageHash, { includePqcUsage: true }])).rejects.toThrow(
+      /accepted and then ignored/
+    )
+    // A locked wallet does not sign, nor a wallet without the address.
+    const locked = client({ wallet: 'locked', capabilities: ['wallet-write'] })
+    await locked.confirmChain()
+    const lockedAddress = await locked.getNewAddress({ addressType: 'p2mr' })
+    await expect(locked.signDataPqcHash(lockedAddress, messageHash)).rejects.toSatisfy(
+      error => RpcError.is(error) && error.rpcCode === -13
+    )
+    await expect(wallet.signDataPqcHash(lockedAddress, messageHash)).rejects.toSatisfy(
+      error => RpcError.is(error) && error.rpcCode === -4
+    )
   })
 
   // Every method qbit-payments' core-wallet adapter reaches, through its own
@@ -2103,6 +2168,210 @@ describe.runIf(enabled)('qbit Core v1.0.0 regtest', () => {
       } finally {
         losesAux.close()
       }
+    })
+  })
+
+  describe('wallet administration', () => {
+    const admin = async (options: Partial<QbitRpcClientOptions> = {}): Promise<QbitRpcClient> => {
+      const rpc = client({ capabilities: ['wallet-admin'], ...options })
+      await rpc.confirmChain()
+      return rpc
+    }
+    const nodeError = (code: number) => (error: unknown) => RpcError.is(error) && error.rpcCode === code
+    const loaded = async (): Promise<unknown> => client({ capabilities: ['wallet-read'] }).call('listwallets')
+
+    it('creates, loads, unloads and lists a wallet', async () => {
+      const rpc = await admin()
+      const name = 'admin-created'
+      expect(await rpc.createWallet(name, { loadOnStartup: true })).toEqual({ name })
+      expect((await rpc.listWalletDir()).map(wallet => wallet.name)).toContain(name)
+      expect(await loaded()).toContain(name)
+      await expect(rpc.createWallet(name)).rejects.toSatisfy(nodeError(-4))
+      await expect(rpc.loadWallet(name)).rejects.toSatisfy(nodeError(-35))
+
+      expect(await rpc.unloadWallet(name, { loadOnStartup: false })).toEqual({})
+      expect(await loaded()).not.toContain(name)
+      expect((await rpc.listWalletDir()).map(wallet => wallet.name)).toContain(name)
+      await expect(rpc.unloadWallet(name)).rejects.toSatisfy(nodeError(-18))
+      expect(await rpc.loadWallet(name)).toEqual({ name })
+      expect(await loaded()).toContain(name)
+
+      // A client scoped to the wallet unloads it, and only it.
+      const scoped = await admin({ wallet: name })
+      await expect(scoped.unloadWallet('smoke')).rejects.toSatisfy(nodeError(-8))
+      expect(await scoped.unloadWallet(name)).toEqual({})
+      await expect(rpc.loadWallet('admin-never-created')).rejects.toSatisfy(nodeError(-18))
+      // An empty passphrase would create the wallet unencrypted: refused, unsent.
+      await expect(rpc.createWallet('admin-unencrypted', { passphrase: '' })).rejects.toThrow(TypeError)
+      expect((await rpc.listWalletDir()).map(wallet => wallet.name)).not.toContain('admin-unencrypted')
+      const refused = await client({ capabilities: ['wallet-read', 'wallet-write'] })
+        .createWallet('admin-refused')
+        .catch((e: unknown) => e)
+      expect(RpcCapabilityError.is(refused) && refused.required).toBe('wallet-admin')
+    })
+
+    it("changes an encrypted wallet's passphrase, which no error repeats", async () => {
+      const rpc = await admin()
+      const name = 'admin-rekeyed'
+      const [first, second, third] = ['rekey-first-4c1a', 'rekey-second-9d2e', 'rekey-third-77f0']
+      expect(await rpc.createWallet(name, { passphrase: first })).toEqual({ name })
+      const wallet = await admin({ wallet: name })
+      const reader = client({ wallet: name, capabilities: ['wallet-read'] })
+      await wallet.walletPassphraseChange(first, second)
+      // It runs no deferred top-up, and leaves the wallet locked.
+      expect(await reader.getWalletInfo()).toMatchObject({ unlockedUntil: 0, keypoolSize: 16 })
+      const wrong = await wallet.walletPassphraseChange(first, third).catch((e: unknown) => e)
+      expect(RpcError.is(wrong) && wrong.rpcCode).toBe(-14)
+      for (const text of [String(wrong), JSON.stringify(wrong), inspect(wrong, { showHidden: true, depth: null })]) {
+        for (const passphrase of [first, second, third]) expect(text).not.toContain(passphrase)
+      }
+      // The second is the passphrase now.
+      await wallet.walletPassphraseChange(second, third)
+      await expect(wallet.walletPassphraseChange(third, '')).rejects.toThrow(TypeError)
+      const unencrypted = await admin({ wallet: 'smoke' })
+      await expect(unencrypted.walletPassphraseChange(first, second)).rejects.toSatisfy(nodeError(-15))
+      await rpc.unloadWallet(name)
+    })
+
+    it(
+      'imports a descriptor, rescans for its coins, and redacts its key from what the node quotes',
+      { timeout: KEY_DERIVATION_TEST_MS },
+      async () => {
+        const rpc = await admin()
+        const { desc, key } = receivingDescriptor()
+        const name = 'admin-imported'
+        await rpc.createWallet(name, { blank: true })
+        const wallet = await admin({ wallet: name })
+        const reader = client({ wallet: name, capabilities: ['wallet-read'] })
+        // The import scans from 2 hours before the earlier of its timestamp and the tip's time,
+        // so even 'now' finds the coins of this young chain. Without a range, the node
+        // derives the keypool's, 1,000 keys.
+        expect(await wallet.importDescriptors([{ desc, timestamp: 'now', active: true }])).toEqual([
+          { success: true, warnings: ['Range not given, using default keypool range'] },
+        ])
+        expect((await reader.getWalletInfo()).keypoolSize).toBe(1000)
+        expect((await reader.getBalances()).mine.trustedBits).toBeGreaterThan(0n)
+        const [first] = await rpc.deriveAddresses(desc, { range: [0, 0] })
+        expect((await reader.getAddressInfo(first!)).isMine).toBe(true)
+
+        // Drop a transaction from the wallet: a rescan finds it again.
+        const [newest] = await reader.listTransactions({ count: 1 })
+        const { txCount } = await reader.getWalletInfo()
+        cli(`-rpcwallet=${name}`, 'removeprunedfunds', newest!.txid)
+        await expect(reader.getTransaction(newest!.txid)).rejects.toSatisfy(nodeError(-5))
+        const tip = await rpc.getBlockCount()
+        expect(await wallet.rescanBlockchain()).toEqual({ startHeight: 0, stopHeight: tip })
+        expect((await reader.getTransaction(newest!.txid)).confirmations).toBeGreaterThan(0)
+        expect(await reader.getWalletInfo()).toMatchObject({ txCount, scanning: false })
+        expect(await wallet.rescanBlockchain({ startHeight: tip - 5, stopHeight: tip - 1 })).toEqual({
+          startHeight: tip - 5,
+          stopHeight: tip - 1,
+        })
+        await expect(wallet.rescanBlockchain({ startHeight: tip + 1 })).rejects.toSatisfy(nodeError(-8))
+
+        // The import widened the range to the keypool's lookahead: a narrower one is refused, and the
+        // node quotes the descriptor, key and all, which reaches the caller redacted.
+        const [narrower] = await wallet.importDescriptors([{ desc, timestamp: 'now', range: [0, 4] }])
+        expect(narrower).toMatchObject({ success: false, error: { rpcCode: -4 } })
+        const quoted = narrower!.success ? '' : narrower!.error.message
+        expect(quoted).toMatch(
+          /^Could not add descriptor 'mr\(pk\(pqc\(\[redacted\]\/87h\/.*\*\)\)\)#[a-z0-9]{8}': new range must include current range/
+        )
+        expect(quoted).not.toContain(key)
+        // A malformed key: the node quotes it, in a refused import and in getdescriptorinfo's error.
+        const body = desc.split('#')[0]!.replace(key, `${key.slice(0, -1)}${key.endsWith('A') ? 'B' : 'A'}`)
+        expect(cliError('getdescriptorinfo', body)).toContain(key.slice(0, -1))
+        const [broken] = await wallet.importDescriptors([
+          { desc: `${body}#${descriptorChecksum(body)!}`, timestamp: 'now' },
+        ])
+        expect(broken).toEqual({
+          success: false,
+          error: { rpcCode: -5, message: "pk(): pqc(): key '[redacted]' is not valid" },
+        })
+        const described = await rpc.getDescriptorInfo(body).catch((e: unknown) => e)
+        expect(RpcError.is(described) && described.message).toBe("pk(): pqc(): key '[redacted]' is not valid")
+        await rpc.unloadWallet(name)
+      }
+    )
+
+    it('backs up a wallet to a path in the throwaway data directory', async () => {
+      const wallet = await admin({ wallet: 'smoke' })
+      const target = join(datadir, 'smoke-backup.dat')
+      await wallet.backupWallet(target)
+      expect(readFileSync(target).subarray(0, 16).toString('latin1')).toBe('SQLite format 3\0')
+      expect(statSync(target).size).toBeGreaterThan(0)
+      // An existing file is overwritten.
+      await wallet.backupWallet(target)
+      // The backup is a wallet: restored, it loads.
+      cli('restorewallet', 'smoke-restored', target)
+      expect(await loaded()).toContain('smoke-restored')
+      await (await admin()).unloadWallet('smoke-restored')
+      // qbit Core v1.0.0 refuses a directory, despite its help, and a path whose directory is missing.
+      await expect(wallet.backupWallet(datadir)).rejects.toSatisfy(nodeError(-4))
+      await expect(wallet.backupWallet(join(datadir, 'missing', 'smoke.dat'))).rejects.toSatisfy(nodeError(-4))
+      // It answers an empty destination with success, writing nothing: refused, unsent.
+      expect(cli('-rpcwallet=smoke', 'backupwallet', '')).toBe('')
+      await expect(wallet.backupWallet('')).rejects.toThrow(TypeError)
+    })
+
+    it('derives addresses from a descriptor, and describes it, with no capability', async () => {
+      const rpc = client()
+      const smoke = client({ wallet: 'smoke', capabilities: ['wallet-read'] })
+      const { desc, key } = receivingDescriptor()
+      const addresses = await rpc.deriveAddresses(desc, { range: [0, 2] })
+      expect(addresses).toHaveLength(3)
+      for (const address of addresses) expect((await smoke.getAddressInfo(address)).isMine).toBe(true)
+      expect(await rpc.deriveAddresses(desc, { range: 2 })).toEqual(addresses)
+      const info = await rpc.getDescriptorInfo(desc)
+      expect(info).toMatchObject({
+        isRange: true,
+        isSolvable: true,
+        hasPrivateKeys: true,
+        hasP2mrStandardSatisfaction: true,
+        checksum: desc.split('#')[1],
+      })
+      expect(info.descriptor).not.toContain(key)
+      expect(info).not.toHaveProperty('multipathExpansion')
+      // One address's own descriptor: one key, no range.
+      const single = (await smoke.getAddressInfo(addresses[1]!)).desc!
+      expect(await rpc.deriveAddresses(single)).toEqual([addresses[1]])
+      expect(await rpc.getDescriptorInfo(single)).toMatchObject({ isRange: false, hasPrivateKeys: false })
+      const [described, derived] = await rpc.batch([
+        requests.getDescriptorInfo(single),
+        requests.deriveAddresses(single),
+      ])
+      expect(described.ok && described.value.descriptor).toBe(single)
+      expect(derived.ok && derived.value).toEqual([addresses[1]])
+      // A multipath form: one descriptor per path, each with its own checksum.
+      const multipath = await rpc.getDescriptorInfo(desc.split('#')[0]!.replace('/0/*', '/<0;1>/*'))
+      expect(multipath.multipathExpansion).toHaveLength(2)
+      // What qbit Core refuses is refused before sending, for the same reasons.
+      await expect(rpc.deriveAddresses(desc)).rejects.toThrow(/range is required/)
+      expect(cliError('deriveaddresses', desc)).toMatch(/Range must be specified for a ranged descriptor/)
+      await expect(rpc.deriveAddresses(single, { range: 1 })).rejects.toThrow(/only for a ranged descriptor/)
+      expect(cliError('deriveaddresses', single, '1')).toMatch(/Range should not be specified/)
+      await expect(rpc.deriveAddresses(desc.split('#')[0]!, { range: 1 })).rejects.toThrow(/needs its checksum/)
+      expect(cliError('deriveaddresses', desc.split('#')[0]!, '1')).toMatch(/Missing checksum/)
+      await expect(rpc.deriveAddresses(desc, { range: [0, 1_000_000] })).rejects.toThrow(/at most 1,000,000/)
+      expect(cliError('deriveaddresses', desc, '[0,1000000]')).toMatch(/Range is too large/)
+    })
+
+    // qbit Core v1.0.0 creates a wallet with 16 keys a descriptor and derives the rest in
+    // the background from 30 s later: a refill before then derives them all, as the first
+    // unlock of an encrypted one does, which is past the client's 30 s on a loaded host.
+    it("refills a new wallet's keypool within the default deadline", { timeout: KEY_DERIVATION_TEST_MS }, async () => {
+      const rpc = await admin()
+      const name = 'admin-refilled'
+      await rpc.createWallet(name)
+      const wallet = await admin({ wallet: name })
+      const reader = client({ wallet: name, capabilities: ['wallet-read'] })
+      expect(await reader.getWalletInfo()).toMatchObject({ keypoolSize: 16, keypoolSizeHdInternal: 16 })
+      await wallet.keypoolRefill()
+      expect(await reader.getWalletInfo()).toMatchObject({ keypoolSize: 1000, keypoolSizeHdInternal: 1000 })
+      await wallet.keypoolRefill({ newSize: 1010 })
+      expect(await reader.getWalletInfo()).toMatchObject({ keypoolSize: 1010, keypoolSizeHdInternal: 1010 })
+      await expect(wallet.keypoolRefill({ newSize: 0 })).rejects.toThrow(RangeError)
+      await rpc.unloadWallet(name)
     })
   })
 })
