@@ -40,6 +40,8 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
+          # A release tag is checked against its release branch's history below.
+          fetch-depth: 0
 
       # Same pnpm and Node.js as ci.yml: pnpm from package.json `packageManager`,
       # Node.js from .nvmrc.
@@ -76,6 +78,23 @@ jobs:
           path: api-docs
           if-no-files-found: error
           retention-days: 30
+
+      # As publish.yml: a final tag vX.Y.Z deploys only from its release branch, release/X.Y.
+      - name: Check the tag is on its release branch
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-') && github.repository == 'Qbit-Org/qbit-rpc'
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          if ! [[ "$TAG" =~ ^v([0-9]+)\.([0-9]+)\.[0-9]+$ ]]; then
+            echo "::error::$TAG is not a final release tag vX.Y.Z"
+            exit 1
+          fi
+          branch="release/${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
+          git fetch --no-tags origin "+refs/heads/$branch:refs/remotes/origin/$branch"
+          if ! git merge-base --is-ancestor HEAD "refs/remotes/origin/$branch"; then
+            echo "::error::$TAG is not on $branch; the reference deploys only from release branches"
+            exit 1
+          fi
 
       # Uploaded here so the deploy job, which holds the Pages and OIDC
       # permissions, runs no repository or dependency code.

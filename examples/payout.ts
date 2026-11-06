@@ -8,8 +8,9 @@
 //   QBIT_COOKIE_FILE=<the node's .cookie> node payout.ts <request id> <address> <amount in QBT>
 //
 // See docs/rpc/payments.md. CI type-checks this file against the packed packages.
-import { mkdir, readdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { mkdir, open, readdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 
 import { parseQbt, QbitRpcClient, RpcError, RpcUnknownOutcomeError } from '@qbit-oss/rpc'
 
@@ -17,7 +18,7 @@ import { parseQbt, QbitRpcClient, RpcError, RpcUnknownOutcomeError } from '@qbit
 const FINAL = 6
 
 /** A signed payout, as stored before it is broadcast, under the id of the payment request it pays. */
-interface SignedPayout {
+export interface SignedPayout {
   readonly requestId: string
   readonly address: string
   readonly amountBits: bigint
@@ -25,10 +26,15 @@ interface SignedPayout {
   readonly hex: string
 }
 
-type PayoutState = 'signed' | 'confirmed' | 'conflicted'
+export type PayoutState = 'signed' | 'confirmed' | 'conflicted'
 
 /** Where payouts are kept: implement it over your database. */
-interface PayoutStore {
+export interface PayoutStore {
+  /**
+   * Claim a payment request before it is funded, once and atomically: false when another run claimed
+   * it, so two runs at once can never both pay it.
+   */
+  claim(requestId: string): Promise<boolean>
   /** The payout stored for a payment request, settled or not. */
   get(requestId: string): Promise<(SignedPayout & { readonly state: PayoutState }) | undefined>
   /** Store a signed payout. It must be durable once this resolves: a lost reply, or a crash, is reconciled from it. */
@@ -43,7 +49,7 @@ interface PayoutStore {
 }
 
 /** A {@link PayoutStore} in a directory, one JSON file per payment request: enough for this example. */
-function directoryStore(dir: string): PayoutStore {
+export function directoryStore(dir: string): PayoutStore {
   const file = (requestId: string): string => join(dir, `${encodeURIComponent(requestId)}.json`)
   type Stored = Omit<SignedPayout, 'amountBits'> & { readonly amountBits: string; readonly state: PayoutState }
   const parse = (stored: Stored): SignedPayout & { readonly state: PayoutState } => ({
@@ -58,6 +64,18 @@ function directoryStore(dir: string): PayoutStore {
     await rename(`${path}.tmp`, path)
   }
   return {
+    async claim(requestId) {
+      await mkdir(dir, { recursive: true })
+      // 'wx': created only if it does not exist yet, which the file system decides once.
+      const claimed = await open(`${file(requestId)}.claim`, 'wx').then(
+        handle => handle.close().then(() => true),
+        (error: unknown) => {
+          if ((error as { code?: unknown }).code === 'EEXIST') return false
+          throw error
+        }
+      )
+      return claimed
+    },
     async get(requestId) {
       const stored = await read(file(requestId)).catch(() => undefined)
       return stored === undefined ? undefined : parse(stored)
@@ -169,34 +187,45 @@ async function broadcast(
   }
 }
 
-const [requestId, address, amount] = process.argv.slice(2)
-const cookieFile = process.env.QBIT_COOKIE_FILE
-if (requestId === undefined || address === undefined || amount === undefined || cookieFile === undefined) {
-  throw new Error('usage: QBIT_COOKIE_FILE=<the node .cookie> node payout.ts <request id> <address> <amount in QBT>')
-}
-const amountBits = parseQbt(amount)
-const rpc = new QbitRpcClient({
-  url: 'http://127.0.0.1:48352/', // testnet4's RPC port
-  wallet: 'payouts',
-  auth: { cookieFile },
-  expectedChain: 'testnet4',
-  capabilities: ['wallet-read', 'wallet-write', 'broadcast'],
-})
-const store = directoryStore('payouts')
-
-await rpc.confirmChain() // wallet-write and broadcast calls are refused until this matches
-// First what an earlier run left: stored, and perhaps never sent (a crash, a lost reply).
-for (const payout of await store.unsettled()) console.log(payout.requestId, await reconcile(rpc, store, payout))
-// A request already paid, or being paid, is never funded again: the run above reconciled it.
-const existing = await store.get(requestId)
-if (existing !== undefined) {
-  if (existing.address !== address || existing.amountBits !== amountBits) {
-    throw new Error(`request ${requestId} is already stored for another address or amount: use a new request id`)
+async function main(): Promise<void> {
+  const [requestId, address, amount] = process.argv.slice(2)
+  const cookieFile = process.env.QBIT_COOKIE_FILE
+  if (requestId === undefined || address === undefined || amount === undefined || cookieFile === undefined) {
+    throw new Error('usage: QBIT_COOKIE_FILE=<the node .cookie> node payout.ts <request id> <address> <amount in QBT>')
   }
-  console.log(requestId, existing.txid, existing.state === 'signed' ? 'pending' : existing.state)
-} else {
-  // One payout at a time: two funded at once could pick the same coins.
-  const payout = await prepare(rpc, store, requestId, address, amountBits)
-  console.log(requestId, payout.txid, await broadcast(rpc, store, payout))
+  const amountBits = parseQbt(amount)
+  const rpc = new QbitRpcClient({
+    url: 'http://127.0.0.1:48352/', // testnet4's RPC port
+    wallet: 'payouts',
+    auth: { cookieFile },
+    expectedChain: 'testnet4',
+    capabilities: ['wallet-read', 'wallet-write', 'broadcast'],
+  })
+  const store = directoryStore('payouts')
+
+  await rpc.confirmChain() // wallet-write and broadcast calls are refused until this matches
+  // First what an earlier run left: stored, and perhaps never sent (a crash, a lost reply).
+  for (const payout of await store.unsettled()) console.log(payout.requestId, await reconcile(rpc, store, payout))
+  // A request already paid, or being paid, is never funded again: the run above reconciled it.
+  const existing = await store.get(requestId)
+  if (existing !== undefined) {
+    if (existing.address !== address || existing.amountBits !== amountBits) {
+      throw new Error(`request ${requestId} is already stored for another address or amount: use a new request id`)
+    }
+    console.log(requestId, existing.txid, existing.state === 'signed' ? 'pending' : existing.state)
+  } else {
+    // Claimed before funding: a second run of this request at the same time stops here.
+    if (!(await store.claim(requestId))) {
+      throw new Error(
+        `request ${requestId} is claimed but has no stored payout: another run is paying it, or one stopped before storing it. Check the wallet before removing its .claim file`
+      )
+    }
+    // One payout at a time: two funded at once could pick the same coins.
+    const payout = await prepare(rpc, store, requestId, address, amountBits)
+    console.log(requestId, payout.txid, await broadcast(rpc, store, payout))
+  }
+  rpc.close()
 }
-rpc.close()
+
+// Run when started as a program; a test imports the store without running it.
+if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) await main()
