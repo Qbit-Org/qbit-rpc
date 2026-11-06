@@ -874,6 +874,19 @@ properties only. The API report is unchanged.
   `RpcUnknownOutcomeError` copies `txids` by its own elements: a hole is a
   `TypeError`.
 
+### `rawTransactionTxid` written from public sources
+
+- `src/raw-tx.ts`, which computes the txid that names a broadcast in an
+  `RpcUnknownOutcomeError`, is rewritten from BIP 144's serialization and the
+  checks Bitcoin Core applies when it reads a transaction, which qbit Core
+  keeps. The earlier version was adapted from another project's code. The API
+  and behaviour are the same: undefined for hex that is not one whole
+  transaction, for a CompactSize in a longer form than needed, or for trailing
+  bytes; never a throw.
+- `raw-tx-vectors.test.ts` pins three txids: Bitcoin's genesis coinbase (the
+  legacy format) and, from qbit Core v1.0.0 on regtest, a coinbase and a P2MR
+  wallet spend (the extended format).
+
 ### Mining pools
 
 - The `mining` capability goes behind the chain guard; `Capability`, the
