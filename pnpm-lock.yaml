@@ -66,8 +66,8 @@ importers:
         specifier: ^5.0.5
         version: 5.0.5(@types/node@22.20.5)(vite@8.3.5(@types/node@22.20.5)(esbuild@0.27.7)(yaml@2.9.1))
       zeromq:
-        specifier: 6.5.0
-        version: 6.5.0
+        specifier: 6.8.0
+        version: 6.8.0
 
 packages:
 
@@ -1213,8 +1213,8 @@ packages:
     engines: {node: '>= 14.6'}
     hasBin: true
 
-  zeromq@6.5.0:
-    resolution: {integrity: sha512-vWOrt19lvcXTxu5tiHXfEGQuldSlU+qZn2TT+4EbRQzaciWGwNZ99QQTolQOmcwVgZLodv+1QfC6UZs2PX/6pQ==}
+  zeromq@6.8.0:
+    resolution: {integrity: sha512-0LBpwZKNn4e6YZRDuHVvzXsSHlCx6nTk2B0O9KWQ2vUe3lau7PYPcmnFpJfOwEUTNcKn39x4GgzVU+dQyIJnNg==}
     engines: {node: '>= 12'}
 
 snapshots:
@@ -2102,7 +2102,7 @@ snapshots:
 
   yaml@2.9.1: {}
 
-  zeromq@6.5.0:
+  zeromq@6.8.0:
     dependencies:
       cmake-ts: 1.0.2
       node-addon-api: 8.9.2
