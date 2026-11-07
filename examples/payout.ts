@@ -17,7 +17,14 @@ import { realpathSync } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
-import { parseQbt, QbitRpcClient, RpcError, RpcUnknownOutcomeError } from '@qbit-oss/rpc'
+import {
+  type JsonNumber,
+  type Outpoint,
+  parseQbt,
+  QbitRpcClient,
+  RpcError,
+  RpcUnknownOutcomeError,
+} from '@qbit-oss/rpc'
 
 /** Confirmations either way before a payout is settled for good: a shallow reorg can reverse fewer. */
 const FINAL = 6
@@ -31,8 +38,7 @@ export interface SignedPayout {
   readonly hex: string
 }
 
-/** `refused`: the node refused the stored transaction and the wallet does not know it, so it paid nothing; a person decides. */
-export type PayoutState = 'signed' | 'confirmed' | 'conflicted' | 'refused'
+export type PayoutState = 'signed' | 'confirmed' | 'conflicted'
 
 /** Where payouts are kept: implement it over your database. */
 export interface PayoutStore {
@@ -122,17 +128,32 @@ async function prepare(
     // Locked, so a run paying another request at the same time funds from other coins.
     options: { feeRateBitsPerKvB: 1_000n, changeType: 'p2mr', lockUnspents: true }, // 1 bit/vB
   })
-  // An exhausted PQC key signs nothing and raises no error, so count first what signing takes from each key.
-  const plan = await rpc.checkPqcSigning(funded.psbt) // PqcSigningError if a PQC key cannot sign each input it holds
-  for (const warning of plan.warnings) console.warn(warning) // a critical key: move its coins on now
-  // Each signature counts against its key's budget, broadcast or not: never sign the same payout twice.
-  const signed = await rpc.walletProcessPsbt(funded.psbt) // checks again first, by default
-  if (!signed.complete || signed.hex === undefined) throw new Error('the wallet did not sign every input')
-  const [preflight] = await rpc.testMempoolAccept([signed.hex])
-  if (preflight?.allowed !== true) throw new Error(`the mempool would refuse it: ${preflight?.rejectReason}`)
-  const payout = { requestId, address, amountBits, txid: preflight.txid, hex: signed.hex }
+  const inputs = await fundedInputs(rpc, funded.psbt)
+  let payout: SignedPayout
+  try {
+    // An exhausted PQC key signs nothing and raises no error, so count first what signing takes from each key.
+    const plan = await rpc.checkPqcSigning(funded.psbt) // PqcSigningError if a PQC key cannot sign each input it holds
+    for (const warning of plan.warnings) console.warn(warning) // a critical key: move its coins on now
+    // Each signature counts against its key's budget, broadcast or not: never sign the same payout twice.
+    const signed = await rpc.walletProcessPsbt(funded.psbt) // checks again first, by default
+    if (!signed.complete || signed.hex === undefined) throw new Error('the wallet did not sign every input')
+    const [preflight] = await rpc.testMempoolAccept([signed.hex])
+    if (preflight?.allowed !== true) throw new Error(`the mempool would refuse it: ${preflight?.rejectReason}`)
+    payout = { requestId, address, amountBits, txid: preflight.txid, hex: signed.hex }
+  } catch (error) {
+    // Nothing was stored, so nothing will spend these coins: give them back to coin selection.
+    await rpc.unlockUnspent(inputs).catch((unlock: unknown) => console.error('coins left locked:', unlock))
+    throw error
+  }
+  // If storing fails, the record may or may not be there: the coins stay locked, until the node restarts.
   await store.saveSigned(payout)
   return payout
+}
+
+/** The coins a funded PSBT spends, which `lockUnspents` locked. `call` returns the node's answer unvalidated. */
+async function fundedInputs(rpc: QbitRpcClient, psbt: string): Promise<Outpoint[]> {
+  const decoded = (await rpc.call('decodepsbt', [psbt])) as { tx: { vin: { txid: string; vout: JsonNumber }[] } }
+  return decoded.tx.vin.map(input => ({ txid: input.txid, vout: input.vout.toSafeInteger() }))
 }
 
 /**
@@ -167,13 +188,13 @@ async function reconcile(
   })
   if (known === undefined) {
     const refusal = await resend(rpc, payout)
-    if (refusal === undefined) return 'pending'
-    // The wallet never had it and the node will not take it: it paid nothing, and is not tried again.
-    console.error(
-      `${payout.requestId}: ${payout.txid} refused (${refusal.message}): check before paying this request another way`
-    )
-    await store.settle(payout.requestId, 'refused')
-    return 'refused'
+    // A refusal does not show it paid nothing: -27 is a transaction already mined (a wallet restored
+    // without a rescan), and -26 may pass once fees fall. So it stays signed, is tried again on every
+    // run, and a person checks it.
+    if (refusal !== undefined) {
+      console.error(`${payout.requestId}: ${payout.txid} refused (${refusal.message}), tried again next run`)
+    }
+    return 'pending'
   }
   if (known.confirmations >= FINAL) {
     await store.settle(payout.requestId, 'confirmed')
@@ -226,6 +247,8 @@ async function main(): Promise<void> {
   if (requestId === undefined || address === undefined || amount === undefined || cookieFile === undefined) {
     throw new Error('usage: QBIT_COOKIE_FILE=<the node .cookie> node payout.ts <request id> <address> <amount in QBT>')
   }
+  // Kept short enough that its file names (the id in hex, plus a suffix) fit a 255-byte name.
+  if (Buffer.byteLength(requestId, 'utf8') > 100) throw new Error('a request id is at most 100 bytes')
   const amountBits = parseQbt(amount)
   const rpc = new QbitRpcClient({
     url: 'http://127.0.0.1:48352/', // testnet4's RPC port
@@ -259,7 +282,6 @@ async function main(): Promise<void> {
         `request ${requestId} is claimed but has no stored payout: another run is paying it, or one stopped before storing it. Check the wallet before removing its .claim file`
       )
     }
-    // One payout at a time: two funded at once could pick the same coins.
     const payout = await prepare(rpc, store, requestId, address, amountBits)
     console.log(requestId, payout.txid, await broadcast(rpc, store, payout))
   }

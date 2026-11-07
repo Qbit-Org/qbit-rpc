@@ -18,7 +18,7 @@ interface Store {
   get(requestId: string): Promise<(Payout & { readonly state: string }) | undefined>
   saveSigned(payout: Payout): Promise<void>
   unsettled(): Promise<Payout[]>
-  settle(requestId: string, outcome: 'confirmed' | 'conflicted' | 'refused'): Promise<void>
+  settle(requestId: string, outcome: 'confirmed' | 'conflicted'): Promise<void>
 }
 const EXAMPLE: string = new URL('../../../examples/payout.ts', import.meta.url).href
 const { directoryStore } = (await import(EXAMPLE)) as { directoryStore: (dir: string) => Store }
