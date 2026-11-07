@@ -19,6 +19,7 @@ import {
   hostOf,
   MAX_DURATION_MS,
   soakFailures,
+  uncoveredBlocks,
 } from './network-verification.mjs'
 
 const { parseQbt } = await import(new URL('../packages/rpc/lib/index.mjs', import.meta.url))
@@ -249,10 +250,22 @@ describe('hideAll and hostOf', () => {
     )
     assert.equal(hideAll('nothing to hide', [undefined, '']), 'nothing to hide')
   })
+  it('hides whole tokens only, in one pass, so other text and the placeholder stay whole', () => {
+    // A host that is a word of the placeholder does not rewrite it.
+    assert.equal(hideAll('node refused', ['node', 'address']), '<node address> refused')
+    // An address inside a longer one is not one.
+    assert.equal(hideAll('from 11.2.3.45 and 1.2.3.4', ['1.2.3.4']), 'from 11.2.3.45 and <node address>')
+    // At the end of a sentence, and before a port, it is still hidden.
+    assert.equal(
+      hideAll('refused by node.example.com. Then node.example.com:8332', ['node.example.com']),
+      'refused by <node address>. Then <node address>:8332'
+    )
+    assert.equal(hideAll('a [special] host', ['[special]']), 'a <node address> host')
+  })
 })
 
 describe('soakFailures', () => {
-  const quiet = { messages: 10, malformed: 0, unknown: 0, unannounced: 0, hashblockMissed: 0, hashblockUnsizedGaps: 0 }
+  const quiet = { messages: 10, malformed: 0, unknown: 0, uncovered: 0, hashblockMissed: 0 }
   it('passes a soak where every block had a hashblock', () => {
     assert.deepEqual(soakFailures(quiet), [])
   })
@@ -260,11 +273,26 @@ describe('soakFailures', () => {
     assert.match(soakFailures({ ...quiet, messages: 0 })[0], /no ZMQ message arrived/)
   })
   it('lets only hashblock gaps account for blocks without a hashblock', () => {
-    assert.equal(soakFailures({ ...quiet, unannounced: 2, hashblockMissed: 2 }).length, 0)
-    assert.match(soakFailures({ ...quiet, unannounced: 3, hashblockMissed: 2 })[0], /hashblock gaps account for 2/)
-    // A gap on another topic is not counted at all; a restart's gap, of unknown size, covers any number.
-    assert.equal(soakFailures({ ...quiet, unannounced: 3 }).length, 1)
-    assert.equal(soakFailures({ ...quiet, unannounced: 3, hashblockUnsizedGaps: 1 }).length, 0)
+    assert.equal(soakFailures({ ...quiet, uncovered: 2, hashblockMissed: 2 }).length, 0)
+    assert.match(soakFailures({ ...quiet, uncovered: 3, hashblockMissed: 2 })[0], /hashblock gaps account for 2/)
+    // A gap on another topic is not counted at all.
+    assert.equal(soakFailures({ ...quiet, uncovered: 3 }).length, 1)
+  })
+  it('keeps the check on after a gap: an unsized one covers only the blocks while blind', () => {
+    // Blind from block 100 (the last announced) to 103 (the next hashblock): a restart.
+    const restart = [{ from: 100, to: 103 }]
+    assert.equal(uncoveredBlocks([101, 102], restart), 0)
+    // A block missed later in the soak is still found, after one unsized gap...
+    assert.equal(uncoveredBlocks([101, 102, 150], restart), 1)
+    assert.equal(soakFailures({ ...quiet, uncovered: uncoveredBlocks([101, 102, 150], restart) }).length, 1)
+    // ...and after one sized gap, which covers its count and no more.
+    assert.equal(soakFailures({ ...quiet, uncovered: uncoveredBlocks([150, 151], []), hashblockMissed: 1 }).length, 1)
+    assert.equal(uncoveredBlocks([100, 104], restart), 2)
+  })
+  it('passes a late restart whose blocks no hashblock followed: blind to the end of the soak', () => {
+    // A reconnect after block 200, a block found while qbitd was down, and the soak ended at 201.
+    assert.equal(uncoveredBlocks([201], [{ from: 200, to: 201 }]), 0)
+    assert.deepEqual(soakFailures({ ...quiet, uncovered: uncoveredBlocks([201], [{ from: 200, to: 201 }]) }), [])
   })
   it('fails a soak where blocks arrived but a topic stayed silent', () => {
     const counts = { hashblock: 3, hashtx: 5, rawblock: 0, rawtx: 5, sequence: 9 }

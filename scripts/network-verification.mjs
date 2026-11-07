@@ -67,11 +67,12 @@ export const MAX_DURATION_MS = 24 * 24 * UNITS.h
  * node. Longer values first, so a URL is hidden whole before its host.
  */
 export function hideAll(text, hidden) {
-  let out = String(text)
-  for (const value of [...hidden].filter(v => typeof v === 'string' && v !== '').sort((a, b) => b.length - a.length)) {
-    out = out.split(value).join('<node address>')
-  }
-  return out
+  const values = [...new Set(hidden)].filter(v => typeof v === 'string' && v !== '').sort((a, b) => b.length - a.length)
+  if (values.length === 0) return String(text)
+  // Whole tokens only, so 1.2.3.4 leaves 11.2.3.45 alone, and in one pass, so a placeholder is never
+  // rewritten by a shorter value. A dot may follow: a host ends a sentence, or names a parent domain.
+  const pattern = values.map(v => v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')
+  return String(text).replace(new RegExp(`(?<![\\w-])(?:${pattern})(?![\\w-])`, 'g'), '<node address>')
 }
 
 /** A URL's host name, or undefined when it does not parse. */
@@ -85,10 +86,20 @@ export function hostOf(url) {
 }
 
 /**
+ * How many of `heights`, blocks no `hashblock` announced, fall outside every
+ * window `{ from, to }`: above `from` and at most `to`, where the subscriber
+ * was blind after a reconnect or a `hashblock` gap of unknown size.
+ */
+export function uncoveredBlocks(heights, windows) {
+  return heights.filter(height => !windows.some(({ from, to }) => height > from && height <= to)).length
+}
+
+/**
  * Why a ZMQ soak failed, if it did. Each new block must have had a
  * `hashblock`, or fall in a `hashblock` gap: one that says how many it
  * skipped covers that many, and one that cannot (a publisher restart, its
- * counter begun again) covers any number. Gaps on other topics cover none.
+ * counter begun again) covers only the blocks while it was blind, which
+ * `uncoveredBlocks` leaves out of `uncovered`. Gaps on other topics cover none.
  * And something must have arrived at all, and once blocks arrived, something
  * on every topic: each block publishes on all of them.
  */
@@ -96,9 +107,8 @@ export function soakFailures({
   messages,
   malformed,
   unknown,
-  unannounced,
+  uncovered,
   hashblockMissed,
-  hashblockUnsizedGaps,
   counts = {},
   blocksSeen = 0,
 }) {
@@ -113,8 +123,10 @@ export function soakFailures({
   }
   if (malformed > 0) failures.push(`${malformed} malformed ZMQ messages`)
   if (unknown > 0) failures.push(`${unknown} hashblock messages named a block the node does not know`)
-  if (unannounced > hashblockMissed && hashblockUnsizedGaps === 0) {
-    failures.push(`${unannounced} new blocks had no hashblock, and hashblock gaps account for ${hashblockMissed}`)
+  if (uncovered > hashblockMissed) {
+    failures.push(
+      `${uncovered} new blocks had no hashblock outside a reconnect, and hashblock gaps account for ${hashblockMissed}`
+    )
   }
   return failures
 }

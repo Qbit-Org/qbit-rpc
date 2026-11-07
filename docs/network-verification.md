@@ -151,7 +151,10 @@ corepack pnpm verify:network zmq --duration 24h --interval 60s
 It counts each topic's messages, gaps, malformed messages and reconnects,
 looks up each `hashblock` with `getblockheader`, and at the end walks the
 chain back from the tip to where it started, counting blocks that no
-`hashblock` announced (each must fall in a reported gap). It samples
+`hashblock` announced. Each must fall in a reported gap: one that says how many it skipped
+covers that many, and a reconnect or a gap of unknown size covers only the
+blocks from the last one announced to the next `hashblock`, or to the end of
+the soak when none came. It samples
 `health()` every minute and records the largest `rawblock` against
 `maxMessageSize` (2,065,536 bytes). During the soak, restart qbitd once
 (`qbit-cli stop`, then start it): the report must show a reconnect, `unknown`
