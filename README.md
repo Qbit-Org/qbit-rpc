@@ -81,6 +81,10 @@ can break and a patch cannot, apart from the behaviour changes
 - [`docs/`](docs/README.md): configuration, methods, capabilities, the chain
   guard, errors, remote nodes, payments, wallets, mining, ZMQ health and
   connection handling, packaging and limits
+- [API reference](https://qbit-org.github.io/qbit-rpc/): every export and member of both
+  packages, with its doc comment ([where it is published](docs/README.md#api-reference))
+- [`examples/`](examples/README.md): a payout, a deposit watcher and a header
+  walk, which CI compiles against the packed packages
 - [CHANGELOG.md](CHANGELOG.md): changes, breaking ones included, for both
   packages
 

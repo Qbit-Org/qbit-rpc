@@ -110,6 +110,11 @@ The full list is in
 - [Documentation](https://github.com/Qbit-Org/qbit-rpc/blob/main/docs/zmq/README.md)
   and the [API report](https://github.com/Qbit-Org/qbit-rpc/blob/main/packages/zmq/etc/zmq.api.md),
   every export and its declaration
+- [API reference](https://qbit-org.github.io/qbit-rpc/): every export and member, with its
+  doc comment
+- [A deposit watcher](https://github.com/Qbit-Org/qbit-rpc/blob/main/examples/deposit-watcher.ts)
+  that wakes on ZMQ and reads over RPC, which CI compiles against the packed
+  package
 - [Changelog](https://github.com/Qbit-Org/qbit-rpc/blob/main/CHANGELOG.md),
   shared with `@qbit-oss/rpc`
 - [Security](https://github.com/Qbit-Org/qbit-rpc/blob/main/SECURITY.md): the

@@ -367,8 +367,9 @@ a dry run of that branch's version. It has four jobs:
    --dry-run` on each.
 4. `publish` runs after all three, only for a pushed tag, in the `npm`
    environment, so it starts only once a required reviewer approves it. It is
-   the only job that can request the OIDC token for trusted publishing or read
-   `NPM_TOKEN`, and it checks out nothing, installs nothing and runs no
+   the only job here that can request the OIDC token for trusted publishing
+   or read `NPM_TOKEN` (the only other job with `id-token` is the API
+   reference's Pages deploy, below), and it checks out nothing, installs nothing and runs no
    repository or dependency code. It downloads the artifact by ID, checks the
    tarballs against the pushed tag and `build`'s sums (so they are the bytes
    `tarballs` checked), and runs `npm publish <tarball> --provenance --access
@@ -417,6 +418,21 @@ nothing if that file was edited. The approver checks, against their own
 - [ ] `build`, `smoke` and `tarballs` passed.
 
 If any item fails, reject the deployment; nothing is published.
+
+## The API reference on GitHub Pages
+
+The API reference is deployed by `.github/workflows/docs.yml` from final
+release tags only (`v*` without a pre-release suffix), so the published
+reference is the latest release's. Its deploy job is the only job besides
+`publish` with `id-token: write`. Once, by a repository admin:
+
+- **Settings → Pages → Build and deployment → Source:** "GitHub Actions".
+- **Settings → Environments → `github-pages` → Deployment branches and
+  tags:** allow the tag rule `v*`, so a release tag may deploy. GitHub creates
+  the environment when Pages is enabled; add the rule there.
+
+Until then the deploy job fails at its first release tag, and the reference's
+links answer 404.
 
 ## Who can approve a release
 

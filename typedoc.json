@@ -1,0 +1,30 @@
+{
+  "$schema": "https://typedoc.org/schema.json",
+  "name": "qbit-rpc",
+  "entryPointStrategy": "packages",
+  "entryPoints": ["packages/rpc", "packages/zmq"],
+  // Packages do not inherit the root options. notExported and notDocumented
+  // run on each package as it is converted (packageOptions), invalidLink on the
+  // merged project (the root validation).
+  "packageOptions": {
+    // Each package's one entry point, its `exports` ".": scripts/check-pack.mjs
+    // fails a tarball with any other.
+    "entryPoints": ["src/index.ts"],
+    "validation": {
+      "notExported": true,
+      "invalidLink": true,
+      "notDocumented": true
+    }
+  },
+  "validation": {
+    "notExported": true,
+    "invalidLink": true,
+    "notDocumented": true
+  },
+  // The index lists the two packages, each page with its package README. The
+  // root README's relative links would be copied in as raw files.
+  "readme": "none",
+  // Any validation warning fails `pnpm docs:api`.
+  "treatWarningsAsErrors": true,
+  "out": "api-docs"
+}

@@ -65,7 +65,7 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile --config.engine-strict=true
 
-      # format:check, build, api:check, test, test:release, test:scripts,
+      # format:check, build, api:check, docs:api, test, test:release, test:scripts,
       # typecheck, typecheck:test, pack:check and consumer:check, stopping at
       # the first failure. On a release branch, or a pull request into one,
       # pack:check runs in its release mode for that branch (both packages at

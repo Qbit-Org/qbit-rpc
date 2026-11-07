@@ -11,9 +11,13 @@ import {
 
 /** The part of a ZeroMQ SUB socket the subscriber uses. `zeromq`'s `Subscriber` satisfies it. */
 export interface ZmqSocket {
+  /** Connect to the publisher at `url`. */
   connect(url: string): void
+  /** Subscribe to the messages whose topic starts with `topic`. */
   subscribe(topic: string): void
+  /** The next message's frames. */
   receive(): Promise<readonly Uint8Array[]>
+  /** Close the socket: a pending `receive()` rejects. */
   close(): void
   /**
    * Socket events (`zeromq`'s observer). When present, the subscriber replaces
@@ -25,9 +29,13 @@ export interface ZmqSocket {
    * `events` emits all three, as `zeromq`'s does; for one that never emits
    * `handshake`, the first message counts as one.
    */
-  readonly events?: { on(type: 'disconnect' | 'close' | 'handshake', listener: () => void): unknown }
+  readonly events?: {
+    /** Call `listener` on each event of `type`. */
+    on(type: 'disconnect' | 'close' | 'handshake', listener: () => void): unknown
+  }
 }
 
+/** What a socket must apply: what {@link ZmqSocketFactory} receives, and {@link createZeromqSocket} takes. */
 export interface ZmqSocketSettings {
   /** Largest inbound message part, in bytes; libzmq disconnects a peer that sends more. */
   readonly maxMessageSize: number
@@ -117,6 +125,7 @@ export const DEFAULT_HEARTBEAT_TTL_MS = 30_000
  */
 const HANDSHAKE_WITHOUT_HEARTBEATS_MS = 30_000
 
+/** The options of a {@link QbitZmqSubscriber}, checked at construction: a bad one is a `TypeError` or a `RangeError`. */
 export interface QbitZmqSubscriberOptions {
   /**
    * The publisher address: `tcp://<host>:<port>`, with an IPv4 address, a
@@ -215,7 +224,8 @@ export interface QbitZmqSubscriberOptions {
  * failed with, passed on as it is. The subscriber adds none of its own, so this
  * lists what `zeromq` and libzmq raise from the calls it makes on a SUB socket,
  * and stays open for anything else, such as a custom `socketFactory`'s error.
- * {@link https://github.com/Qbit-Org/qbit-rpc/blob/main/docs/zmq/errors.md | Errors} says what each means.
+ * [Errors](https://github.com/Qbit-Org/qbit-rpc/blob/main/docs/zmq/errors.md)
+ * says what each means.
  */
 export type ZmqReconnectCode =
   | 'EAGAIN'
@@ -233,7 +243,9 @@ export type ZmqReconnectCode =
 /** What the subscriber yields. */
 export type ZmqEvent =
   | {
+      /** A message, parsed. */
       readonly kind: 'message'
+      /** The message. */
       readonly message: ZmqMessage
       /**
        * Local receipt time (`Date.now()`), not a node timestamp: a wall-clock
@@ -241,10 +253,20 @@ export type ZmqEvent =
        */
       readonly receivedAt: number
     }
-  | ({ readonly kind: 'gap' } & SequenceGap)
-  | { readonly kind: 'malformed'; readonly error: ZmqFrameError }
+  | ({
+      /** A topic's counter broke: messages were lost, or the publisher restarted. Reconcile over RPC. */
+      readonly kind: 'gap'
+    } & SequenceGap)
   | {
+      /** A message that does not parse; the subscriber goes on to the next. */
+      readonly kind: 'malformed'
+      /** Why it does not parse. */
+      readonly error: ZmqFrameError
+    }
+  | {
+      /** The socket was replaced; messages published meanwhile are lost. */
       readonly kind: 'reconnect'
+      /** How many times this iteration has replaced the socket, this time included. */
       readonly attempt: number
       /**
        * `disconnected`: a connection to the publisher dropped after its
@@ -274,7 +296,9 @@ export type ZmqEvent =
  */
 export type ZmqHealthStatus = 'unknown' | 'receiving' | 'stale' | 'closed'
 
+/** What {@link QbitZmqSubscriber.health} reports: the status and the counts since construction. */
 export interface ZmqHealth {
+  /** Whether messages are arriving; see {@link ZmqHealthStatus}. */
   readonly status: ZmqHealthStatus
   /**
    * Local receipt time (`Date.now()`) of the last valid message, if any: a
@@ -283,9 +307,13 @@ export interface ZmqHealth {
    * is not the message's age.
    */
   readonly lastMessageAt?: number
+  /** `message` events yielded. */
   readonly messages: number
+  /** `gap` events yielded. */
   readonly gaps: number
+  /** `malformed` events yielded. */
   readonly malformed: number
+  /** `reconnect` events yielded. */
   readonly reconnects: number
 }
 
@@ -308,6 +336,7 @@ export type ZmqSetupErrorCode = 'module_load' | 'invalid_address' | 'unsupported
  * closed. `cause` is the original error, when there was one.
  */
 export class ZmqSetupError extends Error {
+  /** What cannot work; see {@link ZmqSetupErrorCode}. */
   readonly code: ZmqSetupErrorCode
 
   constructor(code: ZmqSetupErrorCode, message: string, options?: { cause?: unknown }) {
@@ -612,6 +641,11 @@ export class QbitZmqSubscriber implements AsyncIterable<ZmqEvent> {
     this.#wake?.()
   }
 
+  /**
+   * Connect, subscribe and yield each event until `close()`, or until a
+   * {@link ZmqSetupError} ends the iteration. One consumer at a time: a second
+   * iteration while one runs throws.
+   */
   async *[Symbol.asyncIterator](): AsyncGenerator<ZmqEvent, void, undefined> {
     if (this.#running) throw new Error('QbitZmqSubscriber already has a consumer')
     this.#running = true

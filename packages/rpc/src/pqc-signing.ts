@@ -21,6 +21,7 @@ const R = 'result'
 
 /** One of the wallet's PQC keys a PSBT needs signatures from, as `checkPqcSigning` counts them. */
 export interface PqcSigningKey {
+  /** The PQC public key, as hex. */
   readonly pubkey: string
   /** The addresses of the PSBT's inputs that hold the key, each once, in input order. */
   readonly addresses: readonly string[]

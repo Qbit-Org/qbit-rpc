@@ -40,7 +40,9 @@ import {
  * method build and send it.
  */
 export interface RpcRequest<T> {
+  /** The JSON-RPC method name. */
   readonly method: string
+  /** The positional parameters, as they will be sent. */
   readonly params: readonly unknown[]
   /**
    * Validates the raw result (numbers as `JsonNumber`) and converts it,
@@ -209,43 +211,76 @@ export interface BlockchainInfo {
    * chain guard compares it with `expectedChain`.
    */
   readonly chain: QbitChain | (string & {})
+  /** Height of the most-work fully validated chain; the genesis block is 0. */
   readonly blocks: number
+  /** Height of the most-work header chain the node has validated. */
   readonly headers: number
+  /** Hash of the active chain's tip. */
   readonly bestBlockHash: string
   /** Compact target, 8 hex characters. */
   readonly bits: string
+  /** The tip's difficulty target, 64 hex characters. */
   readonly target: string
+  /** The tip's difficulty. */
   readonly difficulty: number
+  /** The tip's block time, in UNIX epoch seconds. */
   readonly time: number
+  /** Median time of the tip and the 10 blocks before it, in UNIX epoch seconds. */
   readonly medianTime: number
   /** Estimated verification progress, 0 to 1. */
   readonly verificationProgress: number
+  /** Whether the node estimates it is in initial block download. */
   readonly initialBlockDownload: boolean
+  /** Total work in the active chain, 64 hex characters. */
   readonly chainwork: string
+  /** Estimated size of the block and undo files on disk, in bytes. */
   readonly sizeOnDisk: number
+  /** Whether the node prunes old blocks. */
   readonly pruned: boolean
+  /** Height of the last block pruned, plus one. Only when pruning. */
   readonly pruneHeight?: number
+  /** Whether pruning runs automatically. Only when pruning. */
   readonly automaticPruning?: boolean
+  /** Target size of the block and undo files, in bytes. Only with automatic pruning. */
   readonly pruneTargetSize?: number
+  /** The block challenge (block script), as hex. Only on a signet. */
   readonly signetChallenge?: string
+  /** The activation state of P2MR validation-weight v2. */
   readonly p2mrValidationWeight: {
+    /** Validation weight debited per P2MR signature operation before v2. */
     readonly legacyPerSigop: number
+    /** Validation weight debited per P2MR signature operation under v2. */
     readonly v2PerSigop: number
+    /** The first block that uses v2. */
     readonly activationHeight: number
+    /** Whether v2 applies to the tip. */
     readonly activeForTip: boolean
+    /** Whether v2 applies to the next block. */
     readonly activeForNextBlock: boolean
+    /** Blocks until v2 activates, counted from the next block. */
     readonly blocksRemaining: number
   }
+  /** The activation state of qbit's v2 future block-time limit, and the next block's timestamp bounds. */
   readonly futureBlockTime: {
+    /** How far in the future a block time may be before v2, in seconds. */
     readonly legacyLimitSeconds: number
+    /** How far in the future a block time may be under v2, in seconds. */
     readonly v2LimitSeconds: number
+    /** The first block that uses the v2 limit. */
     readonly activationHeight: number
+    /** Whether the v2 limit applies to the tip. */
     readonly activeForTip: boolean
+    /** Whether the v2 limit applies to the next block. */
     readonly activeForNextBlock: boolean
+    /** The future block-time limit that applies to the tip, in seconds. */
     readonly tipLimitSeconds: number
+    /** The future block-time limit that applies to the next block, in seconds. */
     readonly nextBlockLimitSeconds: number
+    /** Blocks until the v2 limit activates, counted from the next block. */
     readonly blocksRemaining: number
+    /** The earliest valid timestamp for the next block, in UNIX epoch seconds. */
     readonly nextBlockMinTime: number
+    /** The latest valid timestamp for the next block at the node's current time, in UNIX epoch seconds. */
     readonly nextBlockMaxTime: number
     /** Negative when no valid timestamp is currently available for the next block. */
     readonly nextBlockTimeHeadroomSeconds: number
@@ -306,30 +341,55 @@ function parseBlockchainInfo(value: unknown): BlockchainInfo {
 
 /** `getnetworkinfo`. Fields qbit Core only reports with networking or a mempool running are optional. */
 export interface NetworkInfo {
+  /** The node's version as a number, such as 10000 for 1.0.0. */
   readonly version: number
+  /** The node's user agent, such as `/qbit:1.0.0/`. */
   readonly subversion: string
+  /** The P2P protocol version. */
   readonly protocolVersion: number
   /** Service flags, 16 hex characters. */
   readonly localServices?: string
   /** For example `NETWORK`, `WITNESS`, `NODE_ARCHIVE`, `NODE_WITNESS_PRUNED`. */
   readonly localServicesNames?: readonly string[]
+  /** Whether the node asks its peers to relay transactions. */
   readonly localRelay?: boolean
+  /** The node's time offset from its peers, in seconds. */
   readonly timeOffset?: number
+  /** Whether P2P networking is enabled. */
   readonly networkActive?: boolean
+  /** The number of peer connections. */
   readonly connections?: number
+  /** The number of inbound peer connections. */
   readonly connectionsIn?: number
+  /** The number of outbound peer connections. */
   readonly connectionsOut?: number
+  /** Each network the node knows (`ipv4`, `ipv6`, `onion`, `i2p`, `cjdns`). */
   readonly networks: readonly {
+    /** The network: `ipv4`, `ipv6`, `onion`, `i2p` or `cjdns`. */
     readonly name: string
+    /** Whether `-onlynet` leaves this network out. */
     readonly limited: boolean
+    /** Whether the network is reachable. */
     readonly reachable: boolean
+    /** The proxy used for this network, as `host:port`, or empty for none. */
     readonly proxy: string
+    /** Whether the proxy is given randomized credentials. */
     readonly proxyRandomizeCredentials: boolean
   }[]
   /** Minimum relay fee rate in bits per 1,000 vbytes. */
   readonly relayFeeBitsPerKvB?: bigint
+  /** The smallest fee-rate increase for mempool limiting or replacement, in bits per 1,000 vbytes. */
   readonly incrementalFeeBitsPerKvB?: bigint
-  readonly localAddresses: readonly { readonly address: string; readonly port: number; readonly score: number }[]
+  /** The addresses the node advertises to its peers. */
+  readonly localAddresses: readonly {
+    /** The network address. */
+    readonly address: string
+    /** The port. */
+    readonly port: number
+    /** The address's relative score. */
+    readonly score: number
+  }[]
+  /** Network and chain warnings; a single string under `-deprecatedrpc=warnings` becomes a one-element array. */
   readonly warnings: readonly string[]
 }
 
@@ -379,24 +439,37 @@ function parseNetworkInfo(value: unknown): NetworkInfo {
 
 /** `getblockheader` with `verbose=true`. */
 export interface BlockHeader {
+  /** The block hash, the one requested. */
   readonly hash: string
   /** -1 when the block is not on the active chain. */
   readonly confirmations: number
+  /** The block's height. */
   readonly height: number
+  /** The block version. */
   readonly version: number
   /** `version` as 8 hex characters. */
   readonly versionHex: string
+  /** The merkle root of the block's transactions. */
   readonly merkleRoot: string
+  /** The block time, in UNIX epoch seconds. */
   readonly time: number
+  /** Median time of this block and the 10 before it, in UNIX epoch seconds. */
   readonly medianTime: number
+  /** The header nonce. */
   readonly nonce: number
+  /** Compact target, 8 hex characters. */
   readonly bits: string
+  /** The difficulty target, 64 hex characters. */
   readonly target: string
+  /** The block's difficulty. */
   readonly difficulty: number
+  /** Total work in the chain up to and including this block, 64 hex characters. */
   readonly chainwork: string
+  /** The number of transactions in the block. */
   readonly nTx: number
   /** Absent only for the genesis block. */
   readonly previousBlockHash?: string
+  /** The next block on the active chain; absent for the tip and for a block off it. */
   readonly nextBlockHash?: string
 }
 
@@ -436,50 +509,85 @@ function parseBlockHeader(requestedHash: string): (value: unknown) => BlockHeade
 
 /** A decoded transaction, as `getrawtransaction` with verbosity 1 returns it. */
 export interface DecodedTransaction {
+  /** The transaction id, the one requested. */
   readonly txid: string
   /** The witness txid (wtxid). */
   readonly hash: string
+  /** The transaction version. */
   readonly version: number
+  /** The serialized size, in bytes. */
   readonly size: number
+  /** The virtual size, in vbytes. */
   readonly vsize: number
+  /** The weight; qbit counts witness data in full. */
   readonly weight: number
+  /** The lock time. */
   readonly locktime: number
+  /** The inputs. */
   readonly vin: readonly TransactionInput[]
+  /** The outputs, in order. */
   readonly vout: readonly TransactionOutput[]
+  /** The serialized transaction, as hex. */
   readonly hex: string
+  /** The block holding the transaction; absent while it is in the mempool. */
   readonly blockHash?: string
+  /** Its confirmations; absent while it is in the mempool. */
   readonly confirmations?: number
+  /** The block time of the block holding it, in UNIX epoch seconds. */
   readonly blockTime?: number
+  /** The same as `blockTime`. */
   readonly time?: number
   /** Only present when a block hash was passed. */
   readonly inActiveChain?: boolean
 }
 
+/** A transaction input, decoded: a coinbase input, or one that spends an output. */
 export type TransactionInput =
   | {
+      /** The coinbase input's script, as hex. */
       readonly coinbase: string
+      /** The input's witness stack, each item as hex. */
       readonly txinwitness?: readonly string[]
+      /** The input's sequence number. */
       readonly sequence: number
     }
   | {
+      /** The txid of the output spent. */
       readonly txid: string
+      /** The index of the output spent. */
       readonly vout: number
-      readonly scriptSig: { readonly asm: string; readonly hex: string }
+      /** The signature script. */
+      readonly scriptSig: {
+        /** The script, disassembled. */
+        readonly asm: string
+        /** The script, as hex. */
+        readonly hex: string
+      }
+      /** The input's witness stack, each item as hex. */
       readonly txinwitness?: readonly string[]
+      /** The input's sequence number. */
       readonly sequence: number
     }
 
+/** A transaction output, decoded. */
 export interface TransactionOutput {
+  /** The output's value, in bits. */
   readonly valueBits: bigint
+  /** The output's index in the transaction. */
   readonly n: number
+  /** The output script, decoded. */
   readonly scriptPubKey: ScriptPubKey
 }
 
 /** A decoded output script, as `getrawtransaction` and `gettxout` report it. */
 export interface ScriptPubKey {
+  /** The script, disassembled. */
   readonly asm: string
+  /** The descriptor inferred for the output. */
   readonly desc: string
+  /** The script, as hex. */
   readonly hex: string
+  /** The address the script pays, when it has one. */
   readonly address?: string
   /** Output type, for example `witness_v2_p2mr` or `nulldata`. */
   readonly type: string
@@ -572,8 +680,11 @@ export interface BlockTransaction extends Omit<
 
 /** `getblock` with verbosity 1: the header's fields, the block's sizes and its txids. */
 export interface Block extends BlockHeader {
+  /** The block's size without witness data, in bytes. */
   readonly strippedSize: number
+  /** The block's size, in bytes. */
   readonly size: number
+  /** The block's weight. */
   readonly weight: number
   /** The block's txids, the coinbase first. */
   readonly tx: readonly string[]
@@ -581,6 +692,7 @@ export interface Block extends BlockHeader {
 
 /** `getblock` with verbosity 2: as {@link Block}, with each transaction decoded. */
 export interface BlockWithTransactions extends Omit<Block, 'tx'> {
+  /** The block's transactions, decoded, the coinbase first. */
   readonly tx: readonly BlockTransaction[]
 }
 
@@ -637,10 +749,13 @@ const CHAIN_TIP_STATUSES: readonly ChainTipStatus[] = [
 
 /** One `getchaintips` entry. */
 export interface ChainTip {
+  /** The tip's height. */
   readonly height: number
+  /** The tip's block hash. */
   readonly hash: string
   /** 0 for the active chain's tip; otherwise how many blocks connect this tip to the active chain. */
   readonly branchLen: number
+  /** The branch's status: `active` for the active chain's tip. */
   readonly status: ChainTipStatus | (string & {})
 }
 
@@ -667,7 +782,9 @@ function parseChainTips(value: unknown): ChainTip[] {
 
 /** A block by its hash and height: what `waitfornewblock` and `waitforblockheight` return. */
 export interface BlockRef {
+  /** The block hash. */
   readonly hash: string
+  /** The block's height. */
   readonly height: number
 }
 
@@ -727,23 +844,33 @@ export function longPollRetryable(request: RpcRequest<unknown>): boolean {
 
 /** `getmempoolentry`. Sizes are in vbytes; qbit Core does not discount witness data. */
 export interface MempoolEntry {
+  /** The virtual size used for fee and policy checks, adjusted for signature operations. */
   readonly vsize: number
+  /** The weight; qbit counts witness data in full. */
   readonly weight: number
   /** Unix time the transaction entered this node's mempool. */
   readonly time: number
   /** The block height when it entered. */
   readonly height: number
-  /** In-mempool descendants and ancestors, this transaction included. */
+  /** Its in-mempool descendants, this transaction included. */
   readonly descendantCount: number
+  /** The total vsize of its in-mempool descendants, this transaction included. */
   readonly descendantSize: number
+  /** Its in-mempool ancestors, this transaction included. */
   readonly ancestorCount: number
+  /** The total vsize of its in-mempool ancestors, this transaction included. */
   readonly ancestorSize: number
+  /** The witness txid (wtxid). */
   readonly wtxid: string
+  /** Its fees, in bits. The last three include `prioritisetransaction` deltas, so they can be negative. */
   readonly fees: {
+    /** The transaction's own fee. */
     readonly baseBits: bigint
-    /** These three include `prioritisetransaction` deltas, so they can be negative. */
+    /** Its fee with the deltas used for mining priority. */
     readonly modifiedBits: bigint
+    /** The fees of its in-mempool ancestors, this transaction included, with the deltas. */
     readonly ancestorBits: bigint
+    /** The fees of its in-mempool descendants, this transaction included, with the deltas. */
     readonly descendantBits: bigint
   }
   /** txids of the mempool transactions this one spends. */
@@ -795,17 +922,23 @@ export interface MempoolInfo {
   readonly bytes: number
   /** The memory the mempool uses. */
   readonly usage: number
+  /** The total fee of the mempool's transactions, in bits, without `prioritisetransaction` deltas. */
   readonly totalFeeBits: bigint
   /** The most memory it may use. */
   readonly maxMempool: number
   /** The fee floor: the higher of the mempool's current minimum and `minRelayTxFeeBitsPerKvB`. */
   readonly mempoolMinFeeBitsPerKvB: bigint
+  /** The minimum fee rate the node relays. */
   readonly minRelayTxFeeBitsPerKvB: bigint
+  /** The smallest fee-rate increase for mempool limiting or replacement. */
   readonly incrementalRelayFeeBitsPerKvB: bigint
+  /** Transactions no peer has acknowledged the initial broadcast of yet. */
   readonly unbroadcastCount: number
   /** Deprecated by qbit Core, which still reports it in v1.0.0. */
   readonly fullRbf?: boolean
+  /** Whether the mempool accepts transactions with bare multisig outputs. */
   readonly permitBareMultisig: boolean
+  /** The most bytes the mempool accepts in `OP_RETURN` outputs. */
   readonly maxDataCarrierSize: number
 }
 
@@ -830,6 +963,7 @@ function parseMempoolInfo(value: unknown): MempoolInfo {
 
 /** `getrawmempool` with `mempool_sequence`. */
 export interface MempoolSnapshot {
+  /** The txids in the mempool. */
   readonly txids: readonly string[]
   /** An unsigned 64-bit counter, as in the ZMQ `sequence` topic's mempool events. */
   readonly mempoolSequence: bigint
@@ -859,7 +993,9 @@ function hashKeyed<T>(value: unknown, path: string, parse: (value: unknown, path
 
 /** One output `gettxspendingprevout` checked. */
 export interface TxSpendingPrevout {
+  /** The txid of the output checked. */
   readonly txid: string
+  /** The index of the output checked. */
   readonly vout: number
   /** The mempool transaction spending it; absent when none does, which says nothing about the chain. */
   readonly spendingTxid?: string
@@ -891,8 +1027,11 @@ export interface TxOut {
   readonly bestBlock: string
   /** 0 for an output of a mempool transaction. */
   readonly confirmations: number
+  /** The output's value, in bits. */
   readonly valueBits: bigint
+  /** The output script, decoded. */
   readonly scriptPubKey: ScriptPubKey
+  /** Whether the output is a coinbase transaction's. */
   readonly coinbase: boolean
 }
 
@@ -927,29 +1066,46 @@ const SECURITY_LEVELS: readonly SecurityLevel[] = ['low', 'medium', 'high', 'max
  * passed is the exact one.
  */
 export interface ConfirmationTarget {
+  /** The qbit confirmations recommended for the value and security level. */
   readonly requiredConfirmations: number
+  /** The estimated wait for them, in minutes. */
   readonly requiredMinutes: number
+  /** The Bitcoin confirmations of security they are equivalent to. */
   readonly equivalentBtcConfirmations: number
   /** H/s, permissionless lane only. */
   readonly permissionlessHashrate: number
   /** H/s, AuxPoW lane only. */
   readonly auxpowHashrate: number
+  /** The observed hashrate over both lanes, permissionless and AuxPoW, in H/s. */
   readonly totalObservedHashrate: number
+  /** The current stale (orphan) block rate. */
   readonly orphanRate: number
+  /** The security level used. */
   readonly securityLevel: SecurityLevel
+  /** The model parameters the node used. */
   readonly model: {
+    /** The Bitcoin confirmations this security level targets. */
     readonly btcTargetConfirmations: number
+    /** qbit's block time, from the consensus parameters, in seconds. */
     readonly blockTimeSeconds: number
     /** Or a source a later qbit Core adds, as it is. */
     readonly hashrateSource:
       'observed_chainwork' | 'override_merge_mining_pct' | 'fallback_merge_mining_pct' | (string & {})
+    /** The active-chain block window the hashrate estimates use. */
     readonly hashrateWindowBlocks: number
+    /** Permissionless blocks in that window. */
     readonly permissionlessBlocksInWindow: number
+    /** AuxPoW blocks in that window. */
     readonly auxpowBlocksInWindow: number
+    /** The share of Bitcoin's hashrate merge mining qbit, 0 to 1, used when the observed chainwork is not. */
     readonly mergeMiningPct: number
+    /** The Bitcoin hashrate estimate used, in H/s. */
     readonly btcHashrate: number
+    /** The confirmation multiplier for the orphan rate. */
     readonly orphanRatePenalty: number
+    /** The fraction of a Bitcoin confirmation each qbit confirmation is worth. */
     readonly securityPerConfirmation: number
+    /** The fraction of blocks merge mined, from the consensus lane spacings, for the fallback percentage model. */
     readonly cadenceMergedFraction: number
   }
 }
@@ -989,13 +1145,24 @@ function parseConfirmationTarget(value: unknown): ConfirmationTarget {
   })
 }
 
+/**
+ * `estimatesmartfee`'s mode: `economical` (the node's default) looks at a
+ * shorter horizon and follows a drop in fees sooner; `conservative` looks at a
+ * longer one; `unset` leaves the choice to the node.
+ */
 export type FeeEstimateMode = 'unset' | 'economical' | 'conservative'
 const FEE_MODES: readonly FeeEstimateMode[] = ['unset', 'economical', 'conservative']
 
 /** `estimatesmartfee`. `feeRateBitsPerKvB` is absent when the node could not estimate; see `errors`. */
 export interface SmartFeeEstimate {
+  /** The estimated fee rate, in bits per 1,000 vbytes. */
   readonly feeRateBitsPerKvB?: bigint
+  /** Why the node could not estimate, when it could not. */
   readonly errors?: readonly string[]
+  /**
+   * The confirmation target the estimate was found for, which can differ from
+   * the one asked: the node clamps it to what it can estimate.
+   */
   readonly blocks: number
 }
 
@@ -1015,17 +1182,27 @@ function parseSmartFee(value: unknown): SmartFeeEstimate {
 /** `validateaddress`. A P2MR address reports `isWitness: true` and `witnessVersion: 2`. */
 export type AddressValidation =
   | {
+      /** The address is valid on the node's chain. */
       readonly isValid: true
+      /** The address validated. */
       readonly address: string
+      /** The output script the address pays to, as hex. */
       readonly scriptPubKey: string
+      /** Whether the address pays to a script. */
       readonly isScript?: boolean
+      /** Whether it is a witness address. */
       readonly isWitness?: boolean
+      /** The witness version: 2 for P2MR. */
       readonly witnessVersion?: number
+      /** The witness program, as hex. */
       readonly witnessProgram?: string
     }
   | {
+      /** The address is not valid on the node's chain. */
       readonly isValid: false
+      /** Why, in the node's words. */
       readonly error: string
+      /** Indices of likely errors in the address, when the node can tell (Bech32 errors); otherwise empty. */
       readonly errorLocations: readonly number[]
     }
 
@@ -1051,14 +1228,19 @@ function parseAddressValidation(value: unknown): AddressValidation {
 
 /** The proof `signdatapqchash` returns, as `verifydatapqchash` takes it. */
 export interface DataPqcHashProof {
+  /** The P2MR address whose committed key signed. */
   readonly address: string
   /** The 32-byte hash that was signed. */
   readonly messageHash: string
+  /** The raw PQC signature, as hex. */
   readonly signature: string
   /** The 32-byte P2MR public key. */
   readonly pubkey: string
+  /** The committed P2MR leaf script, as hex. */
   readonly leafScript: string
+  /** The P2MR control block proving the leaf, as hex. */
   readonly controlBlock: string
+  /** The P2MR leaf version. */
   readonly leafVersion: number
   /** The only mode qbit Core v1.0.0 supports. */
   readonly proofMode: 'p2mr-pubkey'
@@ -1066,13 +1248,21 @@ export interface DataPqcHashProof {
 
 /** `verifydatapqchash`. When `valid` is false, `error` gives the reason. */
 export interface DataPqcHashVerification {
+  /** Whether the proof verifies. */
   readonly valid: boolean
+  /** Why it does not, when `valid` is false. */
   readonly error?: string
+  /** The P2MR address. */
   readonly address?: string
+  /** The 32-byte hash that was signed, as hex. */
   readonly messageHash?: string
+  /** The qbit data-signature hash verified, which commits to `messageHash`. */
   readonly datasigHash?: string
+  /** The committed 32-byte P2MR public key, as hex. */
   readonly pubkey?: string
+  /** The proof mode. */
   readonly proofMode?: string
+  /** The P2MR Merkle root the address commits to. */
   readonly p2mrMerkleRoot?: string
 }
 
@@ -1371,10 +1561,13 @@ export interface DescriptorInfo {
   readonly multipathExpansion?: readonly string[]
   /** The checksum of the descriptor as passed, checked here against it. */
   readonly checksum: string
+  /** Whether the descriptor is ranged. */
   readonly isRange: boolean
+  /** Whether the descriptor is solvable. */
   readonly isSolvable: boolean
   /** For a P2MR descriptor only: whether the wallet can build its satisfaction within P2MR v1's limits. */
   readonly hasP2mrStandardSatisfaction?: boolean
+  /** Whether the descriptor passed held at least one private key. */
   readonly hasPrivateKeys: boolean
 }
 
@@ -1442,19 +1635,32 @@ const MAX_PACKAGE_COUNT = 25
 
 /** One `testmempoolaccept` entry, in the order the transactions were passed. */
 export interface MempoolAcceptance {
+  /** The transaction's txid. */
   readonly txid: string
+  /** The transaction's witness txid (wtxid). */
   readonly wtxid: string
+  /** The package validation error, when there is one; only with more than one transaction. */
   readonly packageError?: string
   /** Absent when the transaction was not fully validated because another one in the package failed. */
   readonly allowed?: boolean
+  /** The virtual size used for fee and policy checks, adjusted for signature operations. Only when `allowed`. */
   readonly vsize?: number
+  /** Its fees. Only when `allowed`. */
   readonly fees?: {
+    /** The transaction's fee, in bits. */
     readonly baseBits: bigint
+    /**
+     * The effective fee rate, in bits per 1,000 vbytes, which can differ from
+     * the transaction's own, with a package fee rate or `prioritisetransaction`
+     * deltas.
+     */
     readonly effectiveFeeRateBitsPerKvB: bigint
     /** wtxids of the transactions the effective fee rate includes. */
     readonly effectiveIncludes: readonly string[]
   }
+  /** Why the mempool would refuse it. Only when `allowed` is false. */
   readonly rejectReason?: string
+  /** More about the refusal, when the node has any. Only when `allowed` is false. */
   readonly rejectDetails?: string
 }
 
@@ -1493,11 +1699,15 @@ function parseMempoolAcceptance(rawTxs: readonly string[]): (value: unknown) => 
 
 /** One transaction's outcome in {@link PackageSubmission}. */
 export interface PackageTransactionResult {
+  /** The transaction's txid. */
   readonly txid: string
   /** The wtxid of a transaction with this txid and another witness in the mempool: the submitted one was ignored. */
   readonly otherWtxid?: string
+  /** The virtual size, adjusted for signature operations. */
   readonly vsize?: number
+  /** Its fees. */
   readonly fees?: {
+    /** The transaction's fee, in bits. */
     readonly baseBits: bigint
     /** Absent when the transaction was already in the mempool. */
     readonly effectiveFeeRateBitsPerKvB?: bigint
@@ -1660,20 +1870,29 @@ export interface MiningInfo {
   readonly currentBlockTx?: number
   /** The tip's compact target. */
   readonly bits: string
+  /** The tip's difficulty. */
   readonly difficulty: number
   /** The tip's target: `bits` expanded. */
   readonly target: string
+  /** The active chain's hashrate over every lane, in H/s. */
   readonly networkHashPs: number
+  /** Transactions in the mempool. */
   readonly pooledTx: number
+  /** The lowest fee rate of a package the node selects for a block, in bits per 1,000 vbytes. */
   readonly blockMinTxFeeBitsPerKvB: bigint
+  /** The chain name, as in {@link BlockchainInfo.chain}. */
   readonly chain: QbitChain | (string & {})
   /** On signet only. */
   readonly signetChallenge?: string
   /** The next permissionless block's candidate. */
   readonly next: {
+    /** The candidate's height. */
     readonly height: number
+    /** The candidate's compact target. */
     readonly bits: string
+    /** The candidate's difficulty. */
     readonly difficulty: number
+    /** The candidate's target. */
     readonly target: string
   }
   /** Node warnings; a single string under `-deprecatedrpc=warnings` becomes a one-element array. */
@@ -1735,8 +1954,11 @@ function parseMiningInfo(value: unknown): MiningInfo {
 
 /** How much a block's P2MR signature operations weigh at a template's or candidate's height. */
 export interface P2mrValidationWeightRule {
+  /** Validation weight debited per non-empty PQC signature operation. */
   readonly perSigop: number
+  /** Whether validation-weight v2 applies. */
   readonly v2Active: boolean
+  /** The first block that uses validation-weight v2. */
   readonly v2ActivationHeight: number
 }
 
@@ -1751,8 +1973,11 @@ function parseP2mrValidationWeightRule(value: unknown, path: string): P2mrValida
 
 /** How far a template's or candidate's timestamp may pass the node's clock. */
 export interface FutureBlockTimeRule {
+  /** How far the block's time may run ahead of the node's, in seconds. */
   readonly limitSeconds: number
+  /** Whether qbit's v2 future block-time limit applies. */
   readonly v2Active: boolean
+  /** The first block that uses the v2 limit. */
   readonly v2ActivationHeight: number
 }
 
@@ -1769,13 +1994,17 @@ function parseFutureBlockTimeRule(value: unknown, path: string): FutureBlockTime
 export interface BlockTemplateTransaction {
   /** The transaction's hex, with its witness. */
   readonly data: string
+  /** The transaction's txid. */
   readonly txid: string
   /** The wtxid. */
   readonly hash: string
   /** The transactions this one needs before it, by their 1-based place in `transactions`. */
   readonly depends: readonly number[]
+  /** The transaction's fee, in bits. */
   readonly feeBits: bigint
+  /** Its signature-operation cost, as block limits count it. */
   readonly sigops: number
+  /** Its weight, as block limits count it. */
   readonly weight: number
 }
 
@@ -1785,14 +2014,19 @@ export interface BlockTemplateTransaction {
  * Merge mining goes through {@link AuxBlock}.
  */
 export interface BlockTemplate {
+  /** The preferred block version. */
   readonly version: number
   /** The rules the block must follow; a `!` prefix marks one the miner must understand. */
   readonly rules: readonly string[]
+  /** Pending version-bits deployments the node supports, each by name with its bit. */
   readonly vbAvailable: Readonly<Record<string, number>>
+  /** Features the node supports, such as `proposal`. */
   readonly capabilities: readonly string[]
+  /** The version bits the node requires set in a submission, as a mask. */
   readonly vbRequired: number
   /** The BIP310 version-rolling mask for this work, `00000000` when rolling is off. */
   readonly versionRollingMask: string
+  /** The hash of the tip the block builds on. */
   readonly previousBlockHash: string
   /** Without the coinbase, which the miner builds. */
   readonly transactions: readonly BlockTemplateTransaction[]
@@ -1802,22 +2036,32 @@ export interface BlockTemplate {
   readonly coinbaseValueBits: bigint
   /**
    * Passed to `getblocktemplate` through `call()`, it holds the reply: see
-   * {@link https://github.com/Qbit-Org/qbit-rpc/blob/main/docs/rpc/mining.md | Mining}.
+   * [Mining](https://github.com/Qbit-Org/qbit-rpc/blob/main/docs/rpc/mining.md).
    */
   readonly longPollId: string
   /** `bits` expanded. */
   readonly target: string
+  /** The earliest timestamp the block may have, in UNIX epoch seconds. */
   readonly minTime: number
+  /** What a miner may change in the template, such as `time`, `transactions` or `prevblock`. */
   readonly mutable: readonly string[]
+  /** The range of valid nonces, as hex. */
   readonly nonceRange: string
+  /** The most signature operations a block may have. */
   readonly sigOpLimit: number
+  /** The largest size a block may have, in bytes. */
   readonly sizeLimit: number
   /** Absent before segwit's activation. */
   readonly weightLimit?: number
+  /** The node's current time, in UNIX epoch seconds. */
   readonly curTime: number
+  /** The block's compact target. */
   readonly bits: string
+  /** The block's height. */
   readonly height: number
+  /** The P2MR validation-weight rule for this block. */
   readonly p2mrValidationWeight: P2mrValidationWeightRule
+  /** The future block-time rule for this block. */
   readonly futureBlockTime: FutureBlockTimeRule
   /** On signet only. */
   readonly signetChallenge?: string
@@ -1889,13 +2133,19 @@ export interface AuxBlock {
   readonly hash: string
   /** This chain's AuxPoW chain id: 47 on main, 31430 on the test chains and regtest. */
   readonly chainId: number
+  /** The hash of the tip the candidate builds on. */
   readonly previousBlockHash: string
+  /** The candidate's coinbase value, fees included, in bits. */
   readonly coinbaseValueBits: bigint
+  /** The candidate's compact target. */
   readonly bits: string
+  /** The candidate's height. */
   readonly height: number
   /** `bits` expanded. */
   readonly target: string
+  /** The P2MR validation-weight rule for the candidate. */
   readonly p2mrValidationWeight: P2mrValidationWeightRule
+  /** The future block-time rule for the candidate. */
   readonly futureBlockTime: FutureBlockTimeRule
   /** The byte order the commitment must use. */
   readonly commitmentOrder: 'internal' | 'display'
@@ -1990,10 +2240,15 @@ const PQC_LIMIT_STATES = ['normal', 'warning', 'critical', 'exhausted'] as const
 
 /** Signature-budget state of one local PQC key that took part in a response. */
 export interface PqcKeyState {
+  /** The PQC public key, as hex. */
   readonly pubkey: string
+  /** Signatures this key has made. */
   readonly pqcSignatureCount: number
+  /** The most signatures this key can make: its hard limit. */
   readonly pqcSignatureLimit: number
+  /** Signatures this key has left. */
   readonly pqcSignaturesRemaining: number
+  /** This key's budget state. */
   readonly pqcLimitState: PqcLimitState
 }
 
@@ -2005,11 +2260,17 @@ export interface PqcKeyState {
  * and `exhausted` as operational events.
  */
 export interface PqcUsage {
+  /** The budget state of each local PQC key that took part. */
   readonly pqcKeyStates?: readonly PqcKeyState[]
+  /** The most severe state in `pqcKeyStates`. */
   readonly pqcOverallLimitState?: PqcLimitState
+  /** Signatures made by the single local PQC key involved, when there is one. */
   readonly pqcSignatureCount?: number
+  /** The hard signature limit of the single local PQC key involved, when there is one. */
   readonly pqcSignatureLimit?: number
+  /** Signatures left to the single local PQC key involved, when there is one. */
   readonly pqcSignaturesRemaining?: number
+  /** The budget state of the single local PQC key involved, when there is one. */
   readonly pqcLimitState?: PqcLimitState
 }
 
@@ -2043,42 +2304,76 @@ function pqcUsage(o: JsonObject): { [K in keyof PqcUsage]: PqcUsage[K] | undefin
 
 /** `getwalletinfo`. qbit Core v1.0.0 reports no per-key PQC signature counts here; see `walletProcessPsbt`. */
 export interface WalletInfo {
+  /** The wallet's name. */
   readonly walletName: string
+  /** Deprecated by qbit Core: always 169900, the last legacy wallet version. */
   readonly walletVersion: number
+  /** The database format: `sqlite`. */
   readonly format: string
+  /** The number of transactions in the wallet. */
   readonly txCount: number
+  /** How many receiving keys are generated ahead. */
   readonly keypoolSize: number
+  /** How many change keys are generated ahead, when the wallet keeps them apart. */
   readonly keypoolSizeHdInternal?: number
   /** Unix time until which the wallet is unlocked, 0 when locked; absent for unencrypted wallets. */
   readonly unlockedUntil?: number
   /** Absent from a qbit Core that no longer reports `paytxfee`, which Bitcoin Core has deprecated. */
   readonly payTxFeeBitsPerKvB?: bigint
+  /** False for a watch-only wallet, whose private keys are disabled. */
   readonly privateKeysEnabled: boolean
+  /** Whether the wallet tracks reused addresses' coins to avoid spending them. */
   readonly avoidReuse: boolean
-  /** False when no rescan is running. */
-  readonly scanning: false | { readonly duration: number; readonly progress: number }
+  /** The rescan running, or false when none is. */
+  readonly scanning:
+    | false
+    | {
+        /** Seconds since the rescan started. */
+        readonly duration: number
+        /** The rescan's progress, 0 to 1. */
+        readonly progress: number
+      }
+  /** Whether the wallet is a descriptor wallet. */
   readonly descriptors: boolean
   /** Validation state of plaintext PQC key records. */
   readonly pqcKeyValidation: {
     /** Or a status a later qbit Core adds, as it is; `signingBlocked` says whether the wallet signs. */
     readonly status: 'not_required' | 'pending' | 'running' | 'complete' | 'failed' | (string & {})
+    /** Validation progress, 0 to 1. */
     readonly progress: number
+    /** Plaintext PQC key records in the wallet. */
     readonly plaintextRecords: number
+    /** Records awaiting validation. */
     readonly pendingRecords: number
+    /** Records validated. */
     readonly validatedRecords: number
+    /** Records that failed validation. */
     readonly failedRecords: number
+    /** Whether the validation state blocks PQC signing. */
     readonly signingBlocked: boolean
+    /** Whether encrypting the wallet would let it load faster, with authenticated records. */
     readonly encryptionRecommended: boolean
   }
+  /** Whether the wallet uses an external signer, such as a hardware wallet. */
   readonly externalSigner: boolean
+  /** Whether the wallet was made without keys, scripts or descriptors. */
   readonly blank: boolean
+  /**
+   * The time block scans start from, in UNIX epoch seconds; importing a
+   * descriptor with an earlier timestamp moves it.
+   */
   readonly birthtime?: number
+  /** The flags set on the wallet. */
   readonly flags: readonly string[]
+  /** The block this information was computed at. */
   readonly lastProcessedBlock: LastProcessedBlock
 }
 
+/** The block a wallet reply was computed at. */
 export interface LastProcessedBlock {
+  /** The block hash. */
   readonly hash: string
+  /** The block's height. */
   readonly height: number
 }
 
@@ -2141,39 +2436,74 @@ const WALLET_TX_CATEGORIES: readonly WalletTxCategory[] = ['send', 'receive', 'g
 
 /** `gettransaction`. Amounts are signed bits: sends and fees are negative. */
 export interface WalletTransaction {
+  /** The net amount for the wallet, in bits: negative for a send. */
   readonly amountBits: bigint
+  /** The fee, in bits, negative. Only for a send. */
   readonly feeBits?: bigint
   /** Negative when the transaction conflicted that many blocks ago. */
   readonly confirmations: number
+  /** Present, as true, when the transaction's only input is a coinbase. */
   readonly generated?: boolean
+  /** Whether the wallet trusts the transaction and will spend its outputs. Only with 0 or negative confirmations. */
   readonly trusted?: boolean
+  /** The block holding the transaction. */
   readonly blockHash?: string
+  /** The height of the block holding it. */
   readonly blockHeight?: number
+  /** Its index in that block. */
   readonly blockIndex?: number
+  /** That block's time, in UNIX epoch seconds. */
   readonly blockTime?: number
+  /** The transaction's txid. */
   readonly txid: string
+  /** The transaction's witness txid (wtxid). */
   readonly wtxid: string
+  /** txids of wallet transactions spending the same inputs, confirmed or not: a fee bump's replacement is one. */
   readonly walletConflicts: readonly string[]
+  /** The transaction that replaced this one, when `bumpfee` made it. Only for a send. */
   readonly replacedByTxid?: string
+  /** The transaction this one replaces, when `bumpfee` made it. Only for a send. */
   readonly replacesTxid?: string
+  /** Mempool transactions that conflict with this one or one of its ancestors. */
   readonly mempoolConflicts: readonly string[]
+  /** The `to` comment stored with the transaction, when there is one. */
   readonly to?: string
+  /** The transaction's time, in UNIX epoch seconds. */
   readonly time: number
+  /** When the wallet received it, in UNIX epoch seconds. */
   readonly timeReceived: number
+  /** The comment stored with the transaction, when not empty. */
   readonly comment?: string
+  /**
+   * Whether it or an unconfirmed ancestor signals BIP 125 replaceability;
+   * `unknown` for an unconfirmed transaction outside the mempool whose
+   * ancestors the wallet does not know.
+   */
   readonly bip125Replaceable: 'yes' | 'no' | 'unknown'
+  /** The descriptors of the output script received. Only for a receive. */
   readonly parentDescs?: readonly string[]
+  /** One entry per output that concerns the wallet, and per output a send pays. */
   readonly details: readonly {
+    /** The address paid. */
     readonly address?: string
+    /** What the entry is: sent, received, or mined (by maturity). */
     readonly category: WalletTxCategory
+    /** The amount, in bits: negative for a send. */
     readonly amountBits: bigint
+    /** The address's label, when it has one. */
     readonly label?: string
+    /** The output's index. */
     readonly vout: number
+    /** The fee, in bits, negative. Only for a send. */
     readonly feeBits?: bigint
+    /** Whether the transaction was abandoned, so its inputs can be spent again. */
     readonly abandoned: boolean
+    /** The descriptors of the output script received. Only for a receive. */
     readonly parentDescs?: readonly string[]
   }[]
+  /** The serialized transaction, as hex. */
   readonly hex: string
+  /** The block this information was computed at. */
   readonly lastProcessedBlock: LastProcessedBlock
 }
 
@@ -2229,24 +2559,45 @@ function parseWalletTransaction(requestedTxid: string): (value: unknown) => Wall
 
 /** One `listunspent` entry. */
 export interface UnspentOutput {
+  /** The txid of the transaction holding the output. */
   readonly txid: string
+  /** The output's index. */
   readonly vout: number
+  /** The address the output pays, when it has one. */
   readonly address?: string
+  /** The address's label; empty for the default label. */
   readonly label?: string
+  /** The output script, as hex. */
   readonly scriptPubKey: string
+  /** The output's value, in bits. */
   readonly amountBits: bigint
+  /** Its confirmations; 0 while its transaction is in the mempool. */
   readonly confirmations: number
+  /** In-mempool ancestors of its transaction, the transaction included. Only while it is in the mempool. */
   readonly ancestorCount?: number
+  /** The total vsize of those ancestors, the transaction included. Only while it is in the mempool. */
   readonly ancestorSize?: number
   /** qbit Core prints this field in bits, not QBT. */
   readonly ancestorFeesBits?: bigint
+  /** The redeem script, for a P2SH output. */
   readonly redeemScript?: string
+  /** The witness script, for a P2WSH or P2SH-P2WSH output. */
   readonly witnessScript?: string
+  /** Deprecated by qbit Core: always true. */
   readonly spendable: boolean
+  /** Whether the wallet knows how to spend the output, ignoring a lack of private keys. */
   readonly solvable: boolean
+  /** Whether the output was sent to an address already spent from. Only with `avoid_reuse` set on the wallet. */
   readonly reused?: boolean
+  /** A descriptor for spending the output. Only when `solvable`. */
   readonly desc?: string
+  /** The descriptors of the output script. */
   readonly parentDescs: readonly string[]
+  /**
+   * Whether the wallet considers the output safe to spend: an unconfirmed one
+   * from outside keys, or of a replacement, is not, and coin selection leaves
+   * it out.
+   */
   readonly safe: boolean
 }
 
@@ -2352,18 +2703,25 @@ const OUTPOINT_EXTRAS = [
   ]),
 ].filter(key => key !== 'txid' && key !== 'vout')
 
+/** `listunspent`'s filters. */
 export interface ListUnspentOptions {
   /** Default 1. */
   readonly minConf?: number
   /** Default 9,999,999. */
   readonly maxConf?: number
+  /** Only outputs paying one of these addresses. Default: any. */
   readonly addresses?: readonly string[]
   /** Default true. */
   readonly includeUnsafe?: boolean
+  /** Only outputs of at least this value, in bits. Default 0. */
   readonly minimumAmountBits?: bigint
+  /** Only outputs of at most this value, in bits. Default: no limit. */
   readonly maximumAmountBits?: bigint
+  /** At most this many outputs. Default: no limit. */
   readonly maximumCount?: number
+  /** Stop once the outputs found add up to this, in bits. Default: no limit. */
   readonly minimumSumAmountBits?: bigint
+  /** Include immature coinbase outputs. Default false. */
   readonly includeImmatureCoinbase?: boolean
 }
 
@@ -2378,17 +2736,27 @@ export interface AddressInfo extends PqcUsage {
    * as it was requested.
    */
   readonly address: string
+  /** The output script the address pays to, as hex. */
   readonly scriptPubKey: string
+  /** Whether the address is the wallet's. */
   readonly isMine: boolean
   /** Whether the wallet knows how to spend coins sent here, ignoring a lack of private keys. */
   readonly solvable: boolean
+  /** A descriptor for spending coins sent to the address. Only when `solvable`. */
   readonly desc?: string
+  /** The descriptor the address was derived from. */
   readonly parentDesc?: string
+  /** Whether the address pays to a script. */
   readonly isScript?: boolean
+  /** Whether the address was used for a change output. */
   readonly isChange: boolean
+  /** Whether it is a witness address. */
   readonly isWitness: boolean
+  /** The witness version: 2 for P2MR. */
   readonly witnessVersion?: number
+  /** The witness program, as hex. */
   readonly witnessProgram?: string
+  /** The address's labels: at most one in qbit Core v1.0.0, `""` for the default. */
   readonly labels: readonly string[]
 }
 
@@ -2436,7 +2804,9 @@ function isBech32Form(address: string): boolean {
 
 /** A transaction output: its txid and output index. */
 export interface Outpoint {
+  /** The txid of the transaction holding the output. */
   readonly txid: string
+  /** The output's index in that transaction. */
   readonly vout: number
 }
 
@@ -2453,11 +2823,13 @@ function parseOutpoint(value: unknown, path: string): Outpoint {
 export interface WalletHistoryEntry {
   /** Absent for an output with no address, such as OP_RETURN. */
   readonly address?: string
+  /** What the entry is: sent, received, or mined (by maturity). */
   readonly category: WalletTxCategory
   /** At most 0 for `send` (0 for OP_RETURN); at least 0 for every other category. */
   readonly amountBits: bigint
   /** The address book label of `address`; `''` is the default label. Absent when the address has no entry. */
   readonly label?: string
+  /** The output's index. */
   readonly vout: number
   /**
    * Only on `send` entries, and always on them. All outputs minus this wallet's
@@ -2485,12 +2857,15 @@ export interface WalletHistoryEntry {
   readonly trusted?: boolean
   /** The block holding the transaction. This and the next three are present exactly when `confirmations` is above 0. */
   readonly blockHash?: string
+  /** The height of the block holding the transaction. */
   readonly blockHeight?: number
   /** The transaction's position in that block. */
   readonly blockIndex?: number
   /** That block's header time, Unix seconds, as the miner set it. */
   readonly blockTime?: number
+  /** The transaction's txid. */
   readonly txid: string
+  /** The transaction's witness txid (wtxid). */
   readonly wtxid: string
   /** txids of wallet transactions spending the same inputs. */
   readonly walletConflicts: readonly string[]
@@ -2505,15 +2880,23 @@ export interface WalletHistoryEntry {
    * and otherwise once, as pending.
    */
   readonly replacedByTxid?: string
+  /** On a replacement's entries, when `bumpfee` made it: the transaction it replaces. See `replacedByTxid`. */
   readonly replacesTxid?: string
   /** txids of mempool transactions that conflict with this one or an ancestor. */
   readonly mempoolConflicts: readonly string[]
+  /** The `to` comment stored with the transaction, when there is one. */
   readonly to?: string
   /** The wallet's own time for the transaction, Unix seconds. Not a block time. */
   readonly time: number
   /** When this wallet first recorded the transaction, by the node's clock, Unix seconds. */
   readonly timeReceived: number
+  /** The comment stored with the transaction, when not empty. */
   readonly comment?: string
+  /**
+   * Whether it or an unconfirmed ancestor signals BIP 125 replaceability;
+   * `unknown` for an unconfirmed transaction outside the mempool whose
+   * ancestors the wallet does not know.
+   */
   readonly bip125Replaceable: 'yes' | 'no' | 'unknown'
 }
 
@@ -2639,6 +3022,7 @@ const LIST_TRANSACTIONS_OPTIONS = keysOf<ListTransactionsOptions>({
   includeWatchOnly: true,
 })
 
+/** `listtransactions`' filters. */
 export interface ListTransactionsOptions {
   /** Only incoming entries paying to addresses with this label. `*`, the default, lists everything. */
   readonly label?: string
@@ -2655,11 +3039,13 @@ export interface ListTransactionsOptions {
  * without private keys reports what it watches under `mine`.
  */
 export interface WalletBalances {
+  /** The balances of the wallet's own outputs, in bits. */
   readonly mine: {
     /** Confirmed outputs, and unconfirmed ones the wallet created. */
     readonly trustedBits: bigint
     /** Outputs others created that are still in the mempool. */
     readonly untrustedPendingBits: bigint
+    /** Coinbase outputs not yet mature. */
     readonly immatureBits: bigint
     /** Only for a wallet with `avoid_reuse` set, where 0n is a real zero. */
     readonly usedBits?: bigint
@@ -2706,25 +3092,55 @@ const ADDRESS_TYPE_SET: Readonly<Record<AddressType, true>> = {
 }
 const ADDRESS_TYPES = Object.keys(ADDRESS_TYPE_SET) as AddressType[]
 
-export type FundedPsbtOutput = { readonly address: string; readonly amountBits: bigint } | { readonly data: string }
+/** One output of a transaction to fund: a payment to an address, or an `OP_RETURN` data output. */
+export type FundedPsbtOutput =
+  | {
+      /** The address to pay. */
+      readonly address: string
+      /** The amount to pay, in bits. */
+      readonly amountBits: bigint
+    }
+  | {
+      /** The data, as hex, for an `OP_RETURN` output. */
+      readonly data: string
+    }
 
+/** `walletcreatefundedpsbt`'s arguments. */
 export interface WalletCreateFundedPsbtArgs {
   /**
    * Inputs to spend; leave out to let the wallet select coins. `vout` is 0 to
    * 2,147,483,647 (qbit Core reads it as a signed 32-bit integer), `sequence`
    * 0 to 4,294,967,295.
    */
-  readonly inputs?: readonly { readonly txid: string; readonly vout: number; readonly sequence?: number }[]
+  readonly inputs?: readonly {
+    /** The txid of the output to spend. */
+    readonly txid: string
+    /** The index of the output to spend. */
+    readonly vout: number
+    /** The input's sequence number. Default: the wallet's, from `replaceable` and `locktime`. */
+    readonly sequence?: number
+  }[]
   /** At least one output. Each address once; at most one `data` (OP_RETURN) output. */
   readonly outputs: readonly FundedPsbtOutput[]
   /** 0 to 4,294,967,295. */
   readonly locktime?: number
+  /** How to fund the transaction. */
   readonly options?: {
+    /** Add wallet coins to cover the outputs. Default: false with `inputs`, true without. */
     readonly addInputs?: boolean
+    /**
+     * Also select outputs that are not safe to spend (see {@link
+     * UnspentOutput.safe}); the transaction becomes invalid if one disappears.
+     * Default false.
+     */
     readonly includeUnsafe?: boolean
+    /** Select only coins with at least this many confirmations. Default 0. */
     readonly minConf?: number
+    /** Select only coins with at most this many confirmations. Default: no limit. */
     readonly maxConf?: number
+    /** The address to send change to. Default: a new change address of the wallet. */
     readonly changeAddress?: string
+    /** The change output's index. Default: random. */
     readonly changePosition?: number
     /** The change output's type; see {@link AddressType}. Default: the wallet's `-changetype`. */
     readonly changeType?: AddressType
@@ -2736,10 +3152,14 @@ export interface WalletCreateFundedPsbtArgs {
     readonly subtractFeeFromOutputs?: readonly number[]
     /** The largest weight the transaction may have, 65 to 400,000 (qbit Core's standard limit, the default). */
     readonly maxTxWeight?: number
+    /** Signal BIP 125 replaceability. Default: the wallet's `-walletrbf`. */
     readonly replaceable?: boolean
+    /** Blocks for the wallet's fee estimate, 1 to 1,008. Default: the wallet's `-txconfirmtarget`. */
     readonly confTarget?: number
+    /** The fee estimate mode. Default `unset`: economical for a replaceable transaction, conservative otherwise. */
     readonly estimateMode?: FeeEstimateMode
   }
+  /** Include the BIP 32 derivation paths of the public keys the wallet knows. Default true. */
   readonly bip32derivs?: boolean
   /** The transaction version, 1 to 3: qbit Core refuses a non-standard one. Default 2. */
   readonly version?: number
@@ -2747,7 +3167,9 @@ export interface WalletCreateFundedPsbtArgs {
 
 /** `walletcreatefundedpsbt`. */
 export interface FundedPsbt {
+  /** The funded PSBT, unsigned, as base64. */
   readonly psbt: string
+  /** The fee it pays, in bits. */
   readonly feeBits: bigint
   /** -1 when no change output was added. */
   readonly changePos: number
@@ -2764,7 +3186,9 @@ function parseFundedPsbt(value: unknown): FundedPsbt {
 
 /** `walletprocesspsbt`. */
 export interface ProcessedPsbt extends PqcUsage {
+  /** The PSBT, as base64, with whatever the wallet signed or added. */
   readonly psbt: string
+  /** Whether every input is signed. */
   readonly complete: boolean
   /** The network transaction, when complete. */
   readonly hex?: string
@@ -2783,6 +3207,7 @@ function parseProcessedPsbt(value: unknown): ProcessedPsbt {
   })
 }
 
+/** A signature hash type for `walletProcessPsbt`; `DEFAULT` is the node's own choice. */
 export type SighashType =
   'DEFAULT' | 'ALL' | 'NONE' | 'SINGLE' | 'ALL|ANYONECANPAY' | 'NONE|ANYONECANPAY' | 'SINGLE|ANYONECANPAY'
 const SIGHASH_TYPES: readonly SighashType[] = [
@@ -2797,8 +3222,11 @@ const SIGHASH_TYPES: readonly SighashType[] = [
 
 /** `finalizepsbt`. With `extract` (the default) and a complete PSBT, `hex` replaces `psbt`. */
 export interface FinalizedPsbt {
+  /** The PSBT, as base64, when it is not extracted. */
   readonly psbt?: string
+  /** The network transaction, as hex, when it is extracted. */
   readonly hex?: string
+  /** Whether every input has a complete set of signatures. */
   readonly complete: boolean
 }
 
@@ -2811,6 +3239,7 @@ function parseFinalizedPsbt(value: unknown): FinalizedPsbt {
   })
 }
 
+/** `psbtbumpfee`'s options. */
 export interface PsbtBumpFeeOptions {
   /**
    * The new fee rate in bits per 1,000 vbytes (`1250n` is 1.25 bits/vB): at
@@ -2820,6 +3249,7 @@ export interface PsbtBumpFeeOptions {
   readonly feeRateBitsPerKvB?: bigint
   /** Blocks for the wallet's estimate, 1 to 1,008. Default: the wallet's `-txconfirmtarget`. */
   readonly confTarget?: number
+  /** The fee estimate mode for the wallet's estimate. Exclusive with `feeRateBitsPerKvB`. */
   readonly estimateMode?: FeeEstimateMode
   /** Default true: inputs signal BIP 125 (sequence 0xfffffffd); false sets 0xfffffffe. */
   readonly replaceable?: boolean
@@ -2886,6 +3316,7 @@ function parseAddress(value: unknown, path = R): string {
 export interface LoadedWallet {
   /** The name or path passed, which names the wallet from then on. */
   readonly name: string
+  /** What the node warned about while loading, when it did. */
   readonly warnings?: readonly string[]
 }
 
@@ -2900,6 +3331,7 @@ function parseLoadedWallet(requestedName: string): (value: unknown) => LoadedWal
 
 /** `unloadwallet`: any warnings, such as about a startup list it could not update. */
 export interface UnloadedWallet {
+  /** What the node warned about while unloading, when it did. */
   readonly warnings?: readonly string[]
 }
 
@@ -2909,6 +3341,7 @@ function parseUnloadedWallet(value: unknown): UnloadedWallet {
 
 /** A wallet in the node's wallet directory (`listwalletdir`), loaded or not. */
 export interface WalletDirEntry {
+  /** The wallet's name, which `loadWallet` takes. */
   readonly name: string
   /** Such as a legacy wallet's, which must be migrated before it loads. */
   readonly warnings?: readonly string[]
@@ -2929,7 +3362,7 @@ function parseWalletDir(value: unknown): WalletDirEntry[] {
 export interface DescriptorImport {
   /**
    * The descriptor, with its checksum. It can hold private keys: see
-   * {@link https://github.com/Qbit-Org/qbit-rpc/blob/main/docs/rpc/wallet-admin.md#descriptors | Descriptors}.
+   * [Descriptors](https://github.com/Qbit-Org/qbit-rpc/blob/main/docs/rpc/wallet-admin.md#descriptors).
    */
   readonly desc: string
   /**
@@ -2957,11 +3390,23 @@ export interface DescriptorImport {
 
 /** The node's answer to one descriptor of `importDescriptors`. */
 export type DescriptorImportResult =
-  | { readonly success: true; readonly warnings?: readonly string[] }
   | {
+      /** The descriptor was imported. */
+      readonly success: true
+      /** What the node warned about, when it did. */
+      readonly warnings?: readonly string[]
+    }
+  | {
+      /** The descriptor was not imported. */
       readonly success: false
       /** The node's error for this descriptor, its message redacted of key material. */
-      readonly error: { readonly rpcCode: number; readonly message: string }
+      readonly error: {
+        /** The node's JSON-RPC error code. */
+        readonly rpcCode: number
+        /** The node's message, redacted of key material. */
+        readonly message: string
+      }
+      /** What the node warned about, when it did. */
       readonly warnings?: readonly string[]
     }
 
@@ -3070,6 +3515,7 @@ function parseDescriptorImports(
 
 /** `rescanblockchain`: the heights it scanned. */
 export interface RescanResult {
+  /** The first block scanned. */
   readonly startHeight: number
   /** The last block scanned; null in the rare case a reorg left it no block to scan. */
   readonly stopHeight: number | null
@@ -3323,13 +3769,18 @@ export const requests = {
     )
   },
 
+  /** `getblockchaininfo`: the chain, its tip, the node's sync state and the activation state of qbit's rules. */
   getBlockchainInfo: (): RpcRequest<BlockchainInfo> => request('getblockchaininfo', [], parseBlockchainInfo),
+  /** `getnetworkinfo`: the node's version, connections and relay fee rates. */
   getNetworkInfo: (): RpcRequest<NetworkInfo> => request('getnetworkinfo', [], parseNetworkInfo),
+  /** The hash of the active chain's tip. */
   getBestBlockHash: (): RpcRequest<string> => request('getbestblockhash', [], v => hash(v, R)),
   /** The height of the active chain's tip; the genesis block is 0. */
   getBlockCount: (): RpcRequest<number> => request('getblockcount', [], v => nonNegativeInteger(v, R)),
+  /** The hash of the active chain's block at `height`. Rejects with `RpcError` -8 for a height past the tip. */
   getBlockHash: (height: number): RpcRequest<string> =>
     request('getblockhash', [argInteger(height, 'height', 0, 0x7fff_ffff)], v => hash(v, R)),
+  /** `getblockheader`, checked against `blockHash`. Rejects with `RpcError` -5 for a block the node does not know. */
   getBlockHeader(blockHash: string): RpcRequest<BlockHeader> {
     const requested = argHash(blockHash, 'blockHash')
     return request('getblockheader', [requested, true], parseBlockHeader(requested))
@@ -3346,7 +3797,7 @@ export const requests = {
   /**
    * `getblock` at verbosity 2: as {@link requests.getBlock}, each transaction
    * decoded. A full block's reply can pass the client's `maxResponseBytes`; see
-   * {@link https://github.com/Qbit-Org/qbit-rpc/blob/main/docs/rpc/reading-the-chain.md#large-replies | Large replies}.
+   * [Large replies](https://github.com/Qbit-Org/qbit-rpc/blob/main/docs/rpc/reading-the-chain.md#large-replies).
    */
   getBlockWithTransactions(blockHash: string): RpcRequest<BlockWithTransactions> {
     const requested = argHash(blockHash, 'blockHash')
@@ -3373,7 +3824,7 @@ export const requests = {
    * is missed, and the client does not retry it) or `waitMs` (1 to 3,590,000)
    * has passed, then return the tip. A returned tip equal to the one passed
    * means the wait ran out. A tip that is not the node's returns at once. See
-   * {@link https://github.com/Qbit-Org/qbit-rpc/blob/main/docs/rpc/reading-the-chain.md#long-polls | Long polls}.
+   * [Long polls](https://github.com/Qbit-Org/qbit-rpc/blob/main/docs/rpc/reading-the-chain.md#long-polls).
    */
   waitForNewBlock(waitMs: number, options?: { readonly currentTip?: string }): RpcRequest<BlockRef> {
     const o = methodOptions(options, ['currentTip'])
@@ -3391,7 +3842,7 @@ export const requests = {
    * Hold the request until the tip reaches `height` or `waitMs` (1 to
    * 3,590,000) has passed, then return the tip. A returned height below
    * `height` means the wait ran out, so it is not refused. See
-   * {@link https://github.com/Qbit-Org/qbit-rpc/blob/main/docs/rpc/reading-the-chain.md#long-polls | Long polls}.
+   * [Long polls](https://github.com/Qbit-Org/qbit-rpc/blob/main/docs/rpc/reading-the-chain.md#long-polls).
    */
   waitForBlockHeight(height: number, waitMs: number): RpcRequest<BlockRef> {
     const wait = argWaitMs(waitMs)
@@ -3426,6 +3877,7 @@ export const requests = {
       parseDecodedTransaction(requested)
     )
   },
+  /** `getmempoolinfo`: the mempool's size, fee floor and limits. */
   getMempoolInfo: (): RpcRequest<MempoolInfo> => request('getmempoolinfo', [], parseMempoolInfo),
   /** The txids in the mempool. */
   getRawMempool: (): RpcRequest<string[]> => request('getrawmempool', [false], v => array(v, R, hash)),
@@ -3465,6 +3917,12 @@ export const requests = {
       parseTxOut
     )
   },
+  /**
+   * How many confirmations to wait for before crediting `valueBits`, from qbit
+   * Core's security model. `securityLevel` defaults to `medium`;
+   * `mergeMiningPct` (0 to 1) and `btcHashrate` (H/s, above 0) replace the
+   * node's own inputs to the model.
+   */
   getConfirmationTarget(
     valueBits: bigint,
     options?: {
@@ -3485,6 +3943,7 @@ export const requests = {
       parseConfirmationTarget
     )
   },
+  /** A fee rate for confirmation within `confTarget` blocks, 1 to 1,008. Default mode: the node's, `economical`. */
   estimateSmartFee(confTarget: number, options?: { readonly mode?: FeeEstimateMode }): RpcRequest<SmartFeeEstimate> {
     const o = methodOptions(options, ['mode'])
     return request(
@@ -3494,6 +3953,7 @@ export const requests = {
     )
   },
 
+  /** Whether `address` is valid on the node's chain, and what it pays to. Needs no wallet. */
   validateAddress: (address: string): RpcRequest<AddressValidation> =>
     request('validateaddress', [argString(address, 'address')], parseAddressValidation),
   /** Takes a `signDataPqcHash()` result as it is: its fields beyond the proof's are allowed, and not read. */
@@ -3636,6 +4096,7 @@ export const requests = {
     )
   },
 
+  /** `getmininginfo`: the tip's difficulty, the network hashrate and the next block's target. */
   getMiningInfo: (): RpcRequest<MiningInfo> => request('getmininginfo', [], parseMiningInfo),
   /**
    * The data to build the next permissionless block from. `rules` are those the
@@ -3643,7 +4104,7 @@ export const requests = {
    * adds `signet` on signet); it must hold `segwit`, which qbit Core requires,
    * and on signet also `signet`. qbit Core v1.0.0 does not
    * read `capabilities`. On main, `RpcError` -9 with no peers and -10 while the
-   * node syncs. See {@link https://github.com/Qbit-Org/qbit-rpc/blob/main/docs/rpc/mining.md | Mining}.
+   * node syncs. See [Mining](https://github.com/Qbit-Org/qbit-rpc/blob/main/docs/rpc/mining.md).
    */
   getBlockTemplate(options?: {
     readonly rules?: readonly string[]
@@ -3709,11 +4170,17 @@ export const requests = {
     })
   },
 
+  /** `getwalletinfo`: the wallet's state, its lock and any rescan included. */
   getWalletInfo: (): RpcRequest<WalletInfo> => request('getwalletinfo', [], parseWalletInfo),
+  /**
+   * A wallet transaction, checked against `txid`. Rejects with `RpcError` -5
+   * for a transaction the wallet does not know.
+   */
   getTransaction(txid: string): RpcRequest<WalletTransaction> {
     const requested = argHash(txid, 'txid')
     return request('gettransaction', [requested], parseWalletTransaction(requested))
   },
+  /** The wallet's unspent outputs, filtered by `options`. */
   listUnspent(options?: ListUnspentOptions): RpcRequest<UnspentOutput[]> {
     const o = methodOptions(options, LIST_UNSPENT_OPTIONS)
     const query = compact<Record<string, unknown>>({
@@ -3790,8 +4257,15 @@ export const requests = {
       v => historyEntries(v, R)
     )
   },
+  /** The wallet's balances, in bits. */
   getBalances: (): RpcRequest<WalletBalances> => request('getbalances', [], parseBalances),
 
+  /**
+   * A PSBT paying `args.outputs`, funded from the wallet's coins with change
+   * added, unsigned: sign it with {@link requests.walletProcessPsbt}. It counts
+   * as side-effecting (with `lockUnspents` it locks the coins it selects), so
+   * it is never retried.
+   */
   walletCreateFundedPsbt(args: WalletCreateFundedPsbtArgs): RpcRequest<FundedPsbt> {
     const a = argOptions(args, 'args', FUNDED_PSBT_ARGS, { callOptions: true })
     const outputs = outputsParam(a['outputs'], 'args.outputs')
@@ -3845,6 +4319,10 @@ export const requests = {
       parseProcessedPsbt
     )
   },
+  /**
+   * Finalize a signed PSBT and, unless `options.extract` is false, extract the
+   * network transaction from a complete one. It reads no wallet.
+   */
   finalizePsbt(psbt: string, options?: { readonly extract?: boolean }): RpcRequest<FinalizedPsbt> {
     const o = methodOptions(options, ['extract'])
     return request(
@@ -3912,6 +4390,7 @@ export const requests = {
       ],
       parseNull
     ),
+  /** Lock the wallet; see {@link QbitRpcClient.walletLock} for its deadline. */
   walletLock: (): RpcRequest<null> => request('walletlock', [], parseNull),
   /**
    * A new address from the wallet's internal (change) keypool. See
@@ -4109,8 +4588,7 @@ export const requests = {
    * {@link DescriptorImport}), with its checksum. Descriptors can hold private
    * keys: they travel only in the request body, and the node's messages,
    * which can quote a descriptor in full, are redacted. The default deadline
-   * is 120 s: see
-   * {@link https://github.com/Qbit-Org/qbit-rpc/blob/main/docs/rpc/wallet-admin.md | Wallet administration}.
+   * is 120 s: see [Wallet administration](https://github.com/Qbit-Org/qbit-rpc/blob/main/docs/rpc/wallet-admin.md).
    * Needs the wallet unlocked (`RpcError` -13).
    */
   importDescriptors(descriptors: readonly DescriptorImport[]): RpcRequest<DescriptorImportResult[]> {
@@ -4121,9 +4599,8 @@ export const requests = {
   },
   /**
    * Rescan the chain from `startHeight` (default 0) to `stopHeight` (default
-   * the tip) for the wallet's transactions. The default deadline is 120 s:
-   * see
-   * {@link https://github.com/Qbit-Org/qbit-rpc/blob/main/docs/rpc/wallet-admin.md | Wallet administration}.
+   * the tip) for the wallet's transactions. The default deadline is 120 s: see
+   * [Wallet administration](https://github.com/Qbit-Org/qbit-rpc/blob/main/docs/rpc/wallet-admin.md).
    * Rejects with `RpcError` -8 for a height past the
    * wallet's tip, -4 while a rescan runs, and -13 while the wallet is locked.
    */
@@ -4164,7 +4641,7 @@ export const requests = {
   /**
    * Derive keys until each active descriptor's keypool holds `newSize`
    * (default `-keypool`, 1,000). The default deadline is 120 s: see
-   * {@link https://github.com/Qbit-Org/qbit-rpc/blob/main/docs/rpc/wallet-admin.md | Wallet administration}.
+   * [Wallet administration](https://github.com/Qbit-Org/qbit-rpc/blob/main/docs/rpc/wallet-admin.md).
    * Needs the wallet unlocked (`RpcError` -13).
    */
   keypoolRefill(options?: { readonly newSize?: number }): RpcRequest<null> {

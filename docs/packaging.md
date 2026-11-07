@@ -5,8 +5,8 @@ Each tarball holds exactly `package.json`, `README.md`, `LICENSE` and, in
 map for each and the declarations for each (`index.d.ts`, `index.d.mts`). The
 maps carry every source file in `sourcesContent`, so `src/` is not shipped:
 run Node.js with `--enable-source-maps` to see `src/*.ts` lines in stack traces.
-`@qbit-oss/rpc` is about 2.07 MB unpacked (526 KB packed), most of it the two
-maps; `@qbit-oss/zmq` about 210 KB (56 KB packed). `pack:check` fails on any
+`@qbit-oss/rpc` is about 2.20 MB unpacked (554 KB packed), most of it the two
+maps; `@qbit-oss/zmq` about 220 KB (58 KB packed). `pack:check` fails on any
 other file, on a map that does not carry its sources, and above a ceiling of
 2,270,000 and 280,000 bytes unpacked.
 
