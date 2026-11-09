@@ -608,6 +608,46 @@ describe('BlockAccounting', () => {
     assert.equal((await settle(alone, { s: blocks.s, a: blocks.a, b: blocks.b, c: blocks.c }, 'c')).uncovered, 2)
   })
 
+  it('starts a window after a restart at the last block named, so a loss before it is not excused (#94, 1)', async () => {
+    // a named. A burst drops c's messages and d's block_connected; d's hashblock comes. qbitd restarts, and
+    // the first sequence message after it is an unsized gap. Then one mempool message is lost: a gap of 1.
+    // c was lost before the restart, and the later gap of 1 is not its loss: the run fails.
+    const blocks = { s: block(100, 'p'), a: block(101, 's'), c: block(102, 'a'), d: block(103, 'c') }
+    const accounting = started()
+    feed(accounting, connected('a'), hashblock('a'))
+    accounting.gap({ topic: 'hashblock', expected: 2, received: 3, missed: 1 })
+    accounting.message(hashblock('d'))
+    accounting.reconnect()
+    accounting.gap({ topic: 'sequence', expected: 9, received: 1 })
+    accounting.gap({ topic: 'sequence', expected: 2, received: 3, missed: 1 }, 'd')
+    const settled = await settle(accounting, blocks, 'd')
+    assert.equal(settled.uncovered, 1)
+    assert.equal(soakFailures({ ...quietSoak, uncovered: settled.uncovered }).length, 1)
+  })
+
+  it('ends a sequence window open across a restart there, so each side keeps its own allowance (#94, 2)', async () => {
+    // a named; a gap of 1 at b; c's hashblock without its block_connected; a reconnect and an unsized gap;
+    // e's hashblock without its block_connected; f loses both, and a gap of 2 is reported at f.
+    const blocks = {
+      s: block(100, 'p'),
+      a: block(101, 's'),
+      b: block(102, 'a'),
+      c: block(103, 'b'),
+      e: block(104, 'c'),
+      f: block(105, 'e'),
+    }
+    const accounting = started()
+    feed(accounting, connected('a'), hashblock('a'))
+    accounting.gap({ topic: 'sequence', expected: 5, received: 6, missed: 1 }, 'b')
+    accounting.message(hashblock('c'))
+    accounting.reconnect()
+    accounting.gap({ topic: 'sequence', expected: 9, received: 1 })
+    accounting.message(hashblock('e'))
+    accounting.gap({ topic: 'sequence', expected: 2, received: 4, missed: 2 }, 'f')
+    // b's loss is the first gap's, e's and f's the second's: both reported, nothing uncovered.
+    assert.equal((await settle(accounting, blocks, 'f')).uncovered, 0)
+  })
+
   it('lets a sized hashblock gap excuse no block that no message named (#84, 3)', async () => {
     // A hashblock gap of 1 stood for b, whose block_connected arrived. d, which nothing named, is outside
     // every window, and fails: the gap's allowance no longer covers it.
