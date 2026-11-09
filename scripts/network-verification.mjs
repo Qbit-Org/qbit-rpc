@@ -102,6 +102,20 @@ export function uncoveredBlocks(heights, windows) {
 }
 
 /**
+ * The active chain's block at `height`, or undefined above the tip (RPC -8),
+ * where a reorg to a shorter chain with more work can leave a block announced
+ * earlier. Any other failure is thrown: it says nothing about the chain.
+ */
+export async function activeHash(getBlockHash, height) {
+  try {
+    return await getBlockHash(height)
+  } catch (error) {
+    if (error?.rpcCode === -8) return undefined
+    throw error
+  }
+}
+
+/**
  * A ZMQ soak's block accounting, fed the subscriber's events in order: the
  * blocks it was told of, and where it was blind. qbitd sends one `hashblock`
  * per tip update, so blocks connected together (a catch-up or a reorg) have
@@ -121,6 +135,11 @@ export class BlockAccounting {
   #open = false
   #from
   #last
+
+  /** How many blocks any message named: a missing `hashblock` publisher must not turn off the check on topics. */
+  get seen() {
+    return new Set([...this.announced, ...this.connected]).size
+  }
 
   #blind() {
     if (!this.#open) [this.#open, this.#from] = [true, this.#last]

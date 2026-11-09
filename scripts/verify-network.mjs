@@ -59,6 +59,7 @@ import {
   valueAtPath,
   hideAll,
   hostOf,
+  activeHash,
   BlockAccounting,
   soakFailures,
 } from './network-verification.mjs'
@@ -471,7 +472,7 @@ async function zmqSoak(rpc, record, { zmqUrl, durationMs, intervalMs, during }) 
   const { walked, unannounced, uncovered, windows } = await blocks.settle(
     {
       header: hash => retrying(() => rpc.getBlockHeader(hash)),
-      hashAt: height => retrying(() => rpc.getBlockHash(height)),
+      hashAt: height => activeHash(h => retrying(() => rpc.getBlockHash(h)), height),
     },
     { startTip, startHeight, lastTip }
   )
@@ -486,7 +487,7 @@ async function zmqSoak(rpc, record, { zmqUrl, durationMs, intervalMs, during }) 
     uncovered,
     hashblockMissed: blocks.hashblockMissed,
     counts,
-    blocksSeen: blocks.announced.size,
+    blocksSeen: blocks.seen,
   }))
     record.fail(
       malformed > 0 && failure.endsWith('malformed ZMQ messages')

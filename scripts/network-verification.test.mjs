@@ -18,6 +18,7 @@ import {
   hideAll,
   hostOf,
   MAX_DURATION_MS,
+  activeHash,
   BlockAccounting,
   soakFailures,
   uncoveredBlocks,
@@ -379,6 +380,39 @@ describe('BlockAccounting', () => {
     accounting.message(hashblock('y'))
     const settled = await settle(accounting, blocks, { 100: 's', 101: 'x', 102: 'y' }, 'y')
     assert.deepEqual(settled.windows, [{ from: 100, to: 102 }])
+    assert.equal(settled.uncovered, 0)
+  })
+
+  it('keeps the check on topics on when only block_connected named the blocks', () => {
+    // No -zmqpubhashblock: sequence covers every block, and the silent topic must still fail.
+    const accounting = new BlockAccounting()
+    for (const message of [connected('a'), connected('b')]) accounting.message(message)
+    assert.equal(accounting.seen, 2)
+    const counts = { hashblock: 0, hashtx: 5, rawblock: 2, rawtx: 5, sequence: 9 }
+    assert.match(
+      soakFailures({ ...quietSoak, counts, blocksSeen: accounting.seen })[0],
+      /2 blocks arrived but nothing on hashblock/
+    )
+    // A block named on both topics counts once.
+    accounting.message(hashblock('b'))
+    assert.equal(accounting.seen, 2)
+  })
+
+  it('reads a height above the tip as no block, and throws any other failure', async () => {
+    const refusing = rpcCode => async () => {
+      throw Object.assign(new Error('refused'), { rpcCode })
+    }
+    assert.equal(await activeHash(refusing(-8), 200), undefined)
+    await assert.rejects(activeHash(refusing(-28), 200), /refused/)
+    assert.equal(await activeHash(async height => `block ${height}`, 200), 'block 200')
+    // A reorg to a shorter chain: a at 102 is above the tip, and the window starts at the fork.
+    const blocks = { s: block(100, 'p'), z: block(101, 's'), a: block(102, 'z'), x: block(101, 's') }
+    const accounting = new BlockAccounting()
+    accounting.started = true
+    accounting.message(hashblock('a'))
+    accounting.reconnect()
+    const settled = await settle(accounting, blocks, { 100: 's', 101: 'x' }, 'x')
+    assert.deepEqual(settled.windows, [{ from: 100, to: 101 }])
     assert.equal(settled.uncovered, 0)
   })
 
