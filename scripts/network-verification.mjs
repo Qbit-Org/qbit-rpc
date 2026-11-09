@@ -129,14 +129,17 @@ export class BlockAccounting {
   #hashblockWindow = { open: false, from: undefined, limit: Infinity }
   #sequenceWindow = { open: false, from: undefined, limit: 0, tip: undefined, since: 0 }
   #lastAnnounced
-  #lastConnected
-  /** The order each block's hashblock came in, and how many had come at the last block_connected and at
-   * the first sequence message: a gap counts only losses after its window's start. */
+  /** The last block either topic named, in the order the messages came. */
+  #lastNamed
+  /** The order each block's hashblock came in. */
   #announcedAt = new Map()
-  #announcedAtLastConnected
-  #announcedAtSequenceBaseline
-  /** How many hashblocks had come at the latest unsized sequence gap: the counter began again there. */
-  #announcedAtSequenceRestart = 0
+  /**
+   * Where the next sequence window starts: its block (`from`, undefined: the start) and how many hashblocks
+   * had come then (`since`), which a gap is charged after. Both move together, at each block_connected and
+   * where the counter began again (an unsized gap), so a window never reaches back past its own charges.
+   * `since` is undefined until the first sequence message sets the counter's baseline.
+   */
+  #sequenceStart = { from: undefined, since: undefined }
 
   /** How many blocks any message named: a missing `hashblock` publisher must not turn off the check on topics. */
   get seen() {
@@ -172,20 +175,21 @@ export class BlockAccounting {
   }
 
   message(message) {
-    if (message.topic === 'sequence' && this.#announcedAtSequenceBaseline === undefined) {
-      this.#announcedAtSequenceBaseline = this.#announcedAt.size
+    if (message.topic === 'sequence' && this.#sequenceStart.since === undefined) {
+      this.#sequenceStart.since = this.#announcedAt.size
     }
     if (message.topic === 'sequence' && message.event === 'block_connected') {
       this.#closeSequence()
       this.connected.add(message.hash)
-      this.#lastConnected = message.hash
-      this.#announcedAtLastConnected = this.#announcedAt.size
+      this.#lastNamed = message.hash
+      this.#sequenceStart = { from: message.hash, since: this.#announcedAt.size }
     }
     if (message.topic !== 'hashblock') return
     this.#closeHashblock(message.hash)
     this.announced.add(message.hash)
     if (!this.#announcedAt.has(message.hash)) this.#announcedAt.set(message.hash, this.#announcedAt.size)
     this.#lastAnnounced = message.hash
+    this.#lastNamed = message.hash
   }
 
   /**
@@ -198,18 +202,15 @@ export class BlockAccounting {
       this.sequenceGaps++
       // A gap that cannot say how many it lost (the counter began again, as after a reconnect) opens no
       // window: the reconnect's covers that spell. Losses before it are no later gap's to count.
+      // A window open across it ends here; the next starts after the restart, at the last block named.
       if (event.missed === undefined) {
-        this.#announcedAtSequenceRestart = this.#announcedAt.size
+        this.#closeSequence()
+        this.#sequenceStart = { from: this.#lastNamed, since: this.#announcedAt.size }
         return
       }
       const window = this.#sequenceWindow
-      if (!window.open) {
-        window.since = Math.max(
-          this.#announcedAtLastConnected ?? this.#announcedAtSequenceBaseline ?? 0,
-          this.#announcedAtSequenceRestart
-        )
-      }
-      this.#open(window, this.#lastConnected, event.missed)
+      if (!window.open) window.since = this.#sequenceStart.since ?? 0
+      this.#open(window, this.#sequenceStart.from, event.missed)
       if (tip !== undefined) window.tip = tip
       return
     }
