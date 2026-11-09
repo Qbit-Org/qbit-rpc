@@ -18,10 +18,8 @@ import {
   hideAll,
   hostOf,
   MAX_DURATION_MS,
-  activeHash,
   BlockAccounting,
   soakFailures,
-  uncoveredBlocks,
 } from './network-verification.mjs'
 
 const { parseQbt } = await import(new URL('../packages/rpc/lib/index.mjs', import.meta.url))
@@ -271,37 +269,18 @@ describe('hideAll and hostOf', () => {
   })
 })
 
-const quietSoak = { messages: 10, malformed: 0, unknown: 0, uncovered: 0, hashblockMissed: 0 }
+const quietSoak = { messages: 10, malformed: 0, unknown: 0, uncovered: 0 }
 
 describe('soakFailures', () => {
-  const quiet = { messages: 10, malformed: 0, unknown: 0, uncovered: 0, hashblockMissed: 0 }
-  it('passes a soak where every block had a hashblock', () => {
+  const quiet = quietSoak
+  it('passes a soak where every block was named', () => {
     assert.deepEqual(soakFailures(quiet), [])
   })
   it('fails a soak where nothing arrived', () => {
     assert.match(soakFailures({ ...quiet, messages: 0 })[0], /no ZMQ message arrived/)
   })
-  it('lets only hashblock gaps account for blocks without a hashblock', () => {
-    assert.equal(soakFailures({ ...quiet, uncovered: 2, hashblockMissed: 2 }).length, 0)
-    assert.match(soakFailures({ ...quiet, uncovered: 3, hashblockMissed: 2 })[0], /hashblock gaps account for 2/)
-    // A gap on another topic is not counted at all.
-    assert.equal(soakFailures({ ...quiet, uncovered: 3 }).length, 1)
-  })
-  it('keeps the check on after a gap: an unsized one covers only the blocks while blind', () => {
-    // Blind from block 100 (the last announced) to 103 (the next hashblock): a restart.
-    const restart = [{ from: 100, to: 103 }]
-    assert.equal(uncoveredBlocks([101, 102], restart), 0)
-    // A block missed later in the soak is still found, after one unsized gap...
-    assert.equal(uncoveredBlocks([101, 102, 150], restart), 1)
-    assert.equal(soakFailures({ ...quiet, uncovered: uncoveredBlocks([101, 102, 150], restart) }).length, 1)
-    // ...and after one sized gap, which covers its count and no more.
-    assert.equal(soakFailures({ ...quiet, uncovered: uncoveredBlocks([150, 151], []), hashblockMissed: 1 }).length, 1)
-    assert.equal(uncoveredBlocks([100, 104], restart), 2)
-  })
-  it('passes a late restart whose blocks no hashblock followed: blind to the end of the soak', () => {
-    // A reconnect after block 200, a block found while qbitd was down, and the soak ended at 201.
-    assert.equal(uncoveredBlocks([201], [{ from: 200, to: 201 }]), 0)
-    assert.deepEqual(soakFailures({ ...quiet, uncovered: uncoveredBlocks([201], [{ from: 200, to: 201 }]) }), [])
+  it('fails any block no message named outside a blind window', () => {
+    assert.match(soakFailures({ ...quiet, uncovered: 1 })[0], /1 new blocks no hashblock or block_connected named/)
   })
   it('fails a soak where blocks arrived but a topic stayed silent', () => {
     const counts = { hashblock: 3, hashtx: 5, rawblock: 0, rawtx: 5, sequence: 9 }
@@ -316,29 +295,31 @@ describe('soakFailures', () => {
 })
 
 describe('BlockAccounting', () => {
-  // An in-memory chain: blocks by hash, and the active chain by height.
-  const chainOf = (blocks, active) => ({
+  // An in-memory chain of headers, on the active chain or not.
+  const chainOf = blocks => ({
     header: async hash => {
-      const block = blocks[hash]
-      if (block === undefined) throw new Error(`unknown block ${hash}`)
-      return block
+      const found = blocks[hash]
+      if (found === undefined) throw new Error(`unknown block ${hash}`)
+      return found
     },
-    hashAt: async height => active[height],
   })
   const block = (height, previousBlockHash) => ({ height, previousBlockHash })
   const hashblock = hash => ({ topic: 'hashblock', hash })
   const connected = hash => ({ topic: 'sequence', event: 'block_connected', hash })
   const disconnected = hash => ({ topic: 'sequence', event: 'block_disconnected', hash })
-  const settle = (accounting, blocks, active, lastTip) =>
-    accounting.settle(chainOf(blocks, active), { startTip: 's', startHeight: 100, lastTip })
+  const started = () => Object.assign(new BlockAccounting(), { started: true })
+  const feed = (accounting, ...messages) => {
+    for (const message of messages) accounting.message(message)
+  }
+  const settle = (accounting, blocks, lastTip) =>
+    accounting.settle(chainOf(blocks), { startTip: 's', startHeight: 100, lastTip })
 
   it('counts blocks connected in one tip update, with a hashblock for the tip only', async () => {
     const blocks = { s: block(100, 'p'), a: block(101, 's'), b: block(102, 'a'), c: block(103, 'b') }
-    const accounting = new BlockAccounting()
-    accounting.started = true
+    const accounting = started()
     // A catch-up: three blocks connect, and qbitd announces the new tip once.
-    for (const message of [connected('a'), connected('b'), connected('c'), hashblock('c')]) accounting.message(message)
-    const settled = await settle(accounting, blocks, { 100: 's', 101: 'a', 102: 'b', 103: 'c' }, 'c')
+    feed(accounting, connected('a'), connected('b'), connected('c'), hashblock('c'))
+    const settled = await settle(accounting, blocks, 'c')
     assert.deepEqual(settled, { walked: 3, unannounced: 0, uncovered: 0, windows: [] })
     assert.deepEqual(soakFailures({ ...quietSoak, uncovered: settled.uncovered }), [])
   })
@@ -352,78 +333,183 @@ describe('BlockAccounting', () => {
       y: block(102, 'x'),
       z: block(103, 'y'),
     }
-    const accounting = new BlockAccounting()
-    accounting.started = true
-    for (const message of [connected('a'), hashblock('a'), disconnected('a')]) accounting.message(message)
-    for (const message of [connected('x'), connected('y'), connected('z'), hashblock('z')]) accounting.message(message)
-    const settled = await settle(accounting, blocks, { 100: 's', 101: 'x', 102: 'y', 103: 'z' }, 'z')
+    const accounting = started()
+    feed(accounting, connected('a'), hashblock('a'), disconnected('a'))
+    feed(accounting, connected('x'), connected('y'), connected('z'), hashblock('z'))
+    const settled = await settle(accounting, blocks, 'z')
     assert.deepEqual(settled, { walked: 3, unannounced: 0, uncovered: 0, windows: [] })
   })
 
   it('still fails a block no message named, outside a blind window', async () => {
     const blocks = { s: block(100, 'p'), a: block(101, 's'), b: block(102, 'a') }
-    const accounting = new BlockAccounting()
-    accounting.started = true
+    const accounting = started()
     accounting.message(hashblock('b')) // nothing named a
-    const settled = await settle(accounting, blocks, { 100: 's', 101: 'a', 102: 'b' }, 'b')
+    const settled = await settle(accounting, blocks, 'b')
     assert.equal(settled.uncovered, 1)
     assert.equal(soakFailures({ ...quietSoak, uncovered: settled.uncovered }).length, 1)
   })
 
-  it('starts a blind window at the fork when a reorg while blind replaced the last block announced', async () => {
+  it('covers the blocks a reorg while blind connected, down to where the chains meet', async () => {
     const blocks = { s: block(100, 'p'), a: block(101, 's'), x: block(101, 's'), y: block(102, 'x') }
-    const accounting = new BlockAccounting()
-    accounting.started = true
+    const accounting = started()
     accounting.message(hashblock('a'))
     accounting.reconnect() // qbitd restarts; meanwhile x and y replace a
     accounting.gap({ topic: 'hashblock', expected: 2, received: 1 })
     accounting.message(hashblock('y'))
-    const settled = await settle(accounting, blocks, { 100: 's', 101: 'x', 102: 'y' }, 'y')
+    const settled = await settle(accounting, blocks, 'y')
     assert.deepEqual(settled.windows, [{ from: 100, to: 102 }])
+    assert.equal(settled.uncovered, 0)
+  })
+
+  it('keeps a window open to the end of the soak when no hashblock followed a reconnect', async () => {
+    const blocks = { s: block(100, 'p'), a: block(101, 's'), b: block(102, 'a') }
+    const accounting = started()
+    accounting.message(hashblock('a'))
+    accounting.reconnect() // b is found while qbitd is down, and the soak ends
+    const settled = await settle(accounting, blocks, 'b')
+    assert.deepEqual(settled.windows, [{ from: 101, to: 102 }])
+    assert.equal(settled.uncovered, 0)
+  })
+
+  it('covers a reorg to a shorter chain, its last block announced above the new tip', async () => {
+    const blocks = { s: block(100, 'p'), z: block(101, 's'), a: block(102, 'z'), x: block(101, 's') }
+    const accounting = started()
+    accounting.message(hashblock('a'))
+    accounting.reconnect()
+    const settled = await settle(accounting, blocks, 'x')
+    assert.deepEqual(settled.windows, [{ from: 100, to: 101 }])
     assert.equal(settled.uncovered, 0)
   })
 
   it('keeps the check on topics on when only block_connected named the blocks', () => {
     // No -zmqpubhashblock: sequence covers every block, and the silent topic must still fail.
     const accounting = new BlockAccounting()
-    for (const message of [connected('a'), connected('b')]) accounting.message(message)
+    feed(accounting, connected('a'), connected('b'))
     assert.equal(accounting.seen, 2)
     const counts = { hashblock: 0, hashtx: 5, rawblock: 2, rawtx: 5, sequence: 9 }
     assert.match(
       soakFailures({ ...quietSoak, counts, blocksSeen: accounting.seen })[0],
       /2 blocks arrived but nothing on hashblock/
     )
-    // A block named on both topics counts once.
     accounting.message(hashblock('b'))
-    assert.equal(accounting.seen, 2)
+    assert.equal(accounting.seen, 2) // a block named on both topics counts once
   })
 
-  it('reads a height above the tip as no block, and throws any other failure', async () => {
-    const refusing = rpcCode => async () => {
-      throw Object.assign(new Error('refused'), { rpcCode })
+  it('asks for each block header once, however many windows walk over it', async () => {
+    // 200 blocks above s, a sequence gap before each block_connected: 200 windows over one chain.
+    const blocks = { s: block(100, 'p') }
+    let previous = 's'
+    const accounting = started()
+    for (let i = 1; i <= 200; i += 1) {
+      blocks[`b${i}`] = block(100 + i, previous)
+      previous = `b${i}`
+      accounting.gap({ topic: 'sequence', expected: i, received: i + 1, missed: 1 })
+      feed(accounting, connected(`b${i}`), hashblock(`b${i}`))
     }
-    assert.equal(await activeHash(refusing(-8), 200), undefined)
-    await assert.rejects(activeHash(refusing(-28), 200), /refused/)
-    assert.equal(await activeHash(async height => `block ${height}`, 200), 'block 200')
-    // A reorg to a shorter chain: a at 102 is above the tip, and the window starts at the fork.
-    const blocks = { s: block(100, 'p'), z: block(101, 's'), a: block(102, 'z'), x: block(101, 's') }
-    const accounting = new BlockAccounting()
-    accounting.started = true
+    let calls = 0
+    const counting = {
+      header: async hash => {
+        calls += 1
+        return chainOf(blocks).header(hash)
+      },
+    }
+    const settled = await accounting.settle(counting, { startTip: 's', startHeight: 100, lastTip: previous })
+    assert.equal(settled.uncovered, 0)
+    assert.equal(settled.windows.length, 200)
+    // At most one call per distinct block: 200 above s, and s itself.
+    assert.ok(calls <= 201, `${calls} header calls for 201 blocks`)
+  })
+
+  // #84: the gap accounting under lost sequence messages.
+  it('excuses only the blocks connected while blind, not a reorg after the window closed (#84, 1)', async () => {
+    // a announced, a reconnect, b's hashblock closes the window [a, b]. Later, while connected, a reorg
+    // forks at s: x and y are never named (their block_connected lost without a gap), z is announced.
+    const blocks = {
+      s: block(100, 'p'),
+      a: block(101, 's'),
+      b: block(102, 'a'),
+      x: block(101, 's'),
+      y: block(102, 'x'),
+      z: block(103, 'y'),
+    }
+    const accounting = started()
     accounting.message(hashblock('a'))
     accounting.reconnect()
-    const settled = await settle(accounting, blocks, { 100: 's', 101: 'x' }, 'x')
-    assert.deepEqual(settled.windows, [{ from: 100, to: 101 }])
-    assert.equal(settled.uncovered, 0)
+    accounting.message(hashblock('b'))
+    accounting.message(hashblock('z'))
+    const settled = await settle(accounting, blocks, 'z')
+    // The window spans a..b on its own chain: x and y, at the same heights on another, are not in it.
+    assert.deepEqual(settled.windows, [{ from: 101, to: 102 }])
+    assert.equal(settled.uncovered, 2)
+    assert.equal(soakFailures({ ...quietSoak, uncovered: settled.uncovered }).length, 1)
   })
 
-  it('keeps a window open to the end of the soak when no hashblock followed a reconnect', async () => {
-    const blocks = { s: block(100, 'p'), a: block(101, 's'), b: block(102, 'a') }
-    const accounting = new BlockAccounting()
-    accounting.started = true
-    accounting.message(hashblock('a'))
-    accounting.reconnect() // b is found while qbitd is down, and the soak ends
-    const settled = await settle(accounting, blocks, { 100: 's', 101: 'a', 102: 'b' }, 'b')
-    assert.deepEqual(settled.windows, [{ from: 101, to: 102 }])
+  it('lets a sequence gap excuse the blocks whose block_connected it lost (#84, 2)', async () => {
+    // A catch-up connects a, b and c. The block_connected of a and b are lost, which the subscriber
+    // reports as a sequence gap before c's; hashblock names only c.
+    const blocks = { s: block(100, 'p'), a: block(101, 's'), b: block(102, 'a'), c: block(103, 'b') }
+    const accounting = started()
+    accounting.gap({ topic: 'sequence', expected: 1, received: 3, missed: 2 })
+    feed(accounting, connected('c'), hashblock('c'))
+    const settled = await settle(accounting, blocks, 'c')
     assert.equal(settled.uncovered, 0)
+    assert.equal(accounting.sequenceGaps, 1)
+    // A later gap opens at the last block_connected: a was named, b is excused, nothing below a is.
+    const later = started()
+    feed(later, connected('a'), hashblock('a'))
+    later.gap({ topic: 'sequence', expected: 5, received: 7, missed: 2 })
+    feed(later, connected('c'), hashblock('c'))
+    const settledLater = await settle(later, blocks, 'c')
+    assert.deepEqual(settledLater.windows, [{ from: 101, to: 103 }])
+    assert.equal(settledLater.uncovered, 0)
+  })
+
+  it('lets a sized sequence gap excuse no more blocks than it lost messages', async () => {
+    const blocks = { s: block(100, 'p'), a: block(101, 's'), b: block(102, 'a'), c: block(103, 'b') }
+    // One lost message, a mempool event or a block's, while two blocks went unnamed before c.
+    const accounting = started()
+    accounting.gap({ topic: 'sequence', expected: 1, received: 2, missed: 1 })
+    feed(accounting, connected('c'), hashblock('c'))
+    assert.equal((await settle(accounting, blocks, 'c')).uncovered, 1)
+  })
+
+  it('keeps a sequence gap still open at the end to its cap: a silent publisher still fails', async () => {
+    // One lost message, then nothing on any topic while b and c connect: one may be excused, not both.
+    const blocks = { s: block(100, 'p'), a: block(101, 's'), b: block(102, 'a'), c: block(103, 'b') }
+    const accounting = started()
+    feed(accounting, connected('a'), hashblock('a'))
+    accounting.gap({ topic: 'sequence', expected: 5, received: 6, missed: 1 })
+    const settled = await settle(accounting, blocks, 'c')
+    assert.equal(settled.uncovered, 1)
+    assert.equal(soakFailures({ ...quietSoak, uncovered: settled.uncovered }).length, 1)
+    // A loss the gap fully accounts for, b's block_connected (and no hashblock topic), still open at the end: excused.
+    const reported = started()
+    feed(reported, connected('a'), hashblock('a'))
+    reported.gap({ topic: 'sequence', expected: 5, received: 6, missed: 1 })
+    assert.equal((await settle(reported, { s: blocks.s, a: blocks.a, b: blocks.b }, 'b')).uncovered, 0)
+  })
+
+  it("spends a sequence gap's allowance on a block whose hashblock came without its block_connected", async () => {
+    // s → a → b → c: a's hashblock arrives, a gap of 1, then c's block_connected and hashblock. a and b both
+    // lack block_connected, and one lost message cannot explain both: b fails.
+    const blocks = { s: block(100, 'p'), a: block(101, 's'), b: block(102, 'a'), c: block(103, 'b') }
+    const accounting = started()
+    feed(accounting, connected('s'), hashblock('a'))
+    accounting.gap({ topic: 'sequence', expected: 2, received: 3, missed: 1 })
+    feed(accounting, connected('c'), hashblock('c'))
+    assert.equal((await settle(accounting, blocks, 'c')).uncovered, 1)
+  })
+
+  it('lets a sized hashblock gap excuse no block that no message named (#84, 3)', async () => {
+    // A hashblock gap of 1 stood for b, whose block_connected arrived. d, which nothing named, is outside
+    // every window, and fails: the gap's allowance no longer covers it.
+    const blocks = { s: block(100, 'p'), a: block(101, 's'), b: block(102, 'a'), d: block(103, 'b') }
+    const accounting = started()
+    feed(accounting, connected('a'), hashblock('a'), connected('b'))
+    accounting.gap({ topic: 'hashblock', expected: 2, received: 3, missed: 1 })
+    const settled = await settle(accounting, blocks, 'd')
+    assert.equal(accounting.hashblockMissed, 1)
+    assert.equal(settled.uncovered, 1)
+    assert.equal(soakFailures({ ...quietSoak, uncovered: settled.uncovered }).length, 1)
   })
 })

@@ -153,10 +153,17 @@ looks up each `hashblock` with `getblockheader`, and at the end walks the
 chain back from the tip to where it started, counting blocks that no
 `hashblock` or `sequence` `block_connected` announced (qbitd sends one
 `hashblock` per tip update, so blocks connected together have only the
-last). Each must fall in a reported gap: one that says how many it skipped
-covers that many, and a reconnect or a gap of unknown size covers only the
-blocks from the last one announced (or where a reorg forked below it) to the
-next `hashblock`, or to the end of the soak when none came. It samples
+last). Each must fall in a blind window, which covers exactly the blocks
+connected while the subscriber could miss them: after a reconnect or a
+`hashblock` gap of unknown size, from the last `hashblock` to the next one,
+or to the end of the soak when none came; after a `sequence` gap, from the
+last `block_connected` to the next, or to the end, excusing no more blocks
+than the gap lost messages, less one for each block whose `hashblock` came
+without its `block_connected`. A window follows its closing block's
+chain down to where it meets its opening block's, so a reorg while blind is
+covered and one after it is not. A `hashblock` gap that says how many it
+skipped excuses none, because each of those blocks still has its
+`block_connected`. It samples
 `health()` every minute and records the largest `rawblock` against
 `maxMessageSize` (2,065,536 bytes). During the soak, restart qbitd once
 (`qbit-cli stop`, then start it): the report must show a reconnect, `unknown`

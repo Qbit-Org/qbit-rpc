@@ -93,37 +93,28 @@ export function hostOf(url) {
 }
 
 /**
- * How many of `heights`, blocks no `hashblock` or `block_connected` announced, fall outside every
- * window `{ from, to }`: above `from` and at most `to`, where the subscriber
- * was blind after a reconnect or a `hashblock` gap of unknown size.
- */
-export function uncoveredBlocks(heights, windows) {
-  return heights.filter(height => !windows.some(({ from, to }) => height > from && height <= to)).length
-}
-
-/**
- * The active chain's block at `height`, or undefined above the tip (RPC -8),
- * where a reorg to a shorter chain with more work can leave a block announced
- * earlier. Any other failure is thrown: it says nothing about the chain.
- */
-export async function activeHash(getBlockHash, height) {
-  try {
-    return await getBlockHash(height)
-  } catch (error) {
-    if (error?.rpcCode === -8) return undefined
-    throw error
-  }
-}
-
-/**
  * A ZMQ soak's block accounting, fed the subscriber's events in order: the
  * blocks it was told of, and where it was blind. qbitd sends one `hashblock`
  * per tip update, so blocks connected together (a catch-up or a reorg) have
  * one only for the last; `sequence`'s `block_connected` names each of them.
- * A blind window runs from the last block announced (undefined: the start)
- * to the next `hashblock` after a reconnect or an unsized `hashblock` gap, or
- * to the end of the soak when none came. Set `started` once the soak's first
- * tip is fixed: a reconnect before it hides no block the walk counts.
+ *
+ * A blind window runs from the last block named to the next one, and covers
+ * exactly the blocks connected in between: the ancestors of its closing block
+ * above where that block's chain meets its opening block's. Two kinds open:
+ * - after a reconnect or an unsized `hashblock` gap, from the last `hashblock`
+ *   (undefined: the start) to the next, or to the end of the soak when none
+ *   came;
+ * - after a `sequence` gap, from the last `block_connected` to the next: lost
+ *   `sequence` messages can be blocks' as well as the mempool's, which share
+ *   its counter. A gap that says how many it lost excuses at most that many
+ *   blocks, less one for each block in the window whose `hashblock` came but
+ *   whose `block_connected` did not, and keeps that cap if it is still open
+ *   at the end.
+ * A block no message named passes only inside a window. A sized `hashblock`
+ * gap excuses none: the block whose `hashblock` was lost is still named by its
+ * `block_connected`, unless `sequence` lost it too, which a `sequence` gap
+ * reports. Set `started` once the soak's first tip is fixed: a reconnect
+ * before it hides no block the walk counts.
  */
 export class BlockAccounting {
   announced = new Set()
@@ -131,100 +122,142 @@ export class BlockAccounting {
   blind = []
   hashblockMissed = 0
   hashblockUnsizedGaps = 0
+  sequenceGaps = 0
   started = false
-  #open = false
-  #from
-  #last
+  #hashblockWindow = { open: false, from: undefined, limit: Infinity }
+  #sequenceWindow = { open: false, from: undefined, limit: 0 }
+  #lastAnnounced
+  #lastConnected
 
   /** How many blocks any message named: a missing `hashblock` publisher must not turn off the check on topics. */
   get seen() {
     return new Set([...this.announced, ...this.connected]).size
   }
 
-  #blind() {
-    if (!this.#open) [this.#open, this.#from] = [true, this.#last]
+  /** Opens `window` from `from`, or widens the allowance of one open: `limit` more blocks it may excuse. */
+  #open(window, from, limit = Infinity) {
+    if (window.open) window.limit += limit
+    else Object.assign(window, { open: true, from, limit })
+  }
+
+  #close(window, to) {
+    if (window.open) this.blind.push([window.from, to, window.limit])
+    window.open = false
   }
 
   message(message) {
-    if (message.topic === 'sequence' && message.event === 'block_connected') this.connected.add(message.hash)
+    if (message.topic === 'sequence' && message.event === 'block_connected') {
+      this.#close(this.#sequenceWindow, message.hash)
+      this.connected.add(message.hash)
+      this.#lastConnected = message.hash
+    }
     if (message.topic !== 'hashblock') return
-    if (this.#open) this.blind.push([this.#from, message.hash])
-    this.#open = false
+    this.#close(this.#hashblockWindow, message.hash)
     this.announced.add(message.hash)
-    this.#last = message.hash
+    this.#lastAnnounced = message.hash
   }
 
   gap(event) {
+    if (event.topic === 'sequence') {
+      this.sequenceGaps++
+      this.#open(this.#sequenceWindow, this.#lastConnected, event.missed ?? Infinity)
+      return
+    }
     if (event.topic !== 'hashblock') return
     if (event.missed !== undefined) this.hashblockMissed += event.missed
     else {
       this.hashblockUnsizedGaps++
-      this.#blind()
+      this.#open(this.#hashblockWindow, this.#lastAnnounced)
     }
   }
 
   /** Blocks found while it is down are never announced, and no hashblock may come before the end to say so. */
   reconnect() {
-    if (this.started) this.#blind()
+    if (this.started) this.#open(this.#hashblockWindow, this.#lastAnnounced)
   }
 
   /**
    * Walks the active chain back from `lastTip` to `startTip`. `chain` gives
-   * `header(hash)` ({ height, previousBlockHash }) and `hashAt(height)` on the
-   * active chain, both async. Returns how many blocks it walked, how many no
-   * message named, how many of those fell outside every blind window, and
-   * the windows as heights. A window starts at the fork point when a reorg
-   * while blind replaced the last block announced.
+   * `header(hash)` ({ height, previousBlockHash }), async, for any block the
+   * node has, on the active chain or not. Returns how many blocks it walked,
+   * how many no message named, how many of those fell outside every blind
+   * window, and each window as the heights it spans: from where its two ends'
+   * chains meet to its closing block.
    */
-  async settle(chain, { startTip, startHeight, lastTip }) {
-    const heights = []
+  async settle(source, { startTip, startHeight, lastTip }) {
+    // One getblockheader per distinct block for the whole settle: windows walk the same ancestry again.
+    const headers = new Map()
+    const chain = {
+      header: hash => {
+        if (!headers.has(hash)) headers.set(hash, source.header(hash))
+        return headers.get(hash)
+      },
+    }
+    const unnamed = []
     let walked = 0
     for (let hash = lastTip; hash !== undefined && hash !== startTip; walked++) {
       const header = await chain.header(hash)
       if (header.height <= startHeight || header.previousBlockHash === undefined) break
-      if (!this.announced.has(hash) && !this.connected.has(hash)) heights.push(header.height)
+      if (!this.announced.has(hash) && !this.connected.has(hash)) unnamed.push(hash)
       hash = header.previousBlockHash
     }
-    const forkHeight = async hash => {
-      for (let at = hash; at !== undefined;) {
+    // `from`'s ancestors since the start: where the chain `to` is on meets it.
+    const ancestors = async from => {
+      const seen = new Set()
+      for (let at = from; at !== undefined && at !== startTip;) {
         const header = await chain.header(at)
-        if (header.height <= startHeight || (await chain.hashAt(header.height)) === at) {
-          return Math.max(header.height, startHeight)
-        }
+        if (header.height <= startHeight) break
+        seen.add(at)
         at = header.previousBlockHash
       }
-      return startHeight
+      return seen
     }
+    const covered = new Set()
     const windows = []
-    for (const [from, to] of this.#open ? [...this.blind, [this.#from, lastTip]] : this.blind) {
+    // A window still open runs to the end, with the allowance it has: a sequence gap's stays capped.
+    const open = [this.#hashblockWindow, this.#sequenceWindow].filter(w => w.open).map(w => [w.from, lastTip, w.limit])
+    const unnamedSet = new Set(unnamed)
+    for (const [from, to, limit] of [...this.blind, ...open]) {
       if (to === undefined) continue
-      windows.push({
-        from: from === undefined ? startHeight : await forkHeight(from),
-        to: (await chain.header(to)).height,
-      })
+      const meets = from === undefined ? new Set() : await ancestors(from)
+      let fork = startHeight
+      // Back from `to` to the first block on `from`'s chain (`from` itself when no reorg came between).
+      const segment = []
+      for (let at = to; at !== undefined && at !== startTip;) {
+        const header = await chain.header(at)
+        if (meets.has(at)) {
+          fork = header.height
+          break
+        }
+        if (header.height <= startHeight) break
+        segment.push(at)
+        at = header.previousBlockHash
+      }
+      // A sized gap's lost messages first account for the blocks whose hashblock came but whose
+      // block_connected did not; what is left excuses unnamed blocks, the nearest to its end first.
+      let allowance = limit - segment.filter(hash => this.announced.has(hash) && !this.connected.has(hash)).length
+      for (const hash of segment) {
+        if (allowance <= 0) break
+        if (unnamedSet.has(hash)) {
+          covered.add(hash)
+          allowance--
+        }
+      }
+      windows.push({ from: fork, to: (await chain.header(to)).height })
     }
-    return { walked, unannounced: heights.length, uncovered: uncoveredBlocks(heights, windows), windows }
+    const uncovered = unnamed.filter(hash => !covered.has(hash)).length
+    return { walked, unannounced: unnamed.length, uncovered, windows }
   }
 }
 
 /**
- * Why a ZMQ soak failed, if it did. Each new block must have had a
- * `hashblock`, or fall in a `hashblock` gap: one that says how many it
- * skipped covers that many, and one that cannot (a publisher restart, its
- * counter begun again) covers only the blocks while it was blind, which
- * `uncoveredBlocks` leaves out of `uncovered`. Gaps on other topics cover none.
- * And something must have arrived at all, and once blocks arrived, something
- * on every topic: each block publishes on all of them.
+ * Why a ZMQ soak failed, if it did. Each new block must have been named, by
+ * a `hashblock` or a `sequence` `block_connected`, or fall in a blind window
+ * (see `BlockAccounting`): `uncovered` counts those that did neither. And
+ * something must have arrived at all, and once blocks arrived, something on
+ * every topic: each block publishes on all of them.
  */
-export function soakFailures({
-  messages,
-  malformed,
-  unknown,
-  uncovered,
-  hashblockMissed,
-  counts = {},
-  blocksSeen = 0,
-}) {
+export function soakFailures({ messages, malformed, unknown, uncovered, counts = {}, blocksSeen = 0 }) {
   const failures = []
   if (messages === 0) failures.push('no ZMQ message arrived during the soak: check QBIT_ZMQ_URL and -zmqpub')
   if (blocksSeen > 0) {
@@ -236,10 +269,8 @@ export function soakFailures({
   }
   if (malformed > 0) failures.push(`${malformed} malformed ZMQ messages`)
   if (unknown > 0) failures.push(`${unknown} hashblock messages named a block the node does not know`)
-  if (uncovered > hashblockMissed) {
-    failures.push(
-      `${uncovered} new blocks had no hashblock outside a reconnect, and hashblock gaps account for ${hashblockMissed}`
-    )
+  if (uncovered > 0) {
+    failures.push(`${uncovered} new blocks no hashblock or block_connected named, outside a reconnect or a gap`)
   }
   return failures
 }
