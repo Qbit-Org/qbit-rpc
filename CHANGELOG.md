@@ -92,8 +92,9 @@ The first release of both packages.
 - **`ClientSatisfies<Copy>`**, a type that checks an interface you declare for
   the client instead of importing its types: `true` when `QbitRpcClient` fits
   it, and otherwise each member that does not, with parameters compared both
-  ways (`UndeclaredKeys`): tuple elements against an array's, union members
-  the argument fits, and `object` or `{}` options as open. Overloads and
+  ways (`UndeclaredKeys`): tuple elements against an array's, one union
+  member the argument fits declaring all its keys, and `object` or `{}`
+  options as open. Overloads and
   generic methods are limits it documents. Check it in your own type tests,
   `true satisfies ClientSatisfies<MyRpc>`; see
   [Methods](docs/rpc/methods.md#checking-an-interface-of-your-own-clientsatisfies).

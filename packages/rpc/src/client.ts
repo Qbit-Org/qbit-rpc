@@ -402,9 +402,11 @@ export type ClientSatisfies<Copy extends object> = {
  * properties is assignable to one with fewer, but the client refuses it with a
  * `TypeError`. Argument lists (tuples) are compared position by position, an
  * array parameter giving its element type to each position of a tuple
- * argument. Against a union `Param`, a key is declared when a member the
- * argument is assignable to declares it. A primitive, branded or not, holds no
- * key, and an argument of type `object` or `{}` holds any. For
+ * argument. Against a union `Param`, the argument passes when one member it
+ * is assignable to declares every key it can hold; a key that can only be
+ * `undefined` counts as declared when any member declares it. A primitive,
+ * branded or not, holds no key, and an argument of type `object` or `{}`
+ * holds any. For
  * {@link ClientSatisfies}.
  */
 export type UndeclaredKeys<Arg, Param> = unknown extends Param
@@ -421,40 +423,63 @@ export type UndeclaredKeys<Arg, Param> = unknown extends Param
           : // The members of a union parameter the argument is assignable to; all of them when it fits none.
             (Param extends unknown ? (Arg extends Param ? Param : never) : never) extends infer Matched
             ? ([Matched] extends [never] ? Param : Matched) extends infer P
-              ? Arg extends readonly unknown[]
-                ? {
-                    // Position by position; an array parameter gives its element type to each position.
-                    [I in keyof Arg]-?: UndeclaredKeys<
-                      Arg[I],
-                      P extends readonly unknown[]
-                        ? number extends P['length']
-                          ? P[number]
-                          : I extends keyof P
-                            ? P[I]
-                            : never
+              ? // The keys whose value can be something other than undefined.
+                {
+                  [K in keyof Arg]-?: [Exclude<Arg[K], undefined>] extends [never] ? never : K
+                }[keyof Arg] extends infer Defined
+                ? // Each member's undeclared keys, or true where it declares them all. The argument passes when one
+                  // member does, as the client checks one form at a time: an argument that fits two members with
+                  // the keys of both fits neither.
+                  (
+                    P extends unknown
+                      ? (
+                          Arg extends readonly unknown[]
+                            ? {
+                                // Position by position; an array parameter gives its element type to each position.
+                                [I in keyof Arg]-?: UndeclaredKeys<
+                                  Arg[I],
+                                  P extends readonly unknown[]
+                                    ? number extends P['length']
+                                      ? P[number]
+                                      : I extends keyof P
+                                        ? P[I]
+                                        : never
+                                    : never
+                                >
+                              }[number]
+                            : Arg extends object
+                              ? [keyof Arg] extends [never]
+                                ? // `object` or `{}` lets any key through, where the client's parameter declares its own.
+                                  P extends readonly unknown[]
+                                  ? never
+                                  : P extends object
+                                    ? string extends keyof P
+                                      ? never
+                                      : [keyof P] extends [never]
+                                        ? never
+                                        : string
+                                    : never
+                                : // A key that can only be undefined (`data?: never`) is declared when any member of
+                                  // the parameter declares it: the client reads a union's keys together, and tells
+                                  // the forms apart by the values an argument holds.
+                                  | Exclude<Defined, keyof P>
+                                  | Exclude<Exclude<keyof Arg, Defined>, Param extends unknown ? keyof Param : never>
+                                  | {
+                                      [K in keyof Arg]-?: UndeclaredKeys<Arg[K], K extends keyof P ? P[K] : never>
+                                    }[keyof Arg]
+                              : never
+                        ) extends infer Keys
+                        ? [Keys] extends [never]
+                          ? true
+                          : Keys
                         : never
-                    >
-                  }[number]
-                : Arg extends object
-                  ? [keyof Arg] extends [never]
-                    ? // `object` or `{}` lets any key through, where the client's parameter declares its own.
-                      P extends readonly unknown[]
-                      ? never
-                      : P extends object
-                        ? string extends keyof P
-                          ? never
-                          : [keyof P] extends [never]
-                            ? never
-                            : string
-                        : never
-                    : | Exclude<keyof Arg, P extends unknown ? keyof P : never>
-                      | {
-                          [K in keyof Arg]-?: UndeclaredKeys<
-                            Arg[K],
-                            P extends unknown ? (K extends keyof P ? P[K] : never) : never
-                          >
-                        }[keyof Arg]
+                      : never
+                  ) extends infer Each
+                  ? true extends Each
+                    ? never
+                    : Each
                   : never
+                : never
               : never
             : never
 

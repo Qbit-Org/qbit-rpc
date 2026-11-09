@@ -189,6 +189,36 @@ interface MergedOutput {
 // @ts-expect-error `data` beside `address`: no member of the union declares both.
 true satisfies ClientSatisfies<MergedOutput>
 
+/** Both forms' keys required at once: the argument fits both members, and the client refuses it as either. */
+interface BothForms {
+  walletCreateFundedPsbt(args: {
+    readonly outputs: readonly { readonly address: string; readonly amountBits: bigint; readonly data: string }[]
+  }): Promise<unknown>
+}
+// @ts-expect-error Every output holds `address` and `data`, which the client refuses together.
+true satisfies ClientSatisfies<BothForms>
+true satisfies Equal<ClientSatisfies<BothForms>, { walletCreateFundedPsbt: 'parameters' }>
+
+/** The usual exclusive-or union: each form names the other's keys as `never`, which only hold undefined. */
+interface ExclusiveForms {
+  walletCreateFundedPsbt(args: {
+    readonly outputs: readonly (
+      | { readonly address: string; readonly amountBits: bigint; readonly data?: never }
+      | { readonly data: string; readonly address?: never; readonly amountBits?: never }
+    )[]
+  }): Promise<unknown>
+}
+true satisfies ClientSatisfies<ExclusiveForms>
+
+/** A key no member of the union declares is still reported, even when it can only be undefined. */
+interface UnknownNever {
+  walletCreateFundedPsbt(args: {
+    readonly outputs: readonly { readonly address: string; readonly amountBits: bigint; readonly memo?: never }[]
+  }): Promise<unknown>
+}
+// @ts-expect-error `memo` is no key of either form.
+true satisfies ClientSatisfies<UnknownNever>
+
 /** A member typed as a nullable function is still checked as a method. */
 interface NullableSplit {
   getTxOut:

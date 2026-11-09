@@ -1226,11 +1226,13 @@ export interface TxSpendingPrevout {
 }
 
 // @public
-export type UndeclaredKeys<Arg, Param> = unknown extends Param ? never : [Param] extends [never] ? never : 0 extends 1 & Arg ? never : Arg extends (...args: never) => unknown ? never : Arg extends string | number | bigint | boolean | symbol | null | undefined ? never : (Param extends unknown ? (Arg extends Param ? Param : never) : never) extends infer Matched ? ([Matched] extends [never] ? Param : Matched) extends infer P ? Arg extends readonly unknown[] ? {
+export type UndeclaredKeys<Arg, Param> = unknown extends Param ? never : [Param] extends [never] ? never : 0 extends 1 & Arg ? never : Arg extends (...args: never) => unknown ? never : Arg extends string | number | bigint | boolean | symbol | null | undefined ? never : (Param extends unknown ? (Arg extends Param ? Param : never) : never) extends infer Matched ? ([Matched] extends [never] ? Param : Matched) extends infer P ? {
+    [K in keyof Arg]-?: [Exclude<Arg[K], undefined>] extends [never] ? never : K;
+}[keyof Arg] extends infer Defined ? (P extends unknown ? (Arg extends readonly unknown[] ? {
     [I in keyof Arg]-?: UndeclaredKeys<Arg[I], P extends readonly unknown[] ? number extends P['length'] ? P[number] : I extends keyof P ? P[I] : never : never>;
-}[number] : Arg extends object ? [keyof Arg] extends [never] ? P extends readonly unknown[] ? never : P extends object ? string extends keyof P ? never : [keyof P] extends [never] ? never : string : never : Exclude<keyof Arg, P extends unknown ? keyof P : never> | {
-    [K in keyof Arg]-?: UndeclaredKeys<Arg[K], P extends unknown ? (K extends keyof P ? P[K] : never) : never>;
-}[keyof Arg] : never : never : never;
+}[number] : Arg extends object ? [keyof Arg] extends [never] ? P extends readonly unknown[] ? never : P extends object ? string extends keyof P ? never : [keyof P] extends [never] ? never : string : never : Exclude<Defined, keyof P> | Exclude<Exclude<keyof Arg, Defined>, Param extends unknown ? keyof Param : never> | {
+    [K in keyof Arg]-?: UndeclaredKeys<Arg[K], K extends keyof P ? P[K] : never>;
+}[keyof Arg] : never) extends infer Keys ? [Keys] extends [never] ? true : Keys : never : never) extends infer Each ? true extends Each ? never : Each : never : never : never : never;
 
 // @public
 export interface UnloadedWallet {
