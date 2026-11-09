@@ -91,8 +91,11 @@ setup below must be done, in order.
   `release/X.Y` with `main` merged in. On it, run
   `corepack pnpm release:version 0.0.0`, which puts both packages back to
   `"private": true` at `0.0.0`; `pack:check` fails the back-merge until it
-  does. Keep the release's CHANGELOG section. Merge a back-merge at least once
-  per published version and before the next line is cut.
+  does. Keep the release's CHANGELOG section. Sign the commits you make on
+  that branch: a back-merge merges as it is, and `main` takes only commits
+  with a verified signature
+  ([CONTRIBUTING.md](CONTRIBUTING.md#pull-requests)). Merge a back-merge at
+  least once per published version and before the next line is cut.
 - A fix that lands on `main` first and is also needed on an active line is
   cherry-picked (`git cherry-pick -x`) onto `release/X.Y` in its own pull
   request.
@@ -174,15 +177,17 @@ Steps 2 to 5 bring these to the settings below.
       pass (`verify`, `regtest smoke` and `changelog`, from GitHub Actions,
       with Require branches to be up to date), Block force pushes, Restrict
       deletions. Under Require a pull request, Allowed merge methods: Merge
-      and Squash only. A release branch is cut from `main` and inherits its
+      only. A release branch is cut from `main` and inherits its
       first-parent chain, so a rebase merge into `main` would put every
-      commit of a pull request where a release can be tagged. Bypass list:
+      commit of a pull request where a release can be tagged, and a squash
+      merge would replace the pull request's signed commit with one GitHub
+      signs (ruleset 6). Bypass list:
       the release approvers team only while there is one code owner
       ([Gaps](#gaps)), otherwise empty.
    2. Branch ruleset `release-branches`, target `release/*`: the same rules as
       `main`, with the same bypass: the release approvers team only while there
       is one code owner ([Gaps](#gaps)), otherwise empty, and the same
-      allowed merge methods, Merge and Squash only, so each pull request adds
+      allowed merge method, Merge only, so each pull request adds
       one commit to the branch's first-parent chain, the one `publish.yml`
       releases. Without the bypass, the only
       code owner's `release:version` pull request, which changes both
@@ -200,8 +205,20 @@ Steps 2 to 5 bring these to the settings below.
       pushes, no bypass actors, so a tag is never moved or deleted. Today it
       also restricts creations and lets every admin bypass all of it: move
       creation to ruleset 4 and empty its bypass list.
+   6. Branch ruleset `signed-commits`, target the default branch and
+      `release/*`: Require signed commits, with no bypass actors, so nobody,
+      admins included, can merge a pull request with an unsigned commit. A
+      maintainer squashes a pull request into one commit, signs it and
+      merges it, and GitHub signs the merge commit itself
+      ([CONTRIBUTING.md](CONTRIBUTING.md#pull-requests)). The repository's
+      settings allow merge commits only (Settings → General → Pull
+      Requests), which the rulesets in 1 and 2 match. `pnpm rulesets`
+      doesn't manage that setting. Once `signed-commits` exists, set it with
+      `gh api -X PATCH repos/Qbit-Org/qbit-rpc -F allow_merge_commit=true -F allow_squash_merge=false -F allow_rebase_merge=false`,
+      and read it with
+      `gh api repos/Qbit-Org/qbit-rpc --jq '{allow_merge_commit, allow_squash_merge, allow_rebase_merge}'`.
 
-   The five rulesets are in [`.github/rulesets/`](.github/rulesets/), with
+   The six rulesets are in [`.github/rulesets/`](.github/rulesets/), with
    the team's bypass "For pull requests only" on rulesets 1 and 2, so it
    merges a pull request without the review but never pushes past one. With
    `gh` logged in as a repository admin who can read the team,
@@ -412,7 +429,8 @@ nothing if that file was edited. The approver checks, against their own
 - [ ] the run is for the expected tag, and its commit (on the run page) is
       that tag's commit and is on `release/X.Y`'s first-parent chain, as a
       merge or squash commit there (an ancestor is not enough: every commit
-      inside a merged pull request is one):
+      inside a merged pull request is one, the commit a maintainer signed
+      included, so tag GitHub's merge commit and not that one):
       `git rev-list --first-parent origin/release/X.Y | grep -Fx "$(git rev-parse --verify '<commit>^{commit}')"`
       prints it. `rev-list` prints full SHAs, so the run page's short SHA,
       or the tag name, is expanded first;

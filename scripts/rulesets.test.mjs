@@ -60,7 +60,7 @@ const applied = rulesets =>
       ),
   }))
 
-test('the files are the five rulesets, in apply order, each restricting the release refs', () => {
+test('the files are the six rulesets, in apply order, each restricting the release refs', () => {
   const rulesets = loadRulesets(dir)
   assert.deepEqual(
     rulesets.map(r => r.name),
@@ -76,11 +76,14 @@ test('the files are the five rulesets, in apply order, each restricting the rele
   const byName = Object.fromEntries(rulesets.map(r => [r.name, r]))
   for (const name of ['main', 'release-branches']) {
     const pr = byName[name].rules.find(r => r.type === 'pull_request').parameters
-    assert.deepEqual(pr.allowed_merge_methods, ['merge', 'squash'], name)
+    assert.deepEqual(pr.allowed_merge_methods, ['merge'], name)
     assert.equal(pr.require_code_owner_review, true, name)
     assert.deepEqual(byName[name].bypass_actors[0].bypass_mode, 'pull_request', name)
   }
   assert.deepEqual(byName['release-tags-fixed'].bypass_actors, [])
+  assert.deepEqual(byName['signed-commits'].bypass_actors, [], 'no one may bypass the signature rule')
+  assert.deepEqual(byName['signed-commits'].rules, [{ type: 'required_signatures' }])
+  assert.deepEqual(byName['signed-commits'].conditions.ref_name.include, ['~DEFAULT_BRANCH', 'refs/heads/release/*'])
   assert.ok(!byName['release-tags-fixed'].rules.some(r => r.type === 'creation'))
 })
 
@@ -90,13 +93,14 @@ test('fillTeam sets only the null team ids, and refuses a missing id', () => {
   assert.throws(() => fillTeam(loadRulesets(dir)[0], undefined), /not a team id/)
 })
 
-test('against the rulesets before step 4, it creates three, updates main and renames v*', () => {
+test('against the rulesets before step 4, it creates four, updates main and renames v*', () => {
   const { actions, unmanaged } = planRulesets(desired(), BEFORE)
   assert.deepEqual(
     actions.map(a => [a.action, a.name, a.id, a.was]),
     [
       ['create', 'release-tag-creation', undefined, undefined],
       ['create', 'release-branch-creation', undefined, undefined],
+      ['create', 'signed-commits', undefined, undefined],
       ['create', 'release-branches', undefined, undefined],
       ['update', 'main', 26646830, undefined],
       ['update', 'release-tags-fixed', 26646873, 'v*'],
@@ -130,7 +134,13 @@ test('a rule, check or bypass actor added on GitHub is reported', () => {
     actions.filter(a => a.action === 'update').map(a => a.name),
     ['release-branches', 'main', 'release-tags-fixed']
   )
-  assert.equal(diffRuleset(want[3], main).length, 1)
+  assert.equal(
+    diffRuleset(
+      want.find(r => r.name === 'main'),
+      main
+    ).length,
+    1
+  )
 })
 
 test('a ruleset that no file manages is listed and left alone', () => {

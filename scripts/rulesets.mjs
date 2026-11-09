@@ -21,10 +21,13 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
  * The managed rulesets, in the order apply writes them. Creation rules come
  * first, so that `release-tags-fixed`, which drops the creation rule the
  * existing `v*` ruleset holds, never leaves tag creation open in between.
+ * `signed-commits` comes next, so the signature rule is in force before the
+ * branch rulesets allow merge commits only.
  */
 export const ORDER = [
   'release-tag-creation',
   'release-branch-creation',
+  'signed-commits',
   'release-branches',
   'main',
   'release-tags-fixed',
