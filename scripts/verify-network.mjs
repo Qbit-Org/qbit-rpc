@@ -409,6 +409,7 @@ async function zmqSoak(rpc, record, { zmqUrl, durationMs, intervalMs, during }) 
   const pending = []
   const timer = setTimeout(async () => {
     endTip = await rpc.getBestBlockHash().catch(() => undefined)
+    blocks.ended()
     // A notification of that tip still on its way gets a moment to arrive.
     await sleep(2_000)
     subscriber.close()
@@ -450,7 +451,10 @@ async function zmqSoak(rpc, record, { zmqUrl, durationMs, intervalMs, during }) 
       } else if (event.kind === 'gap') {
         result.gaps++
         result.missed += event.missed ?? 0
-        blocks.gap(event)
+        // A sequence gap's lost messages came before it: the tip now bounds the blocks they can be.
+        const tip =
+          event.topic === 'sequence' ? await retrying(() => rpc.getBestBlockHash()).catch(() => undefined) : undefined
+        blocks.gap(event, tip)
       } else if (event.kind === 'malformed') {
         result.malformed[event.error.code] = (result.malformed[event.error.code] ?? 0) + 1
       } else if (event.kind === 'reconnect') {
