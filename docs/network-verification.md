@@ -157,8 +157,9 @@ last). Each must fall in a blind window, which covers exactly the blocks
 connected while the subscriber could miss them: after a reconnect or a
 `hashblock` gap of unknown size, from the last `hashblock` to the next one,
 or to the end of the soak when none came; after a `sequence` gap, from the
-last `block_connected` to the next, excusing no more blocks than the gap lost
-messages, and none when no `block_connected` followed. A window follows its closing block's
+last `block_connected` to the next, or to the end, excusing no more blocks
+than the gap lost messages, less one for each block whose `hashblock` came
+without its `block_connected`. A window follows its closing block's
 chain down to where it meets its opening block's, so a reorg while blind is
 covered and one after it is not. A `hashblock` gap that says how many it
 skipped excuses none, because each of those blocks still has its

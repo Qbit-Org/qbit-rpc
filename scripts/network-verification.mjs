@@ -107,7 +107,9 @@ export function hostOf(url) {
  * - after a `sequence` gap, from the last `block_connected` to the next: lost
  *   `sequence` messages can be blocks' as well as the mempool's, which share
  *   its counter. A gap that says how many it lost excuses at most that many
- *   blocks, and a window no `block_connected` closed by the end excuses none.
+ *   blocks, less one for each block in the window whose `hashblock` came but
+ *   whose `block_connected` did not, and keeps that cap if it is still open
+ *   at the end.
  * A block no message named passes only inside a window. A sized `hashblock`
  * gap excuses none: the block whose `hashblock` was lost is still named by its
  * `block_connected`, unless `sequence` lost it too, which a `sequence` gap
@@ -204,15 +206,15 @@ export class BlockAccounting {
     }
     const covered = new Set()
     const windows = []
-    // Only a reconnect's window stays open to the end: a block_connected closes a sequence gap's.
-    const open = this.#hashblockWindow.open ? [[this.#hashblockWindow.from, lastTip, Infinity]] : []
+    // A window still open runs to the end, with the allowance it has: a sequence gap's stays capped.
+    const open = [this.#hashblockWindow, this.#sequenceWindow].filter(w => w.open).map(w => [w.from, lastTip, w.limit])
     const unnamedSet = new Set(unnamed)
     for (const [from, to, limit] of [...this.blind, ...open]) {
       if (to === undefined) continue
       const meets = from === undefined ? new Set() : await ancestors(from)
       let fork = startHeight
-      let excused = 0
       // Back from `to` to the first block on `from`'s chain (`from` itself when no reorg came between).
+      const segment = []
       for (let at = to; at !== undefined && at !== startTip;) {
         const header = await chain.header(at)
         if (meets.has(at)) {
@@ -220,12 +222,18 @@ export class BlockAccounting {
           break
         }
         if (header.height <= startHeight) break
-        // A sized gap excuses as many unnamed blocks as it lost messages, the nearest to its end first.
-        if (unnamedSet.has(at) && excused < limit) {
-          covered.add(at)
-          excused++
-        }
+        segment.push(at)
         at = header.previousBlockHash
+      }
+      // A sized gap's lost messages first account for the blocks whose hashblock came but whose
+      // block_connected did not; what is left excuses unnamed blocks, the nearest to its end first.
+      let allowance = limit - segment.filter(hash => this.announced.has(hash) && !this.connected.has(hash)).length
+      for (const hash of segment) {
+        if (allowance <= 0) break
+        if (unnamedSet.has(hash)) {
+          covered.add(hash)
+          allowance--
+        }
       }
       windows.push({ from: fork, to: (await chain.header(to)).height })
     }

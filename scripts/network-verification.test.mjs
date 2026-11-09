@@ -448,15 +448,31 @@ describe('BlockAccounting', () => {
     assert.equal((await settle(accounting, blocks, 'c')).uncovered, 1)
   })
 
-  it('lets a sequence gap no block_connected closed excuse nothing: the publisher went silent', async () => {
-    // A lost mempool event, then nothing on any topic while b and c connect.
+  it('keeps a sequence gap still open at the end to its cap: a silent publisher still fails', async () => {
+    // One lost message, then nothing on any topic while b and c connect: one may be excused, not both.
     const blocks = { s: block(100, 'p'), a: block(101, 's'), b: block(102, 'a'), c: block(103, 'b') }
     const accounting = started()
     feed(accounting, connected('a'), hashblock('a'))
     accounting.gap({ topic: 'sequence', expected: 5, received: 6, missed: 1 })
     const settled = await settle(accounting, blocks, 'c')
-    assert.equal(settled.uncovered, 2)
+    assert.equal(settled.uncovered, 1)
     assert.equal(soakFailures({ ...quietSoak, uncovered: settled.uncovered }).length, 1)
+    // A loss the gap fully accounts for, b's block_connected (and no hashblock topic), still open at the end: excused.
+    const reported = started()
+    feed(reported, connected('a'), hashblock('a'))
+    reported.gap({ topic: 'sequence', expected: 5, received: 6, missed: 1 })
+    assert.equal((await settle(reported, { s: blocks.s, a: blocks.a, b: blocks.b }, 'b')).uncovered, 0)
+  })
+
+  it("spends a sequence gap's allowance on a block whose hashblock came without its block_connected", async () => {
+    // s → a → b → c: a's hashblock arrives, a gap of 1, then c's block_connected and hashblock. a and b both
+    // lack block_connected, and one lost message cannot explain both: b fails.
+    const blocks = { s: block(100, 'p'), a: block(101, 's'), b: block(102, 'a'), c: block(103, 'b') }
+    const accounting = started()
+    feed(accounting, connected('s'), hashblock('a'))
+    accounting.gap({ topic: 'sequence', expected: 2, received: 3, missed: 1 })
+    feed(accounting, connected('c'), hashblock('c'))
+    assert.equal((await settle(accounting, blocks, 'c')).uncovered, 1)
   })
 
   it('lets a sized hashblock gap excuse no block that no message named (#84, 3)', async () => {
