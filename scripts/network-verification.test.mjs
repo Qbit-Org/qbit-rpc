@@ -581,6 +581,33 @@ describe('BlockAccounting', () => {
     assert.equal((await settle(accounting, blocks, 'c')).uncovered, 0)
   })
 
+  it('opens no window for an unsized sequence gap, and charges a later sized one only for losses after it', async () => {
+    // a named; b's hashblock comes but its block_connected is lost as the connection drops; a reconnect,
+    // and c connects while down; the first sequence message after it is an unsized gap; e's hashblock
+    // closes the reconnect window, its block_connected lost; f loses both, and a gap of 2 is reported at f.
+    const blocks = {
+      s: block(100, 'p'),
+      a: block(101, 's'),
+      b: block(102, 'a'),
+      c: block(103, 'b'),
+      e: block(104, 'c'),
+      f: block(105, 'e'),
+    }
+    const accounting = started()
+    feed(accounting, connected('a'), hashblock('a'), hashblock('b'))
+    accounting.reconnect()
+    accounting.gap({ topic: 'sequence', expected: 9, received: 1 })
+    accounting.message(hashblock('e'))
+    accounting.gap({ topic: 'sequence', expected: 2, received: 4, missed: 2 }, 'f')
+    // The gap of 2 lost e's and f's block_connected: b's loss came before the counter began again.
+    assert.equal((await settle(accounting, blocks, 'f')).uncovered, 0)
+    // An unsized gap alone excuses nothing.
+    const alone = started()
+    feed(alone, connected('a'), hashblock('a'))
+    alone.gap({ topic: 'sequence', expected: 9, received: 1 }, 'c')
+    assert.equal((await settle(alone, { s: blocks.s, a: blocks.a, b: blocks.b, c: blocks.c }, 'c')).uncovered, 2)
+  })
+
   it('lets a sized hashblock gap excuse no block that no message named (#84, 3)', async () => {
     // A hashblock gap of 1 stood for b, whose block_connected arrived. d, which nothing named, is outside
     // every window, and fails: the gap's allowance no longer covers it.

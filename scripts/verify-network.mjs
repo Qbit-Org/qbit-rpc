@@ -408,8 +408,9 @@ async function zmqSoak(rpc, record, { zmqUrl, durationMs, intervalMs, during }) 
   let endTip
   const pending = []
   const timer = setTimeout(async () => {
-    endTip = await rpc.getBestBlockHash().catch(() => undefined)
+    // Marked before the call: a reorg's hashblock that arrives while it is in flight closed in the grace too.
     blocks.ended()
+    endTip = await rpc.getBestBlockHash().catch(() => undefined)
     // A notification of that tip still on its way gets a moment to arrive.
     await sleep(2_000)
     subscriber.close()
