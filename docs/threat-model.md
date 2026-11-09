@@ -243,8 +243,8 @@ another process listening on that port: a local user who binds it while qbitd
 is down receives what the client sends, a Basic password that stays valid, a
 cookie that stops working when qbitd next starts and writes a new one, or a
 wallet passphrase, and can answer as the node. Keep untrusted users off the
-node's host, or reach qbitd through a TLS terminator with a pin, on loopback
-too.
+node's host. A TLS terminator does not help here, pinned or not: its own hop
+to qbitd's port is plain HTTP, which the same local user can bind.
 
 **Memory.** Credentials are kept in private class fields, out of `toJSON()`
 and `util.inspect`, and neither package logs
