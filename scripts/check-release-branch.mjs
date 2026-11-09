@@ -10,8 +10,8 @@
 // changed source in one commit and revert the source in the next, so that
 // the merge looks harmless, and a tag on the first commit would publish it.
 // The first-parent chain holds only what the branch itself took: each merge
-// or squash commit of an approved pull request (RELEASING.md allows no other
-// merge method into release branches), and main's history it was cut from.
+// or squash commit of an approved pull request, and main's history it was
+// cut from (RELEASING.md allows no other merge method into either).
 import { execFileSync } from 'node:child_process'
 import { pathToFileURL } from 'node:url'
 
