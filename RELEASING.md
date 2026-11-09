@@ -200,6 +200,15 @@ Steps 2 to 5 bring these to the settings below.
       pushes, no bypass actors, so a tag is never moved or deleted. Today it
       also restricts creations and lets every admin bypass all of it: move
       creation to ruleset 4 and empty its bypass list.
+
+   The five rulesets are in [`.github/rulesets/`](.github/rulesets/), with
+   the team's bypass "For pull requests only" on rulesets 1 and 2, so it
+   merges a pull request without the review but never pushes past one. With
+   `gh` logged in as a repository admin who can read the team,
+   `corepack pnpm rulesets` prints what would change,
+   `corepack pnpm rulesets apply` creates or updates them, creation rules
+   first, and `corepack pnpm rulesets check` fails unless GitHub matches the
+   files. `--team <slug>` names the team (default `release-maintainers`).
 5. **The `npm` environment**, by a repository admin (Settings → Environments
    → `npm`, which exists):
    - Required reviewers: the release approvers team, in place of the user
