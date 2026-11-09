@@ -452,10 +452,9 @@ async function zmqSoak(rpc, record, { zmqUrl, durationMs, intervalMs, during }) 
       } else if (event.kind === 'gap') {
         result.gaps++
         result.missed += event.missed ?? 0
-        // A sequence gap's lost messages came before it: the tip now bounds the blocks they can be.
-        const tip =
-          event.topic === 'sequence' ? await retrying(() => rpc.getBestBlockHash()).catch(() => undefined) : undefined
-        blocks.gap(event, tip)
+        // The messages before a sequence gap bound the blocks it lost. A tip read over RPC now is no bound:
+        // it comes later than the gap, and can include blocks that connected since (#93).
+        blocks.gap(event)
       } else if (event.kind === 'malformed') {
         result.malformed[event.error.code] = (result.malformed[event.error.code] ?? 0) + 1
       } else if (event.kind === 'reconnect') {

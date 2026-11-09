@@ -541,9 +541,10 @@ describe('BlockAccounting', () => {
     assert.equal((await settle(before, { s: blocks.s, a: blocks.a, b: blocks.b }, 'b')).uncovered, 0)
   })
 
-  it('ends a closed sequence window at the tip when its gap was reported, not at the block_connected that closed it', async () => {
+  it('ends a sequence window at the block_connected that closes it, excusing no more than its gaps lost', async () => {
     // A gap of 1 reported at b, then block_connected stops until e, after a catch-up c, d, e that hashblock
-    // names only at e. c and d connected after the gap: not excused.
+    // names only at e. A subscriber reports c's and d's lost block_connected as a gap at e's; this stream has
+    // none, so the window that e's closes reaches e but excuses one block of b, c and d: two fail.
     const blocks = {
       s: block(100, 'p'),
       a: block(101, 's'),
@@ -558,7 +559,7 @@ describe('BlockAccounting', () => {
     feed(accounting, connected('e'), hashblock('e'))
     const settled = await settle(accounting, blocks, 'e')
     assert.equal(settled.uncovered, 2)
-    assert.deepEqual(settled.windows, [{ from: 101, to: 102 }])
+    assert.deepEqual(settled.windows, [{ from: 101, to: 105 }])
   })
 
   it('covers the blind blocks on the final chain when a reorg in the end grace closed the window (#90)', async () => {
@@ -659,5 +660,163 @@ describe('BlockAccounting', () => {
     assert.equal(accounting.hashblockMissed, 1)
     assert.equal(settled.uncovered, 1)
     assert.equal(soakFailures({ ...quietSoak, uncovered: settled.uncovered }).length, 1)
+  })
+
+  // #93: a sequence gap bounded by the message stream, fed as the soak feeds it: the gap with no tip, then
+  // the message that reported it, which the subscriber always yields next.
+  const mempool = hash => ({ topic: 'sequence', event: 'mempool_added', hash })
+  const reported = (accounting, missed, message) => {
+    accounting.gap({ topic: 'sequence', expected: 1, received: 1 + missed, missed })
+    accounting.message(message)
+  }
+  const line = { s: block(100, 'p'), a: block(101, 's'), b: block(102, 'a'), c: block(103, 'b'), d: block(104, 'c') }
+  // c's chain, and x, y, z replacing it from s.
+  const fork = { ...line, x: block(101, 's'), y: block(102, 'x'), z: block(103, 'y') }
+  const fails = settled => assert.equal(soakFailures({ ...quietSoak, uncovered: settled.uncovered }).length, 1)
+
+  it('ends a gap reported in the end grace at the block_connected that reported it, whatever tip RPC shows (#93, 1)', async () => {
+    // endTip is c on s → a → b → c, and a's and b's sequence messages are lost. c's block_connected reports the
+    // gap in the grace, while a reorg to x, y, z, forking at s, is under way: the window ends at c, so a and b
+    // are excused, whether the soak read its last tip before the gap or after the reorg's messages.
+    for (const endAt of ['before the gap', 'after the reorg']) {
+      const accounting = started()
+      feed(accounting, connected('s'), hashblock('s'))
+      if (endAt === 'before the gap') accounting.ended()
+      reported(accounting, 2, connected('c'))
+      feed(accounting, hashblock('c'), disconnected('c'), disconnected('b'), disconnected('a'))
+      feed(accounting, connected('x'), connected('y'), connected('z'), hashblock('z'))
+      if (endAt === 'after the reorg') accounting.ended()
+      const settled = await settle(accounting, fork, 'c')
+      assert.equal(settled.uncovered, 0, endAt)
+      assert.deepEqual(settled.windows, [{ from: 100, to: 103 }], endAt)
+    }
+  })
+
+  it('reaches below a block named in a window that a reorg in the end grace ends on another branch (#93, 1)', async () => {
+    // a, b and c connect and lose their block_connected; only c's hashblock comes, and endTip is c. In the
+    // grace, a reorg to x, y, z loses its block_disconnected too, and x's block_connected reports a gap of 6.
+    // The window ends at x, off c's chain. c's hashblock came before x's message, so a and b connected before
+    // it: their lost block_connected are the gap's, and the window reaches below c, under one allowance.
+    const accounting = started()
+    feed(accounting, connected('s'), hashblock('c'))
+    accounting.ended()
+    reported(accounting, 6, connected('x'))
+    feed(accounting, connected('y'), connected('z'), hashblock('z'))
+    const settled = await settle(accounting, fork, 'c')
+    assert.equal(settled.uncovered, 0)
+    assert.deepEqual(settled.windows, [
+      { from: 100, to: 101 },
+      { from: 100, to: 103 },
+    ])
+  })
+
+  it('lets no window that a reorg ends on a replaced branch excuse the blocks that replaced it (#93, 1, adversarial)', async () => {
+    // x connects, then a reorg replaces it with a and b, so endTip is b, while the stream lags behind. In the
+    // grace, x's block_connected reports a gap of 2, two lost mempool messages; then every message of the
+    // reorg is lost, and nothing follows. a's and b's block_connected came after x's, so no gap reported
+    // them: they fail, though the window ends off b's chain, in the grace, with allowance to spare.
+    const accounting = started()
+    feed(accounting, connected('s'), hashblock('s'))
+    accounting.ended()
+    reported(accounting, 2, connected('x'))
+    accounting.message(hashblock('x'))
+    const settled = await settle(accounting, fork, 'b')
+    assert.equal(settled.uncovered, 2)
+    fails(settled)
+  })
+
+  it('charges a gap for no block connected after the message that reported it (#93, 2)', async () => {
+    // a is named. b loses its block_connected and its hashblock, and c's block_connected reports a gap of 1.
+    // d connects next, alone or in c's tip update, and loses its block_connected but not its hashblock: d is
+    // no loss of this gap's, so b is excused. A mempool message then reports d's loss, a gap of its own.
+    for (const together of [false, true]) {
+      const accounting = started()
+      feed(accounting, connected('a'), hashblock('a'))
+      reported(accounting, 1, connected('c'))
+      if (!together) accounting.message(hashblock('c'))
+      accounting.message(hashblock('d'))
+      reported(accounting, 1, mempool('t1'))
+      const settled = await settle(accounting, line, 'd')
+      assert.equal(settled.uncovered, 0, `together ${together}`)
+    }
+  })
+
+  it('excuses a block a burst dropped both messages of once a later block_connected ends the window', async () => {
+    // b's block_connected and hashblock drop at the tail of its transactions' burst, and a mempool message
+    // reports a gap of 1: nothing proves yet that b connected before it. c's block_connected then comes with
+    // no gap since, so every block below c lost its block_connected before that report: b is excused.
+    const accounting = started()
+    feed(accounting, connected('a'), hashblock('a'))
+    reported(accounting, 1, mempool('t1'))
+    feed(accounting, mempool('t2'), connected('c'), hashblock('c'))
+    assert.equal((await settle(accounting, line, 'c')).uncovered, 0)
+    // c's messages drop in a second burst, which the next mempool message reports; d's block_connected ends
+    // the window, and its two gaps excuse b and c.
+    const twice = started()
+    feed(twice, connected('a'), hashblock('a'))
+    reported(twice, 1, mempool('t1'))
+    reported(twice, 1, mempool('t2'))
+    feed(twice, connected('d'), hashblock('d'))
+    assert.equal((await settle(twice, line, 'd')).uncovered, 0)
+  })
+
+  it('covers a sequence gap still open at the end only up to the last block named when it was reported', async () => {
+    // The stream's twin of the test with a tip above. One lost message reported at a, then nothing on any
+    // topic while b and c connect: neither is excused.
+    const silent = started()
+    feed(silent, connected('a'), hashblock('a'))
+    reported(silent, 1, mempool('t1'))
+    const settled = await settle(silent, line, 'c')
+    assert.equal(settled.uncovered, 2)
+    fails(settled)
+    // b's block_connected lost, its hashblock come, then the report: the gap pays for b, which is named, and
+    // excuses nothing above it.
+    const named = started()
+    feed(named, connected('a'), hashblock('a'), hashblock('b'))
+    reported(named, 1, mempool('t1'))
+    assert.equal((await settle(named, line, 'b')).uncovered, 0)
+    assert.equal((await settle(named, line, 'c')).uncovered, 1)
+    // A burst drops both of b's messages before the report, and the soak ends before any later block shows
+    // that b came first: the stream cannot tell b from a block connected after the report, so b fails.
+    const burst = started()
+    feed(burst, connected('a'), hashblock('a'))
+    reported(burst, 1, mempool('t1'))
+    const settledBurst = await settle(burst, line, 'b')
+    assert.equal(settledBurst.uncovered, 1)
+    fails(settledBurst)
+  })
+
+  it('lets no sequence gap excuse blocks connected after it, which a tip read then could hold (#93, adversarial)', async () => {
+    // Two mempool messages' loss is reported at a. b and c connect while the soak once read the tip, and lose
+    // both their messages; hashblock then names d, and no sequence message follows to report b's and c's.
+    // Charged for d, the gap still has one to spare, which neither b nor c may take.
+    const accounting = started()
+    feed(accounting, connected('a'), hashblock('a'))
+    reported(accounting, 2, mempool('t1'))
+    accounting.message(hashblock('d'))
+    const settled = await settle(accounting, line, 'd')
+    assert.equal(settled.uncovered, 2)
+    fails(settled)
+  })
+
+  it('lets a block_connected end a window only below it, and with no more than its gaps lost (#93, adversarial)', async () => {
+    // A mempool message's loss is reported at a, and b's block_connected ends the window. c connects after it
+    // and loses both its messages, which nothing reports: c fails, though the window has allowance left.
+    const above = started()
+    feed(above, connected('a'), hashblock('a'))
+    reported(above, 1, mempool('t1'))
+    feed(above, connected('b'), hashblock('b'), hashblock('d'))
+    const settledAbove = await settle(above, line, 'd')
+    assert.equal(settledAbove.uncovered, 1)
+    fails(settledAbove)
+    // b's block_connected lost, reported by a mempool message; then c's and d's block_connected go missing with
+    // no gap, which no subscriber reports, and e's ends the window: one lost message excuses one block.
+    const capped = started()
+    feed(capped, connected('a'), hashblock('a'))
+    reported(capped, 1, mempool('t1'))
+    feed(capped, connected('e'), hashblock('e'))
+    const settledCapped = await settle(capped, { ...line, e: block(105, 'd') }, 'e')
+    assert.equal(settledCapped.uncovered, 2)
+    fails(settledCapped)
   })
 })
