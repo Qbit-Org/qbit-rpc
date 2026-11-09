@@ -33,6 +33,9 @@ application.
 A service that reacts to blocks usually wants both: ZMQ to wake up, RPC to read
 what changed.
 
+Both are verified against qbit Core v1.0.0 on regtest, with fault injection;
+not yet against mainnet or testnet4 ([network verification](docs/network-verification.md)).
+
 ## Example
 
 Wake up on each new block and read its header, from a testnet4 node on the

@@ -15,7 +15,7 @@ changes a package's `src/` adds a line here, which CI checks.
 How the code changed before its first release, review by review, is in
 [docs/history/before-0.1.0.md](docs/history/before-0.1.0.md).
 
-## 0.1.0 (unreleased)
+## 0.1.0 - 2026-11-09
 
 The first release of both packages.
 
@@ -153,9 +153,12 @@ The first release of both packages.
 
 ### Known limitations
 
-- Tested against regtest only. The checks against a mainnet node, read-only
-  and with ZMQ, that [docs/network-verification.md](docs/network-verification.md)
-  plans have not been run yet; testnet4 is not in the plan.
+- Verified against qbit Core v1.0.0 on regtest only, with fault injection
+  ([report](docs/network-reports/2026-11-09-regtest-regtest.md)). The mainnet
+  read-only sweep and 24-hour ZMQ soak that
+  [docs/network-verification.md](docs/network-verification.md) plans were not
+  run for this release, and testnet4 is not in the plan, so neither package
+  has met a live network's replies or a long-lived ZMQ connection.
 - On regtest `estimatesmartfee` never returns a fee rate, so the typed
   `estimateSmartFee` has not parsed a real estimate, and AuxPoW (merge-mined)
   blocks, peers, pruned nodes and initial block download have not been seen.

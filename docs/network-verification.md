@@ -214,6 +214,8 @@ README.
 | Date | Step | Node | Commit | Report | Result |
 | --- | --- | --- | --- | --- | --- |
 | 2026-11-05 | 1, regtest, every mode (from a working tree) | qbit Core v1.0.0, regtest | `f655a1b` with this change | not committed: a rehearsal of the script | pass |
+| 2026-11-09 | 1, regtest, every mode | qbit Core v1.0.0, regtest | `3c9b8c4` (`release/0.1`) | [2026-11-09-regtest-regtest.md](network-reports/2026-11-09-regtest-regtest.md) | pass |
+| 2026-11-09 | 2 and 3, mainnet read-only and ZMQ soak | — | — | not run for 0.1.0 | skipped |
 
 Findings so far:
 
