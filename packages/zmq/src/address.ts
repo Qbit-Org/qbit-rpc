@@ -1,7 +1,7 @@
 import { isIPv6 } from 'node:net'
 
 // What libzmq's connect() can reach a publisher at, checked against zeromq
-// 6.5.0 (libzmq 4.3.5). libzmq itself only checks the characters and that the
+// 6.5.0 and 6.8.0 (both libzmq 4.3.5). libzmq itself only checks the characters and that the
 // text after the last ':' starts with a digit, then resolves when it opens the
 // connection, retrying silently: an address it cannot resolve never connects
 // and never fails. It also reads the port with atoi() into 16 bits, so it

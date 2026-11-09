@@ -345,7 +345,7 @@ private network.
 **What an application installs.**
 
 - `@qbit-oss/rpc` has no runtime dependencies. `@qbit-oss/zmq` has one, an
-  optional peer, `zeromq` `^6.5.0`, loaded only by the default socket at the
+  optional peer, `zeromq` `^6.8.0`, loaded only by the default socket at the
   first iteration, which the application installs and updates itself. Neither
   package has an install script ([Packaging and dependencies](packaging.md),
   [rpc's](../packages/rpc/package.json) and

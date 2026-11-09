@@ -129,7 +129,7 @@ again it reconnects, and the sequence tracker reports a `gap` on each topic. qbi
 the interval drops a healthy subscriber (seen on regtest); the constructor
 refuses one under twice the interval.
 
-libzmq 4.3.5, the one `zeromq` 6.5.0 bundles, aborts the process (`Assertion
+libzmq 4.3.5, the one `zeromq` 6.5.0 to 6.8.0 bundle, aborts the process (`Assertion
 failed: _input_stopped`, libzmq #3596 and #4841) when a socket whose receive
 queue filled up is read after libzmq has reconnected it by itself, as after a
 missed heartbeat while the event loop was blocked. A receive already pending

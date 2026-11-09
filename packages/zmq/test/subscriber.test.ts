@@ -756,7 +756,8 @@ describe('QbitZmqSubscriber setup failures', () => {
     const cases: [string, string, ZmqSetupErrorCode][] = [
       ['tcp://127.0.0.1', 'EINVAL', 'invalid_address'],
       ['tcp://*:28332', 'EINVAL', 'invalid_address'],
-      ['ws://127.0.0.1:28332', 'EPROTONOSUPPORT', 'unsupported_protocol'],
+      // A scheme libzmq knows no transport for: zeromq 6.8.0's build supports ws://, so that one connects.
+      ['foo://127.0.0.1:28332', 'EPROTONOSUPPORT', 'unsupported_protocol'],
       [`ipc:///${'a'.repeat(107)}`, 'ENAMETOOLONG', 'invalid_address'],
     ]
     for (const [target, errno, code] of cases) {

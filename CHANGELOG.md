@@ -34,7 +34,7 @@ The first release of both packages.
 - **TypeScript** 5.0 or later and **`@types/node`** 22.0.0 or later for the
   declarations, which you install yourself. Raising either floor is a breaking
   change.
-- **`zeromq`** `^6.5.0`, an optional peer dependency of `@qbit-oss/zmq` that
+- **`zeromq`** `^6.8.0`, an optional peer dependency of `@qbit-oss/zmq` that
   you install beside it for `QbitZmqSubscriber`'s default socket. CI loads it
   on Linux x64, and on Linux arm64 and macOS arm64 for pull requests that
   change `@qbit-oss/zmq` or the lockfile, and weekly.

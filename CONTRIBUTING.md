@@ -23,7 +23,7 @@ To install a build of this checkout into another project, pack each package
 ```sh
 (cd packages/rpc && npm pack)   # qbit-oss-rpc-<version>.tgz
 (cd packages/zmq && npm pack)   # qbit-oss-zmq-<version>.tgz
-npm install /path/to/qbit-oss-rpc-<version>.tgz /path/to/qbit-oss-zmq-<version>.tgz zeromq@^6.5.0
+npm install /path/to/qbit-oss-rpc-<version>.tgz /path/to/qbit-oss-zmq-<version>.tgz zeromq@^6.8.0
 ```
 
 There is no ESLint: Prettier formats, and `tsc` in strict mode checks the code.
