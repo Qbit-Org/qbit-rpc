@@ -59,7 +59,6 @@ import {
   valueAtPath,
   hideAll,
   hostOf,
-  activeHash,
   BlockAccounting,
   soakFailures,
 } from './network-verification.mjs'
@@ -470,14 +469,12 @@ async function zmqSoak(rpc, record, { zmqUrl, durationMs, intervalMs, during }) 
   // Every block on the active chain since the start, against what the subscriber was told.
   const lastTip = startTip === undefined ? undefined : (endTip ?? (await rpc.getBestBlockHash()))
   const { walked, unannounced, uncovered, windows } = await blocks.settle(
-    {
-      header: hash => retrying(() => rpc.getBlockHeader(hash)),
-      hashAt: height => activeHash(h => retrying(() => rpc.getBlockHash(h)), height),
-    },
+    { header: hash => retrying(() => rpc.getBlockHeader(hash)) },
     { startTip, startHeight, lastTip }
   )
   result.hashblockMissed = blocks.hashblockMissed
   result.hashblockUnsizedGaps = blocks.hashblockUnsizedGaps
+  result.sequenceGaps = blocks.sequenceGaps
   const malformed = Object.values(result.malformed).reduce((a, b) => a + b, 0)
   const messages = Object.values(counts).reduce((a, b) => a + b, 0)
   for (const failure of soakFailures({
@@ -485,7 +482,6 @@ async function zmqSoak(rpc, record, { zmqUrl, durationMs, intervalMs, during }) 
     malformed,
     unknown: checks.unknown,
     uncovered,
-    hashblockMissed: blocks.hashblockMissed,
     counts,
     blocksSeen: blocks.seen,
   }))
@@ -517,8 +513,8 @@ async function zmqSoak(rpc, record, { zmqUrl, durationMs, intervalMs, during }) 
         'largest rawblock (bytes)': result.maxRawBlock,
         'hashblocks found over RPC': checks.confirmed,
         'new blocks': walked,
-        'blocks without hashblock': unannounced,
-        'of them outside a reconnect': uncovered,
+        'blocks no message named': unannounced,
+        'of them outside a blind window': uncovered,
         health: Object.entries(health)
           .map(([k, v]) => `${k} ${v}`)
           .join(', '),
