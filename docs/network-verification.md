@@ -157,11 +157,15 @@ last). Each must fall in a blind window, which covers exactly the blocks
 connected while the subscriber could miss them: after a reconnect or a
 `hashblock` gap of unknown size, from the last `hashblock` to the next one,
 or to the end of the soak when none came; after a `sequence` gap, from the
-last `block_connected` to the next, or to the end, excusing no more blocks
-than the gap lost messages, less one for each block whose `hashblock` came
-without its `block_connected`. A window follows its closing block's
-chain down to where it meets its opening block's, so a reorg while blind is
-covered and one after it is not. A `hashblock` gap that says how many it
+last `block_connected` to the tip when the gap was reported (its lost
+messages came before that), excusing no more blocks than the gap says it
+lost, less one for each block whose `hashblock` came after the window's
+start without its `block_connected`. A `sequence` gap that cannot say how
+many it lost excuses none: the reconnect it comes with has its own window. A
+window follows its closing block's chain down to where it meets its opening
+block's, so a reorg while blind is covered and one after it is not; a
+reconnect's window closed by a reorg in the 2 s after the soak's last tip
+was read also covers that tip's chain. A `hashblock` gap that says how many it
 skipped excuses none, because each of those blocks still has its
 `block_connected`. It samples
 `health()` every minute and records the largest `rawblock` against

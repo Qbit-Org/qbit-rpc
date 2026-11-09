@@ -403,7 +403,7 @@ describe('BlockAccounting', () => {
     for (let i = 1; i <= 200; i += 1) {
       blocks[`b${i}`] = block(100 + i, previous)
       previous = `b${i}`
-      accounting.gap({ topic: 'sequence', expected: i, received: i + 1, missed: 1 })
+      accounting.gap({ topic: 'sequence', expected: i, received: i + 1, missed: 1 }, `b${i}`)
       feed(accounting, connected(`b${i}`), hashblock(`b${i}`))
     }
     let calls = 0
@@ -449,7 +449,7 @@ describe('BlockAccounting', () => {
     // reports as a sequence gap before c's; hashblock names only c.
     const blocks = { s: block(100, 'p'), a: block(101, 's'), b: block(102, 'a'), c: block(103, 'b') }
     const accounting = started()
-    accounting.gap({ topic: 'sequence', expected: 1, received: 3, missed: 2 })
+    accounting.gap({ topic: 'sequence', expected: 1, received: 3, missed: 2 }, 'c')
     feed(accounting, connected('c'), hashblock('c'))
     const settled = await settle(accounting, blocks, 'c')
     assert.equal(settled.uncovered, 0)
@@ -457,7 +457,7 @@ describe('BlockAccounting', () => {
     // A later gap opens at the last block_connected: a was named, b is excused, nothing below a is.
     const later = started()
     feed(later, connected('a'), hashblock('a'))
-    later.gap({ topic: 'sequence', expected: 5, received: 7, missed: 2 })
+    later.gap({ topic: 'sequence', expected: 5, received: 7, missed: 2 }, 'c')
     feed(later, connected('c'), hashblock('c'))
     const settledLater = await settle(later, blocks, 'c')
     assert.deepEqual(settledLater.windows, [{ from: 101, to: 103 }])
@@ -468,25 +468,49 @@ describe('BlockAccounting', () => {
     const blocks = { s: block(100, 'p'), a: block(101, 's'), b: block(102, 'a'), c: block(103, 'b') }
     // One lost message, a mempool event or a block's, while two blocks went unnamed before c.
     const accounting = started()
-    accounting.gap({ topic: 'sequence', expected: 1, received: 2, missed: 1 })
+    accounting.gap({ topic: 'sequence', expected: 1, received: 2, missed: 1 }, 'c')
     feed(accounting, connected('c'), hashblock('c'))
     assert.equal((await settle(accounting, blocks, 'c')).uncovered, 1)
   })
 
-  it('keeps a sequence gap still open at the end to its cap: a silent publisher still fails', async () => {
-    // One lost message, then nothing on any topic while b and c connect: one may be excused, not both.
+  it('covers a sequence gap still open at the end only up to the tip when it was reported', async () => {
     const blocks = { s: block(100, 'p'), a: block(101, 's'), b: block(102, 'a'), c: block(103, 'b') }
-    const accounting = started()
-    feed(accounting, connected('a'), hashblock('a'))
-    accounting.gap({ topic: 'sequence', expected: 5, received: 6, missed: 1 })
-    const settled = await settle(accounting, blocks, 'c')
-    assert.equal(settled.uncovered, 1)
+    // One lost message reported at a, then nothing on any topic while b and c connect: neither is excused.
+    const silent = started()
+    feed(silent, connected('a'), hashblock('a'))
+    silent.gap({ topic: 'sequence', expected: 5, received: 6, missed: 1 }, 'a')
+    const settled = await settle(silent, blocks, 'c')
+    assert.equal(settled.uncovered, 2)
     assert.equal(soakFailures({ ...quietSoak, uncovered: settled.uncovered }).length, 1)
-    // A loss the gap fully accounts for, b's block_connected (and no hashblock topic), still open at the end: excused.
+    // b's own messages lost, which a later mempool event reports once b is the tip: b is excused.
     const reported = started()
     feed(reported, connected('a'), hashblock('a'))
-    reported.gap({ topic: 'sequence', expected: 5, received: 6, missed: 1 })
+    reported.gap({ topic: 'sequence', expected: 5, received: 6, missed: 1 }, 'b')
     assert.equal((await settle(reported, { s: blocks.s, a: blocks.a, b: blocks.b }, 'b')).uncovered, 0)
+    // Without the tip at the gap, an open sequence window excuses nothing.
+    const untold = started()
+    feed(untold, connected('a'), hashblock('a'))
+    untold.gap({ topic: 'sequence', expected: 5, received: 6, missed: 1 })
+    assert.equal((await settle(untold, { s: blocks.s, a: blocks.a, b: blocks.b }, 'b')).uncovered, 1)
+  })
+
+  it('lets no sequence gap, sized or not, excuse blocks connected after it was reported', async () => {
+    // A gap at a (unsized, as after a reconnect, or a large mempool-driven one), then block_connected stops
+    // while hashblock goes on: a catch-up connects b, c and d, and hashblock names only d.
+    const blocks = {
+      s: block(100, 'p'),
+      a: block(101, 's'),
+      b: block(102, 'a'),
+      c: block(103, 'b'),
+      d: block(104, 'c'),
+    }
+    for (const missed of [undefined, 300]) {
+      const accounting = started()
+      feed(accounting, connected('a'), hashblock('a'))
+      accounting.gap({ topic: 'sequence', expected: 5, received: 2, ...(missed === undefined ? {} : { missed }) }, 'a')
+      accounting.message(hashblock('d'))
+      assert.equal((await settle(accounting, blocks, 'd')).uncovered, 2, `missed ${missed}`)
+    }
   })
 
   it("spends a sequence gap's allowance on a block whose hashblock came without its block_connected", async () => {
@@ -495,9 +519,66 @@ describe('BlockAccounting', () => {
     const blocks = { s: block(100, 'p'), a: block(101, 's'), b: block(102, 'a'), c: block(103, 'b') }
     const accounting = started()
     feed(accounting, connected('s'), hashblock('a'))
-    accounting.gap({ topic: 'sequence', expected: 2, received: 3, missed: 1 })
+    accounting.gap({ topic: 'sequence', expected: 2, received: 3, missed: 1 }, 'c')
     feed(accounting, connected('c'), hashblock('c'))
     assert.equal((await settle(accounting, blocks, 'c')).uncovered, 1)
+  })
+
+  it("charges a sequence gap only for hashblock-only blocks after its window's start (#90)", async () => {
+    // A gap of 1 for b's lost messages, reported at b. Then x's hashblock comes without its block_connected,
+    // and nothing reports that: x is not this gap's loss, so b is still excused.
+    const blocks = { s: block(100, 'p'), a: block(101, 's'), b: block(102, 'a'), x: block(103, 'b') }
+    const later = started()
+    feed(later, connected('a'), hashblock('a'))
+    later.gap({ topic: 'sequence', expected: 5, received: 6, missed: 1 }, 'b')
+    later.message(hashblock('x'))
+    assert.equal((await settle(later, blocks, 'x')).uncovered, 0)
+    // a's hashblock came before the first sequence message set the counter's baseline: not this gap's either.
+    const before = started()
+    before.message(hashblock('a'))
+    before.message({ topic: 'sequence', event: 'mempool_added', hash: 't1' })
+    before.gap({ topic: 'sequence', expected: 2, received: 3, missed: 1 }, 'b')
+    assert.equal((await settle(before, { s: blocks.s, a: blocks.a, b: blocks.b }, 'b')).uncovered, 0)
+  })
+
+  it('ends a closed sequence window at the tip when its gap was reported, not at the block_connected that closed it', async () => {
+    // A gap of 1 reported at b, then block_connected stops until e, after a catch-up c, d, e that hashblock
+    // names only at e. c and d connected after the gap: not excused.
+    const blocks = {
+      s: block(100, 'p'),
+      a: block(101, 's'),
+      b: block(102, 'a'),
+      c: block(103, 'b'),
+      d: block(104, 'c'),
+      e: block(105, 'd'),
+    }
+    const accounting = started()
+    feed(accounting, connected('a'), hashblock('a'))
+    accounting.gap({ topic: 'sequence', expected: 5, received: 6, missed: 1 }, 'b')
+    feed(accounting, connected('e'), hashblock('e'))
+    const settled = await settle(accounting, blocks, 'e')
+    assert.equal(settled.uncovered, 2)
+    assert.deepEqual(settled.windows, [{ from: 101, to: 102 }])
+  })
+
+  it('covers the blind blocks on the final chain when a reorg in the end grace closed the window (#90)', async () => {
+    // Blind after a reconnect following a; b and c connect, so lastTip is c. In the grace, a reorg to b', c', d'
+    // and d''s hashblock closes the window. b and c were blind too.
+    const blocks = {
+      s: block(100, 'p'),
+      a: block(101, 's'),
+      b: block(102, 'a'),
+      c: block(103, 'b'),
+      b2: block(102, 'a'),
+      c2: block(103, 'b2'),
+      d2: block(104, 'c2'),
+    }
+    const accounting = started()
+    accounting.message(hashblock('a'))
+    accounting.reconnect()
+    accounting.ended() // lastTip c is read here
+    accounting.message(hashblock('d2'))
+    assert.equal((await settle(accounting, blocks, 'c')).uncovered, 0)
   })
 
   it('lets a sized hashblock gap excuse no block that no message named (#84, 3)', async () => {
