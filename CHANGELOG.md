@@ -142,7 +142,9 @@ The first release of both packages.
   over RPC what a notification reports before acting on it.
 - Both packages are published from this repository's release workflow only,
   with npm provenance, after a maintainer approves the publish; see
-  [RELEASING.md](RELEASING.md).
+  [RELEASING.md](RELEASING.md). A release tag must be on its release
+  branch's first-parent chain, the merge or squash commit of a reviewed pull
+  request, not a commit inside one.
 
 ### Known limitations
 

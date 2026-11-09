@@ -173,11 +173,18 @@ Steps 2 to 5 bring these to the settings below.
       approval of the most recent reviewable push), Require status checks to
       pass (`verify`, `regtest smoke` and `changelog`, from GitHub Actions,
       with Require branches to be up to date), Block force pushes, Restrict
-      deletions. Bypass list: the release approvers team only while there is
-      one code owner ([Gaps](#gaps)), otherwise empty.
+      deletions. Under Require a pull request, Allowed merge methods: Merge
+      and Squash only. A release branch is cut from `main` and inherits its
+      first-parent chain, so a rebase merge into `main` would put every
+      commit of a pull request where a release can be tagged. Bypass list:
+      the release approvers team only while there is one code owner
+      ([Gaps](#gaps)), otherwise empty.
    2. Branch ruleset `release-branches`, target `release/*`: the same rules as
       `main`, with the same bypass: the release approvers team only while there
-      is one code owner ([Gaps](#gaps)), otherwise empty. Without it, the only
+      is one code owner ([Gaps](#gaps)), otherwise empty, and the same
+      allowed merge methods, Merge and Squash only, so each pull request adds
+      one commit to the branch's first-parent chain, the one `publish.yml`
+      releases. Without the bypass, the only
       code owner's `release:version` pull request, which changes both
       manifests, could never merge. The workflow's release-branch check means
       "reviewed" only while every change to `release/X.Y` comes through such a
@@ -394,10 +401,15 @@ nothing if that file was edited. The approver checks, against their own
 `git fetch origin --tags` rather than the run's log:
 
 - [ ] the run is for the expected tag, and its commit (on the run page) is
-      that tag's commit and is on `release/X.Y`:
-      `git merge-base --is-ancestor <commit> origin/release/X.Y`;
+      that tag's commit and is on `release/X.Y`'s first-parent chain, as a
+      merge or squash commit there (an ancestor is not enough: every commit
+      inside a merged pull request is one):
+      `git rev-list --first-parent origin/release/X.Y | grep -Fx "$(git rev-parse --verify '<commit>^{commit}')"`
+      prints it. `rev-list` prints full SHAs, so the run page's short SHA,
+      or the tag name, is expanded first;
 - [ ] `.github/workflows/publish.yml` and `scripts/check-release.mjs`,
-      `scripts/release-checks.mjs` and `scripts/check-pack.mjs` at that commit
+      `scripts/release-checks.mjs`, `scripts/check-release-branch.mjs` and
+      `scripts/check-pack.mjs` at that commit
       are the versions reviewed on `release/X.Y`:
       `git diff origin/release/X.Y <commit> -- .github/workflows/publish.yml scripts/`
       prints nothing;

@@ -91,8 +91,8 @@ jobs:
           fi
           branch="release/${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
           git fetch --no-tags origin "+refs/heads/$branch:refs/remotes/origin/$branch"
-          if ! git merge-base --is-ancestor HEAD "refs/remotes/origin/$branch"; then
-            echo "::error::$TAG is not on $branch; the reference deploys only from release branches"
+          if ! node scripts/check-release-branch.mjs "refs/remotes/origin/$branch"; then
+            echo "::error::$TAG is not on $branch's first-parent chain; the reference deploys only from release branches"
             exit 1
           fi
 

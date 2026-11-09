@@ -110,8 +110,10 @@ jobs:
             echo "::error::a dry run of $tag runs on $branch, not $REF_NAME"
             exit 1
           fi
-          if ! git merge-base --is-ancestor HEAD "refs/remotes/origin/$branch"; then
-            echo "::error::$tag is not on $branch; release tags are cut only on release branches"
+          # On the branch's first-parent chain, not merely an ancestor: a commit inside a merged
+          # pull request is an ancestor too, though the branch never took it as it stands.
+          if ! node scripts/check-release-branch.mjs "refs/remotes/origin/$branch"; then
+            echo "::error::$tag is not on $branch's first-parent chain; release tags are cut only on a merge or squash commit there"
             exit 1
           fi
           echo "Releasing $tag from $branch ($EVENT)"
