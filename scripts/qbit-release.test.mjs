@@ -22,6 +22,7 @@ import {
   readPin,
   release,
   sha256,
+  verifySignatures,
 } from './qbit-release.mjs'
 
 const rel = release('1.0.0', 'linux', 'x64')
@@ -411,6 +412,22 @@ describe('the pinned key policy', () => {
     )
   })
 
+  it('imports the certificate bytes it checked, not the files again', async () => {
+    const fixture = policy(signers)
+    const dir = newDir()
+    await verify(release(), fixture, dir)
+    const loaded = loadSigners(join(dir, 'policy'), 'mainnet', fixture.pin)
+    // Replace every certificate after the check: verification must still use the checked bytes.
+    for (const signer of signers) {
+      writeFileSync(join(dir, 'policy', 'public-keys', `${signer.alias}-release.asc`), stranger.certificate())
+    }
+    const { signers: counted } = verifySignatures(dir, loaded, fixture.pin)
+    assert.deepEqual(
+      counted.map(signer => signer.alias),
+      ['operator-a', 'operator-b', 'operator-c']
+    )
+  })
+
   it("downloads only the pinned commit's files", async () => {
     const fixture = policy(signers)
     const { fetchBytes, requests } = server({}, [fixture])
@@ -423,10 +440,16 @@ describe('the pinned key policy', () => {
 })
 
 describe('proposing a pin', () => {
+  // GitHub's API, stubbed: every commit is on main.
+  const onMain = async url => (url.includes('/compare/main...') ? { status: 'behind' } : undefined)
+
   it('reproduces the pin for the pinned policy', async () => {
     const fixture = policy(signers)
     const { fetchBytes } = server({}, [fixture])
-    assert.deepEqual(await proposePin(fixture.pin.commit, { pin: fixture.pin, fetchBytes }), fixture.pin)
+    assert.deepEqual(
+      await proposePin(fixture.pin.commit, { pin: fixture.pin, fetchBytes, getJson: onMain }),
+      fixture.pin
+    )
   })
 
   it('pins a direct successor, and only one chained to the pinned digest with the next sequence', async () => {
@@ -436,10 +459,59 @@ describe('proposing a pin', () => {
     const unchained = policy(signers, { ...chained, previous: 'f'.repeat(64) })
     const skipped = policy(signers, { ...chained, sequence: 4 })
     const { fetchBytes } = server({}, [current, next, unchained, skipped])
-    const options = { pin: current.pin, fetchBytes }
+    const options = { pin: current.pin, fetchBytes, getJson: onMain }
     assert.deepEqual(await proposePin(next.pin.commit, options), next.pin)
     await assert.rejects(proposePin(unchained.pin.commit, options), /previous_policy_sha256 f{64}, not the pinned/)
     await assert.rejects(proposePin(skipped.pin.commit, options), /policy_sequence 4, not 2 \+ 1/)
+  })
+
+  it('pins only a commit on a protected branch or a release tag', async () => {
+    const fixture = policy(signers)
+    const { fetchBytes } = server({}, [fixture])
+    const { commit } = fixture.pin
+    const github = ({ compare = {}, tags = [] }) => {
+      const requests = []
+      const getJson = async url => {
+        requests.push(url)
+        if (url.endsWith('/tags?per_page=100')) return tags
+        const base = /\/compare\/(.+)\.\.\./.exec(url)?.[1]
+        return compare[base] === undefined ? undefined : { status: compare[base] }
+      }
+      return { getJson, requests }
+    }
+    const tag = { name: 'v1.0.0', commit: { sha: 'b'.repeat(40) } }
+    for (const [where, stub] of [
+      ['main', github({ compare: { main: 'identical' } })],
+      ['1.x.x', github({ compare: { main: 'ahead', '1.x.x': 'behind' } })],
+      ['a release tag', github({ compare: { [tag.commit.sha]: 'behind' }, tags: [tag] })],
+      ['a release tag itself', github({ tags: [{ name: 'v1.0.1', commit: { sha: commit } }] })],
+    ]) {
+      assert.deepEqual(
+        await proposePin(commit, { pin: fixture.pin, fetchBytes, getJson: stub.getJson }),
+        fixture.pin,
+        where
+      )
+    }
+    for (const [where, stub] of [
+      [
+        'diverged from every ref',
+        github({ compare: { main: 'diverged', '1.x.x': 'diverged', [tag.commit.sha]: 'ahead' }, tags: [tag] }),
+      ],
+      ['unknown to GitHub', github({})],
+      [
+        'only on a tag that is not a release tag',
+        github({
+          compare: { ['c'.repeat(40)]: 'behind' },
+          tags: [{ name: 'test-1', commit: { sha: 'c'.repeat(40) } }],
+        }),
+      ],
+    ]) {
+      await assert.rejects(
+        proposePin(commit, { pin: fixture.pin, fetchBytes, getJson: stub.getJson }),
+        /is not on main or 1\.x\.x or a release tag: refusing to pin/,
+        where
+      )
+    }
   })
 
   it('refuses a certificate with more than one primary key, or without the listed signing key', async () => {
@@ -459,7 +531,7 @@ describe('proposing a pin', () => {
       [swapped, /operator-c-release\.asc has no key/],
     ]) {
       const { fetchBytes } = server({}, [fixture])
-      await assert.rejects(proposePin(fixture.pin.commit, { pin: fixture.pin, fetchBytes }), error)
+      await assert.rejects(proposePin(fixture.pin.commit, { pin: fixture.pin, fetchBytes, getJson: onMain }), error)
     }
   })
 })

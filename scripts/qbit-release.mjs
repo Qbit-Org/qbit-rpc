@@ -35,9 +35,10 @@
 //   qbit-release.mjs fetch <dir>
 //     Both, into <dir>, which must not exist. Prints the bin directory.
 //   qbit-release.mjs pin <qbit-commit>
-//     Prints a pin.json for the policy at <qbit-commit>, for review. It must be
-//     the pinned policy or its direct successor: previous_policy_sha256 is the
-//     pinned digest and policy_sequence one more (qbit-release-keys/README.md).
+//     Prints a pin.json for the policy at <qbit-commit>, for review. The commit
+//     must be on main, 1.x.x or a release tag, and the policy the pinned one or
+//     its direct successor: previous_policy_sha256 is the pinned digest and
+//     policy_sequence one more (qbit-release-keys/README.md).
 import { execFileSync, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import {
@@ -297,7 +298,13 @@ export async function fetchPolicy(dir, { pin = readPin(), fetchBytes = download 
  */
 export function loadSigners(keysDir, line, pin = readPin()) {
   const { policy, signers: all } = pinnedPolicy(readFileSync(join(keysDir, 'keys.json')), pin)
-  for (const signer of all) checkCertificate(readFileSync(join(keysDir, signer.file)), signer, pin)
+  // Each certificate is read once: gpg imports these checked bytes, never the file again.
+  const certificates = new Map()
+  for (const signer of all) {
+    const bytes = readFileSync(join(keysDir, signer.file))
+    checkCertificate(bytes, signer, pin)
+    certificates.set(signer.alias, bytes)
+  }
   const settings = isObject(policy.release_lines) ? policy.release_lines[line] : undefined
   const quorum = settings?.release_signature_quorum
   const size = settings?.active_signer_set_size
@@ -316,6 +323,7 @@ export function loadSigners(keysDir, line, pin = readPin()) {
       primary: pin.signers[signer.alias].primary_fingerprint,
       signing: signer.signing,
       file: join(keysDir, signer.file),
+      certificate: certificates.get(signer.alias),
     }))
   if (signers.length < quorum)
     throw new Error(`keys.json: ${signers.length} ${line} signers cannot reach quorum ${quorum}`)
@@ -355,10 +363,13 @@ function listedKeys(listing) {
   return keys
 }
 
-/** Import each signer's certificate, and check the keyring holds exactly those keys. */
+/**
+ * Import each signer's certificate, the bytes checked against the pin, from
+ * stdin, and check the keyring holds exactly those keys.
+ */
 function importSigners(home, signers) {
   for (const signer of signers) {
-    const result = gpg([...gpgArgs(home), '--import', signer.file])
+    const result = gpg([...gpgArgs(home), '--import'], signer.certificate)
     if (result.status !== 0) throw new Error(`gpg could not import ${signer.file}:\n${result.stderr}`)
   }
   const listing = gpg([...gpgArgs(home), '--with-colons', '--fingerprint', '--list-keys'])
@@ -420,7 +431,15 @@ export function countSignatures(status, exitCode, { line, quorum, signers }) {
  * signers and the parsed SHA256SUMS.
  */
 export function verifySums(dir, { line, pin = readPin(), keysDir = join(dir, POLICY_DIR) }) {
-  const policy = loadSigners(keysDir, line, pin)
+  return verifySignatures(dir, loadSigners(keysDir, line, pin), pin)
+}
+
+/**
+ * Verify `<dir>/SHA256SUMS.asc` over `<dir>/SHA256SUMS` with the signers
+ * loadSigners returned: gpg imports the certificate bytes it checked, so the
+ * policy files are not read again.
+ */
+export function verifySignatures(dir, policy, pin) {
   // gpg verifies these bytes, from stdin, and only these are parsed.
   const sums = readFileSync(join(dir, SUMS))
   const signers = withGnupgHome(home => {
@@ -449,6 +468,48 @@ export async function download(url, maxBytes) {
     chunks.push(chunk)
   }
   return Buffer.concat(chunks)
+}
+
+const GITHUB_API = 'https://api.github.com/repos/Qbit-Org/qbit'
+// A pinned policy must come from qbit's own history: a commit these protected
+// branches contain, or a release tag's. raw.githubusercontent.com serves any
+// commit in the repository network, forks' included.
+const PROTECTED_BRANCHES = ['main', '1.x.x']
+const RELEASE_TAG = /^v[0-9]/
+
+/** GET a GitHub API URL as JSON; `undefined` for a 404. GITHUB_TOKEN, if set, raises the rate limit. */
+export async function githubJson(url) {
+  const headers = { accept: 'application/vnd.github+json', 'x-github-api-version': '2022-11-28' }
+  if (process.env.GITHUB_TOKEN) headers.authorization = `Bearer ${process.env.GITHUB_TOKEN}`
+  const response = await fetch(url, { headers, signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) })
+  if (response.status === 404) return undefined
+  if (!response.ok) {
+    throw new Error(`GET ${url}: HTTP ${response.status}; set GITHUB_TOKEN if GitHub's API rate limit was reached`)
+  }
+  return response.json()
+}
+
+/**
+ * Where qbit `commit` is reachable from: a protected branch or a release tag
+ * that contains it, by GitHub's compare API (`identical`, or `behind`: the
+ * commit is an ancestor). Refuses a commit reachable from none.
+ */
+export async function reachableFrom(commit, { getJson = githubJson } = {}) {
+  const contains = async base => {
+    const compare = await getJson(`${GITHUB_API}/compare/${base}...${commit}`)
+    return compare?.status === 'identical' || compare?.status === 'behind'
+  }
+  for (const branch of PROTECTED_BRANCHES) {
+    if (await contains(branch)) return `branch ${branch}`
+  }
+  const tags = (await getJson(`${GITHUB_API}/tags?per_page=100`)) ?? []
+  for (const tag of tags.filter(tag => RELEASE_TAG.test(tag?.name ?? ''))) {
+    if (tag.commit?.sha === commit || (await contains(tag.commit?.sha))) return `tag ${tag.name}`
+  }
+  throw new Error(
+    `qbit commit ${commit} is not on ${PROTECTED_BRANCHES.join(' or ')} or a release tag: refusing to pin a policy ` +
+      "from outside qbit's own history (scripts/qbit-release-keys/README.md)"
+  )
 }
 
 /** Steps 0-3: download the policy and SHA256SUMS into `dir`, verify them, and return the asset's digest. */
@@ -524,15 +585,17 @@ export async function install(
 }
 
 /**
- * A pin for the policy at qbit `commit`, for review: its keys.json must be the
- * pinned one, or its direct successor, whose previous_policy_sha256 is the
+ * A pin for the policy at qbit `commit`, for review. The commit must be on a
+ * protected qbit branch or a release tag (reachableFrom). Its keys.json must be
+ * the pinned one, or its direct successor, whose previous_policy_sha256 is the
  * pinned digest and whose policy_sequence is one more. Each certificate must
- * hold one primary key, with the signing key keys.json lists under it. Whether
- * the previous signers approved the successor is qbit's check, at its merge
- * gate; qbit-release-keys/README.md says how to repeat it.
+ * hold one primary key, with the signing key keys.json lists under it. This
+ * does not check that the previous signers approved the successor;
+ * qbit-release-keys/README.md says how to check that with qbit's validator.
  */
-export async function proposePin(commit, { pin = readPin(), fetchBytes = download } = {}) {
+export async function proposePin(commit, { pin = readPin(), fetchBytes = download, getJson = githubJson } = {}) {
   if (!COMMIT.test(commit)) throw new Error(`malformed qbit commit ${commit}`)
+  log(`qbit ${commit} is on ${await reachableFrom(commit, { getJson })}`)
   const bytes = await fetchBytes(policyUrl(commit, 'keys.json'), MAX_POLICY_BYTES)
   const { policy, signers } = parsePolicy(bytes)
   const digest = sha256(bytes)

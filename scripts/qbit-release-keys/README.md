@@ -58,15 +58,20 @@ however qbit's policy changes later. When it does need one:
 
 1. Find the qbit commit that introduced the policy, on a protected qbit branch
    or a signed release tag.
-2. Run `node scripts/qbit-release.mjs pin <qbit-commit>`. It downloads that
-   commit's `keys.json` and certificates and prints a candidate `pin.json`. It
-   refuses a policy that is neither the pinned one nor its direct successor:
-   `previous_policy_sha256` must be the pinned `policy_sha256`, and
-   `policy_sequence` one more than the pinned policy's. To skip a policy,
-   update one sequence at a time.
-3. Check that the previous policy's signers approved the new one, as qbit's
-   merge gate does, in a qbit checkout `<qbit>` at that commit, with the
-   pinned commit's policy extracted into an empty `<old-dir>`:
+2. Run `node scripts/qbit-release.mjs pin <qbit-commit>`. It first asks
+   GitHub's compare API whether the commit is on qbit's protected `main` or
+   `1.x.x` branch, or on a release tag (`v*`), and refuses any other commit:
+   raw.githubusercontent.com serves every commit in the repository network,
+   forks' included. Set `GITHUB_TOKEN` if the API's unauthenticated rate limit
+   is reached. It then downloads that commit's `keys.json` and certificates
+   and prints a candidate `pin.json`. It refuses a policy that is neither the
+   pinned one nor its direct successor: `previous_policy_sha256` must be the
+   pinned `policy_sha256`, and `policy_sequence` one more than the pinned
+   policy's. To skip a policy, update one sequence at a time.
+3. `pin` does not check approvals. Check that the previous policy's signers
+   approved the new one with qbit's own validator, in a qbit checkout `<qbit>`
+   at that commit, with the pinned commit's policy extracted into an empty
+   `<old-dir>`:
 
    ```sh
    git -C <qbit> archive <old-commit> contrib/keys/operator-keys | tar -x -C <old-dir>
