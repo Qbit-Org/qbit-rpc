@@ -184,7 +184,15 @@ export class BlockAccounting {
    * window, and each window as the heights it spans: from where its two ends'
    * chains meet to its closing block.
    */
-  async settle(chain, { startTip, startHeight, lastTip }) {
+  async settle(source, { startTip, startHeight, lastTip }) {
+    // One getblockheader per distinct block for the whole settle: windows walk the same ancestry again.
+    const headers = new Map()
+    const chain = {
+      header: hash => {
+        if (!headers.has(hash)) headers.set(hash, source.header(hash))
+        return headers.get(hash)
+      },
+    }
     const unnamed = []
     let walked = 0
     for (let hash = lastTip; hash !== undefined && hash !== startTip; walked++) {

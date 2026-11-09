@@ -395,6 +395,31 @@ describe('BlockAccounting', () => {
     assert.equal(accounting.seen, 2) // a block named on both topics counts once
   })
 
+  it('asks for each block header once, however many windows walk over it', async () => {
+    // 200 blocks above s, a sequence gap before each block_connected: 200 windows over one chain.
+    const blocks = { s: block(100, 'p') }
+    let previous = 's'
+    const accounting = started()
+    for (let i = 1; i <= 200; i += 1) {
+      blocks[`b${i}`] = block(100 + i, previous)
+      previous = `b${i}`
+      accounting.gap({ topic: 'sequence', expected: i, received: i + 1, missed: 1 })
+      feed(accounting, connected(`b${i}`), hashblock(`b${i}`))
+    }
+    let calls = 0
+    const counting = {
+      header: async hash => {
+        calls += 1
+        return chainOf(blocks).header(hash)
+      },
+    }
+    const settled = await accounting.settle(counting, { startTip: 's', startHeight: 100, lastTip: previous })
+    assert.equal(settled.uncovered, 0)
+    assert.equal(settled.windows.length, 200)
+    // At most one call per distinct block: 200 above s, and s itself.
+    assert.ok(calls <= 201, `${calls} header calls for 201 blocks`)
+  })
+
   // #84: the gap accounting under lost sequence messages.
   it('excuses only the blocks connected while blind, not a reorg after the window closed (#84, 1)', async () => {
     // a announced, a reconnect, b's hashblock closes the window [a, b]. Later, while connected, a reorg
