@@ -1,0 +1,11 @@
+{
+  "description": "waitfornewblock with a current tip that is not the tip",
+  "builder": "waitForNewBlock",
+  "args": [100,{"currentTip":"0000000000000000000000000000000000000000000000000000000000000000"}],
+  "method": "waitfornewblock",
+  "params": [100,"0000000000000000000000000000000000000000000000000000000000000000"],
+  "result": {
+    "hash": "688a5305f3bf91eabfe2c5cb4a55b2d9757eda358a31d903b4d62f6db2e920bc",
+    "height": 1011
+  }
+}

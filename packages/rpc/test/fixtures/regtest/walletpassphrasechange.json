@@ -1,0 +1,8 @@
+{
+  "description": "walletpassphrasechange of the encrypted wallet",
+  "builder": "walletPassphraseChange",
+  "args": ["fixtures-passphrase","fixtures-passphrase-2"],
+  "method": "walletpassphrasechange",
+  "params": ["fixtures-passphrase","fixtures-passphrase-2"],
+  "result": null
+}

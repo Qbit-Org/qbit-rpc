@@ -1,0 +1,18 @@
+{
+  "description": "gettxspendingprevout of the payment's input, spent, and of its output 0, unspent",
+  "builder": "getTxSpendingPrevout",
+  "args": [[{"txid":"ee21ceeadebbb940043329ed54b2cebb80d65ade5820cc87e54c4e2e25d9e187","vout":0},{"txid":"467abf254d18d0cabffa38a1ea4f0a742f6c3ee75aa0420199e2c8380953fc2d","vout":0}]],
+  "method": "gettxspendingprevout",
+  "params": [[{"txid":"ee21ceeadebbb940043329ed54b2cebb80d65ade5820cc87e54c4e2e25d9e187","vout":0},{"txid":"467abf254d18d0cabffa38a1ea4f0a742f6c3ee75aa0420199e2c8380953fc2d","vout":0}]],
+  "result": [
+    {
+      "txid": "ee21ceeadebbb940043329ed54b2cebb80d65ade5820cc87e54c4e2e25d9e187",
+      "vout": 0,
+      "spendingtxid": "467abf254d18d0cabffa38a1ea4f0a742f6c3ee75aa0420199e2c8380953fc2d"
+    },
+    {
+      "txid": "467abf254d18d0cabffa38a1ea4f0a742f6c3ee75aa0420199e2c8380953fc2d",
+      "vout": 0
+    }
+  ]
+}

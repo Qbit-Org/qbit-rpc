@@ -1,0 +1,8 @@
+{
+  "description": "keypoolrefill to 10 keys",
+  "builder": "keypoolRefill",
+  "args": [{"newSize":10}],
+  "method": "keypoolrefill",
+  "params": [10],
+  "result": null
+}

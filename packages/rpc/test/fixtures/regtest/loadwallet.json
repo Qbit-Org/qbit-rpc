@@ -1,0 +1,10 @@
+{
+  "description": "loadwallet of the watch-only wallet",
+  "builder": "loadWallet",
+  "args": ["watching"],
+  "method": "loadwallet",
+  "params": ["watching"],
+  "result": {
+    "name": "watching"
+  }
+}

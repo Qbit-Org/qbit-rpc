@@ -1,27 +1,27 @@
 {
   "description": "getaddressinfo of an own P2MR address",
   "builder": "getAddressInfo",
-  "args": ["qbrt1zst3uq7dclyhe3q93en60jn6v745gxecudfsa86fhxqm7hsrz244q6urs83"],
+  "args": ["qbrt1z9uqgqx822ac0fafspacflnzqenaw9t3he5mmlcwlz35v0jqap88sl3ltcz"],
   "method": "getaddressinfo",
-  "params": ["qbrt1zst3uq7dclyhe3q93en60jn6v745gxecudfsa86fhxqm7hsrz244q6urs83"],
+  "params": ["qbrt1z9uqgqx822ac0fafspacflnzqenaw9t3he5mmlcwlz35v0jqap88sl3ltcz"],
   "result": {
-    "address": "qbrt1zst3uq7dclyhe3q93en60jn6v745gxecudfsa86fhxqm7hsrz244q6urs83",
-    "scriptPubKey": "522082e3c079b8f92f9880b1ccf4f94f4cf56883671c6a61d3e9373037ebc062556a",
+    "address": "qbrt1z9uqgqx822ac0fafspacflnzqenaw9t3he5mmlcwlz35v0jqap88sl3ltcz",
+    "scriptPubKey": "52202f008018ea5770f4f5300f709fcc40ccfae2ae37cd37bfe1df1468c7c81d09cf",
     "ismine": true,
     "solvable": true,
-    "desc": "mr(pk(16404f16c7a0b95f79af65c5065ba93048fd18c3e29386919d9f074d61564ced))#sjg02dgx",
+    "desc": "mr(pk(88753b1745dba17f050f829eec006542927265be0f3cbb3853d98f30aca3f168))#swgjc6m0",
     "iswatchonly": false,
     "isscript": true,
     "iswitness": true,
     "witness_version": 2,
-    "witness_program": "82e3c079b8f92f9880b1ccf4f94f4cf56883671c6a61d3e9373037ebc062556a",
+    "witness_program": "2f008018ea5770f4f5300f709fcc40ccfae2ae37cd37bfe1df1468c7c81d09cf",
     "ischange": false,
     "labels": [
       ""
     ],
     "pqc_key_states": [
       {
-        "pubkey": "16404f16c7a0b95f79af65c5065ba93048fd18c3e29386919d9f074d61564ced",
+        "pubkey": "88753b1745dba17f050f829eec006542927265be0f3cbb3853d98f30aca3f168",
         "pqc_signature_count": 0,
         "pqc_signature_limit": 1073741824,
         "pqc_signatures_remaining": 1073741824,

@@ -1,0 +1,26 @@
+{
+  "description": "getmininginfo on regtest",
+  "builder": "getMiningInfo",
+  "args": [],
+  "method": "getmininginfo",
+  "params": [],
+  "result": {
+    "blocks": 1011,
+    "currentblockweight": 7860,
+    "currentblocktx": 1,
+    "bits": "207fffff",
+    "difficulty": 4.656542373906925e-10,
+    "target": "7fffff0000000000000000000000000000000000000000000000000000000000",
+    "networkhashps": 12,
+    "pooledtx": 0,
+    "blockmintxfee": 0.00000001,
+    "chain": "regtest",
+    "next": {
+      "height": 1012,
+      "bits": "207fffff",
+      "difficulty": 4.656542373906925e-10,
+      "target": "7fffff0000000000000000000000000000000000000000000000000000000000"
+    },
+    "warnings": []
+  }
+}
