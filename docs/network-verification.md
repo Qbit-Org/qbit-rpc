@@ -157,15 +157,25 @@ last). Each must fall in a blind window, which covers exactly the blocks
 connected while the subscriber could miss them: after a reconnect or a
 `hashblock` gap of unknown size, from the last `hashblock` to the next one,
 or to the end of the soak when none came; after a `sequence` gap, from the
-last `block_connected` to the tip when the gap was reported (its lost
-messages came before that), excusing no more blocks than the gap says it
+last `block_connected` to the next one, or, when none came, to the last
+block either topic named when the latest gap was reported. A lost `sequence`
+message is reported at the next one that arrives, so a gap's lost messages
+came before that report. A tip read over RPC comes later and is no bound: it
+can hold blocks connected since. Gaps with no `block_connected` between
+them share one window, which excuses no more blocks than they say they
 lost, less one for each block whose `hashblock` came after the window's
 start without its `block_connected`. A `sequence` gap that cannot say how
 many it lost excuses none: the reconnect it comes with has its own window. A
 window follows its closing block's chain down to where it meets its opening
-block's, so a reorg while blind is covered and one after it is not; a
+block's, so a reorg while blind is covered and one after it is not. A
 reconnect's window closed by a reorg in the 2 s after the soak's last tip
-was read also covers that tip's chain. A `hashblock` gap that says how many it
+was read also covers that tip's chain. A `sequence` window also reaches
+below each block a `hashblock` named in it, so one that a reorg ends on
+another branch still covers the blocks those messages showed connected
+first. These rules rely on the order messages arrive in across topics, which
+holds because every topic comes from one address over one socket, so the
+subscriber receives them in the order qbitd published them. A `hashblock`
+gap that says how many it
 skipped excuses none, because each of those blocks still has its
 `block_connected`. It samples
 `health()` every minute and records the largest `rawblock` against

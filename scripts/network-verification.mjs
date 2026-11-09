@@ -104,19 +104,37 @@ export function hostOf(url) {
  * - after a reconnect or an unsized `hashblock` gap, from the last `hashblock`
  *   (undefined: the start) to the next, or to the end of the soak when none
  *   came;
- * - after a `sequence` gap, from the last `block_connected` to the tip when
- *   the latest gap was reported: lost `sequence` messages can be blocks' as
- *   well as the mempool's, which share its counter, and they came before the
- *   gap was reported. A gap excuses at most as many blocks as it says it
- *   lost, less one for each block whose `hashblock` came after that last
- *   `block_connected` (or after the counter's baseline) without its own; a gap
- *   that cannot say excuses none, as the reconnect it comes with has a window
- *   of its own. Without the tip at the gap, it excuses none.
+ * - after a sized `sequence` gap, from the last `block_connected`. Lost
+ *   `sequence` messages can be blocks' as well as the mempool's, which share
+ *   its counter, and each is reported at the next `sequence` message that
+ *   arrives, just before it. So a gap can have lost the `block_connected` of a
+ *   block connected before that message, and of no later one. What proves a
+ *   block was connected by then is a message that came first: its own, or a
+ *   descendant's. The window therefore ends at the next `block_connected`,
+ *   which arrived with no gap since the window's latest (or reported it). When
+ *   none came, it ends at the last block either topic named when the latest
+ *   gap arrived. It also reaches below every block `hashblock` named in it
+ *   until then, so a reorg in the window (as in the end grace) leaves no block
+ *   the stream proved blind outside it. The gaps in a window add up their
+ *   allowance, as many blocks as they say they lost, less one for each block
+ *   whose `hashblock` came after the window's start (or after the counter's
+ *   baseline) without its `block_connected`. A gap that cannot say excuses
+ *   none, as the reconnect it comes with has a window of its own. No tip read
+ *   over RPC bounds a window: it is read later than the gap, and can include
+ *   blocks connected after it (#93).
  * A block no message named passes only inside a window. A sized `hashblock`
  * gap excuses none: the block whose `hashblock` was lost is still named by its
  * `block_connected`, unless `sequence` lost it too, which a `sequence` gap
  * reports. Set `started` once the soak's first tip is fixed: a reconnect
  * before it hides no block the walk counts.
+ *
+ * "Before" is the order the messages arrive in, across topics. That holds
+ * because the soak subscribes to every topic at one address over one socket,
+ * and qbitd publishes every topic bound to one address on one PUB socket, in
+ * the order of its validation signals: each block's `block_connected`, then
+ * the tip update's `hashblock`. A ZMQ connection drops messages but never
+ * reorders them. A topic published at another address is silent here, which
+ * fails the soak.
  */
 export class BlockAccounting {
   announced = new Set()
@@ -127,19 +145,21 @@ export class BlockAccounting {
   sequenceGaps = 0
   started = false
   #hashblockWindow = { open: false, from: undefined, limit: Infinity }
-  #sequenceWindow = { open: false, from: undefined, limit: 0, tip: undefined, since: 0 }
+  /** `named` is its start's, and `reach` how many of those had come when its latest gap arrived. */
+  #sequenceWindow = { open: false, from: undefined, limit: 0, tip: undefined, since: 0, named: [], reach: 0 }
   #lastAnnounced
   /** The last block either topic named, in the order the messages came. */
   #lastNamed
   /** The order each block's hashblock came in. */
   #announcedAt = new Map()
   /**
-   * Where the next sequence window starts: its block (`from`, undefined: the start) and how many hashblocks
-   * had come then (`since`), which a gap is charged after. Both move together, at each block_connected and
-   * where the counter began again (an unsized gap), so a window never reaches back past its own charges.
-   * `since` is undefined until the first sequence message sets the counter's baseline.
+   * Where the next sequence window starts: its block (`from`, undefined: the start), how many hashblocks
+   * had come then (`since`), which a gap is charged after, and the blocks hashblock named since (`named`).
+   * All move together, at each block_connected and where the counter began again (an unsized gap), so a
+   * window never reaches back past its own charges. `since` is undefined until the first sequence message
+   * sets the counter's baseline.
    */
-  #sequenceStart = { from: undefined, since: undefined }
+  #sequenceStart = { from: undefined, since: undefined, named: [] }
 
   /** How many blocks any message named: a missing `hashblock` publisher must not turn off the check on topics. */
   get seen() {
@@ -165,13 +185,19 @@ export class BlockAccounting {
     window.open = false
   }
 
-  /** A sequence window ends at the tip when its latest gap was reported, whatever block_connected closes it. */
-  #closeSequence() {
+  /**
+   * Ends the sequence window at `at`, the block_connected that closes it: every block named before it came
+   * first, so the window reaches below all of them. Without one (an unsized gap), it ends at its tip, and
+   * reaches below what was named when its latest gap arrived.
+   */
+  #closeSequence(at) {
     const window = this.#sequenceWindow
-    if (window.open && window.tip !== undefined) {
-      this.blind.push({ from: window.from, to: window.tip, limit: window.limit, since: window.since })
+    const to = at ?? window.tip
+    if (window.open && to !== undefined) {
+      const also = window.named.slice(0, at === undefined ? window.reach : window.named.length)
+      this.blind.push({ from: window.from, to, also, limit: window.limit, since: window.since })
     }
-    Object.assign(window, { open: false, tip: undefined })
+    Object.assign(window, { open: false, tip: undefined, named: [], reach: 0 })
   }
 
   message(message) {
@@ -179,10 +205,10 @@ export class BlockAccounting {
       this.#sequenceStart.since = this.#announcedAt.size
     }
     if (message.topic === 'sequence' && message.event === 'block_connected') {
-      this.#closeSequence()
+      this.#closeSequence(message.hash)
       this.connected.add(message.hash)
       this.#lastNamed = message.hash
-      this.#sequenceStart = { from: message.hash, since: this.#announcedAt.size }
+      this.#sequenceStart = { from: message.hash, since: this.#announcedAt.size, named: [] }
     }
     if (message.topic !== 'hashblock') return
     this.#closeHashblock(message.hash)
@@ -190,14 +216,17 @@ export class BlockAccounting {
     if (!this.#announcedAt.has(message.hash)) this.#announcedAt.set(message.hash, this.#announcedAt.size)
     this.#lastAnnounced = message.hash
     this.#lastNamed = message.hash
+    this.#sequenceStart.named.push(message.hash)
   }
 
   /**
-   * `tip`: for a `sequence` gap, the chain's tip when it was reported. The
-   * messages it lost came before it, so a window still open at the end
-   * covers blocks up to that tip, not the soak's last.
+   * `tip`: where a sized `sequence` gap's window ends if no block_connected
+   * closes it. The default, which the soak uses, is the last block either
+   * topic named: the gap's lost messages came before the message that
+   * reported it, which comes next, and so did that block. A block connected
+   * later is no loss of this gap's.
    */
-  gap(event, tip) {
+  gap(event, tip = this.#lastNamed) {
     if (event.topic === 'sequence') {
       this.sequenceGaps++
       // A gap that cannot say how many it lost (the counter began again, as after a reconnect) opens no
@@ -205,13 +234,14 @@ export class BlockAccounting {
       // A window open across it ends here; the next starts after the restart, at the last block named.
       if (event.missed === undefined) {
         this.#closeSequence()
-        this.#sequenceStart = { from: this.#lastNamed, since: this.#announcedAt.size }
+        this.#sequenceStart = { from: this.#lastNamed, since: this.#announcedAt.size, named: [] }
         return
       }
       const window = this.#sequenceWindow
-      if (!window.open) window.since = this.#sequenceStart.since ?? 0
+      if (!window.open)
+        Object.assign(window, { since: this.#sequenceStart.since ?? 0, named: this.#sequenceStart.named })
       this.#open(window, this.#sequenceStart.from, event.missed)
-      if (tip !== undefined) window.tip = tip
+      Object.assign(window, { tip, reach: window.named.length })
       return
     }
     if (event.topic !== 'hashblock') return
@@ -267,15 +297,16 @@ export class BlockAccounting {
     }
     const covered = new Set()
     const windows = []
-    // A reconnect's window still open runs to the end. A sequence gap's runs to the tip when the latest
-    // gap was reported, with its cap: the blocks it lost connected by then, and no later one is excused.
+    // A reconnect's window still open runs to the end. A sequence gap's runs to the last block named when
+    // its latest gap arrived, with its cap: the blocks it lost connected by then, and no later one is excused.
     const open = []
     if (this.#hashblockWindow.open) {
       open.push({ from: this.#hashblockWindow.from, to: lastTip, limit: Infinity, since: -Infinity })
     }
     const sequence = this.#sequenceWindow
     if (sequence.open && sequence.tip !== undefined) {
-      open.push({ from: sequence.from, to: sequence.tip, limit: sequence.limit, since: sequence.since })
+      const also = sequence.named.slice(0, sequence.reach)
+      open.push({ from: sequence.from, to: sequence.tip, also, limit: sequence.limit, since: sequence.since })
     }
     // A reconnect's window closed by a block off the final chain (a reorg in the end grace, after lastTip
     // was read) leaves the blind blocks on lastTip's chain: it covers those too.
@@ -283,21 +314,29 @@ export class BlockAccounting {
       .filter(w => w.late === true && w.to !== lastTip && !onTip.has(w.to))
       .map(w => ({ ...w, to: lastTip }))
     const unnamedSet = new Set(unnamed)
-    for (const { from, to, limit, since } of [...this.blind, ...open, ...offTip]) {
+    for (const { from, to, also = [], limit, since } of [...this.blind, ...open, ...offTip]) {
       if (to === undefined) continue
       const meets = from === undefined ? new Set() : await ancestors(from)
-      let fork = startHeight
-      // Back from `to` to the first block on `from`'s chain (`from` itself when no reorg came between).
+      // Back from `to`, then from each other block named in the window, to the first block on `from`'s
+      // chain (`from` itself when no reorg came between): one segment, under one allowance. A named block
+      // off `to`'s chain, as when a reorg ends the window on another branch, adds a span of its own.
       const segment = []
-      for (let at = to; at !== undefined && at !== startTip;) {
-        const header = await chain.header(at)
-        if (meets.has(at)) {
-          fork = header.height
-          break
+      const inSegment = new Set()
+      for (const [i, end] of [to, ...also].entries()) {
+        const length = segment.length
+        let fork = startHeight
+        for (let at = end; at !== undefined && at !== startTip && !inSegment.has(at);) {
+          const header = await chain.header(at)
+          if (meets.has(at)) {
+            fork = header.height
+            break
+          }
+          if (header.height <= startHeight) break
+          segment.push(at)
+          inSegment.add(at)
+          at = header.previousBlockHash
         }
-        if (header.height <= startHeight) break
-        segment.push(at)
-        at = header.previousBlockHash
+        if (i === 0 || segment.length > length) windows.push({ from: fork, to: (await chain.header(end)).height })
       }
       // A sized gap's lost messages first account for the blocks whose hashblock came but whose
       // block_connected did not; what is left excuses unnamed blocks, the nearest to its end first.
@@ -313,7 +352,6 @@ export class BlockAccounting {
           allowance--
         }
       }
-      windows.push({ from: fork, to: (await chain.header(to)).height })
     }
     const uncovered = unnamed.filter(hash => !covered.has(hash)).length
     return { walked, unannounced: unnamed.length, uncovered, windows }
