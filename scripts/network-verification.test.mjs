@@ -18,6 +18,7 @@ import {
   hideAll,
   hostOf,
   MAX_DURATION_MS,
+  BlockAccounting,
   soakFailures,
   uncoveredBlocks,
 } from './network-verification.mjs'
@@ -244,6 +245,9 @@ describe('hideAll and hostOf', () => {
     const hidden = [url, hostOf(url), 'https://rpc.example.com:8443/', hostOf('https://rpc.example.com:8443/')]
     assert.equal(hostOf(url), 'node.example.com')
     assert.equal(hostOf('not a url'), undefined)
+    // A bracketed name does not parse as a URL, and is still found.
+    assert.equal(hostOf('tcp://[Node.Example.com]'), 'Node.Example.com')
+    assert.equal(hostOf('tcp://[2001:DB8::1]'), '2001:db8::1')
     assert.equal(
       hideAll(`ZmqSetupError: ${url} needs a port; then node.example.com and rpc.example.com refused`, hidden),
       'ZmqSetupError: <node address> needs a port; then <node address> and <node address> refused'
@@ -261,8 +265,12 @@ describe('hideAll and hostOf', () => {
       'refused by <node address>. Then <node address>:8332'
     )
     assert.equal(hideAll('a [special] host', ['[special]']), 'a <node address> host')
+    // In any case: an error message keeps the case the address was given in.
+    assert.equal(hideAll('use [2001:DB8::1]:28332', [hostOf('tcp://[2001:DB8::1]')]), 'use [<node address>]:28332')
   })
 })
+
+const quietSoak = { messages: 10, malformed: 0, unknown: 0, uncovered: 0, hashblockMissed: 0 }
 
 describe('soakFailures', () => {
   const quiet = { messages: 10, malformed: 0, unknown: 0, uncovered: 0, hashblockMissed: 0 }
@@ -303,5 +311,85 @@ describe('soakFailures', () => {
   })
   it('fails malformed messages and unknown blocks', () => {
     assert.equal(soakFailures({ ...quiet, malformed: 1, unknown: 1 }).length, 2)
+  })
+})
+
+describe('BlockAccounting', () => {
+  // An in-memory chain: blocks by hash, and the active chain by height.
+  const chainOf = (blocks, active) => ({
+    header: async hash => {
+      const block = blocks[hash]
+      if (block === undefined) throw new Error(`unknown block ${hash}`)
+      return block
+    },
+    hashAt: async height => active[height],
+  })
+  const block = (height, previousBlockHash) => ({ height, previousBlockHash })
+  const hashblock = hash => ({ topic: 'hashblock', hash })
+  const connected = hash => ({ topic: 'sequence', event: 'block_connected', hash })
+  const disconnected = hash => ({ topic: 'sequence', event: 'block_disconnected', hash })
+  const settle = (accounting, blocks, active, lastTip) =>
+    accounting.settle(chainOf(blocks, active), { startTip: 's', startHeight: 100, lastTip })
+
+  it('counts blocks connected in one tip update, with a hashblock for the tip only', async () => {
+    const blocks = { s: block(100, 'p'), a: block(101, 's'), b: block(102, 'a'), c: block(103, 'b') }
+    const accounting = new BlockAccounting()
+    accounting.started = true
+    // A catch-up: three blocks connect, and qbitd announces the new tip once.
+    for (const message of [connected('a'), connected('b'), connected('c'), hashblock('c')]) accounting.message(message)
+    const settled = await settle(accounting, blocks, { 100: 's', 101: 'a', 102: 'b', 103: 'c' }, 'c')
+    assert.deepEqual(settled, { walked: 3, unannounced: 0, uncovered: 0, windows: [] })
+    assert.deepEqual(soakFailures({ ...quietSoak, uncovered: settled.uncovered }), [])
+  })
+
+  it('counts the blocks a reorg connects, with a hashblock for the new tip only', async () => {
+    // a was announced; a reorg replaces it with x, y, z in one tip update.
+    const blocks = {
+      s: block(100, 'p'),
+      a: block(101, 's'),
+      x: block(101, 's'),
+      y: block(102, 'x'),
+      z: block(103, 'y'),
+    }
+    const accounting = new BlockAccounting()
+    accounting.started = true
+    for (const message of [connected('a'), hashblock('a'), disconnected('a')]) accounting.message(message)
+    for (const message of [connected('x'), connected('y'), connected('z'), hashblock('z')]) accounting.message(message)
+    const settled = await settle(accounting, blocks, { 100: 's', 101: 'x', 102: 'y', 103: 'z' }, 'z')
+    assert.deepEqual(settled, { walked: 3, unannounced: 0, uncovered: 0, windows: [] })
+  })
+
+  it('still fails a block no message named, outside a blind window', async () => {
+    const blocks = { s: block(100, 'p'), a: block(101, 's'), b: block(102, 'a') }
+    const accounting = new BlockAccounting()
+    accounting.started = true
+    accounting.message(hashblock('b')) // nothing named a
+    const settled = await settle(accounting, blocks, { 100: 's', 101: 'a', 102: 'b' }, 'b')
+    assert.equal(settled.uncovered, 1)
+    assert.equal(soakFailures({ ...quietSoak, uncovered: settled.uncovered }).length, 1)
+  })
+
+  it('starts a blind window at the fork when a reorg while blind replaced the last block announced', async () => {
+    const blocks = { s: block(100, 'p'), a: block(101, 's'), x: block(101, 's'), y: block(102, 'x') }
+    const accounting = new BlockAccounting()
+    accounting.started = true
+    accounting.message(hashblock('a'))
+    accounting.reconnect() // qbitd restarts; meanwhile x and y replace a
+    accounting.gap({ topic: 'hashblock', expected: 2, received: 1 })
+    accounting.message(hashblock('y'))
+    const settled = await settle(accounting, blocks, { 100: 's', 101: 'x', 102: 'y' }, 'y')
+    assert.deepEqual(settled.windows, [{ from: 100, to: 102 }])
+    assert.equal(settled.uncovered, 0)
+  })
+
+  it('keeps a window open to the end of the soak when no hashblock followed a reconnect', async () => {
+    const blocks = { s: block(100, 'p'), a: block(101, 's'), b: block(102, 'a') }
+    const accounting = new BlockAccounting()
+    accounting.started = true
+    accounting.message(hashblock('a'))
+    accounting.reconnect() // b is found while qbitd is down, and the soak ends
+    const settled = await settle(accounting, blocks, { 100: 's', 101: 'a', 102: 'b' }, 'b')
+    assert.deepEqual(settled.windows, [{ from: 101, to: 102 }])
+    assert.equal(settled.uncovered, 0)
   })
 })

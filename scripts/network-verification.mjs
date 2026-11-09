@@ -72,26 +72,120 @@ export function hideAll(text, hidden) {
   // Whole tokens only, so 1.2.3.4 leaves 11.2.3.45 alone, and in one pass, so a placeholder is never
   // rewritten by a shorter value. A dot may follow: a host ends a sentence, or names a parent domain.
   const pattern = values.map(v => v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')
-  return String(text).replace(new RegExp(`(?<![\\w-])(?:${pattern})(?![\\w-])`, 'g'), '<node address>')
-}
-
-/** A URL's host name, or undefined when it does not parse. */
-export function hostOf(url) {
-  try {
-    const host = new URL(url).hostname.replace(/^\[|\]$/g, '')
-    return host === '' ? undefined : host
-  } catch {
-    return undefined
-  }
+  // Host names and IPv6 hex ignore case, and hostOf lowercases what it returns.
+  return String(text).replace(new RegExp(`(?<![\\w-])(?:${pattern})(?![\\w-])`, 'gi'), '<node address>')
 }
 
 /**
- * How many of `heights`, blocks no `hashblock` announced, fall outside every
+ * A URL's host name, or undefined when it has none. When the URL does not
+ * parse (`tcp://[node.example.com]`), the text between `//` and the port or
+ * path, so a malformed address is hidden too.
+ */
+export function hostOf(url) {
+  let host
+  try {
+    host = new URL(url).hostname
+  } catch {
+    host = /^[a-z][\w+.-]*:\/\/(?:[^@/]*@)?(\[[^\]/]*\]|[^:/?#]*)/i.exec(String(url))?.[1]
+  }
+  host = host?.replace(/^\[|\]$/g, '')
+  return host === undefined || host === '' ? undefined : host
+}
+
+/**
+ * How many of `heights`, blocks no `hashblock` or `block_connected` announced, fall outside every
  * window `{ from, to }`: above `from` and at most `to`, where the subscriber
  * was blind after a reconnect or a `hashblock` gap of unknown size.
  */
 export function uncoveredBlocks(heights, windows) {
   return heights.filter(height => !windows.some(({ from, to }) => height > from && height <= to)).length
+}
+
+/**
+ * A ZMQ soak's block accounting, fed the subscriber's events in order: the
+ * blocks it was told of, and where it was blind. qbitd sends one `hashblock`
+ * per tip update, so blocks connected together (a catch-up or a reorg) have
+ * one only for the last; `sequence`'s `block_connected` names each of them.
+ * A blind window runs from the last block announced (undefined: the start)
+ * to the next `hashblock` after a reconnect or an unsized `hashblock` gap, or
+ * to the end of the soak when none came. Set `started` once the soak's first
+ * tip is fixed: a reconnect before it hides no block the walk counts.
+ */
+export class BlockAccounting {
+  announced = new Set()
+  connected = new Set()
+  blind = []
+  hashblockMissed = 0
+  hashblockUnsizedGaps = 0
+  started = false
+  #open = false
+  #from
+  #last
+
+  #blind() {
+    if (!this.#open) [this.#open, this.#from] = [true, this.#last]
+  }
+
+  message(message) {
+    if (message.topic === 'sequence' && message.event === 'block_connected') this.connected.add(message.hash)
+    if (message.topic !== 'hashblock') return
+    if (this.#open) this.blind.push([this.#from, message.hash])
+    this.#open = false
+    this.announced.add(message.hash)
+    this.#last = message.hash
+  }
+
+  gap(event) {
+    if (event.topic !== 'hashblock') return
+    if (event.missed !== undefined) this.hashblockMissed += event.missed
+    else {
+      this.hashblockUnsizedGaps++
+      this.#blind()
+    }
+  }
+
+  /** Blocks found while it is down are never announced, and no hashblock may come before the end to say so. */
+  reconnect() {
+    if (this.started) this.#blind()
+  }
+
+  /**
+   * Walks the active chain back from `lastTip` to `startTip`. `chain` gives
+   * `header(hash)` ({ height, previousBlockHash }) and `hashAt(height)` on the
+   * active chain, both async. Returns how many blocks it walked, how many no
+   * message named, how many of those fell outside every blind window, and
+   * the windows as heights. A window starts at the fork point when a reorg
+   * while blind replaced the last block announced.
+   */
+  async settle(chain, { startTip, startHeight, lastTip }) {
+    const heights = []
+    let walked = 0
+    for (let hash = lastTip; hash !== undefined && hash !== startTip; walked++) {
+      const header = await chain.header(hash)
+      if (header.height <= startHeight || header.previousBlockHash === undefined) break
+      if (!this.announced.has(hash) && !this.connected.has(hash)) heights.push(header.height)
+      hash = header.previousBlockHash
+    }
+    const forkHeight = async hash => {
+      for (let at = hash; at !== undefined;) {
+        const header = await chain.header(at)
+        if (header.height <= startHeight || (await chain.hashAt(header.height)) === at) {
+          return Math.max(header.height, startHeight)
+        }
+        at = header.previousBlockHash
+      }
+      return startHeight
+    }
+    const windows = []
+    for (const [from, to] of this.#open ? [...this.blind, [this.#from, lastTip]] : this.blind) {
+      if (to === undefined) continue
+      windows.push({
+        from: from === undefined ? startHeight : await forkHeight(from),
+        to: (await chain.header(to)).height,
+      })
+    }
+    return { walked, unannounced: heights.length, uncovered: uncoveredBlocks(heights, windows), windows }
+  }
 }
 
 /**

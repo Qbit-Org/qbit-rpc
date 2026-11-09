@@ -59,8 +59,8 @@ import {
   valueAtPath,
   hideAll,
   hostOf,
+  BlockAccounting,
   soakFailures,
-  uncoveredBlocks,
 } from './network-verification.mjs'
 import { ownsDatadir, stopNode } from './regtest-node.mjs'
 import { QBIT_CORE_VERSION } from './qbit-core-release.mjs'
@@ -393,21 +393,12 @@ async function zmqSoak(rpc, record, { zmqUrl, durationMs, intervalMs, during }) 
   const result = {
     gaps: 0,
     missed: 0,
-    hashblockMissed: 0,
-    hashblockUnsizedGaps: 0,
     malformed: {},
     reconnects: { disconnected: 0, failed: 0 },
     maxRawBlock: 0,
     sequence: {},
   }
-  const announced = new Set()
-  // Where the subscriber was blind: from the last block it was told of (undefined: the start) to the
-  // next hashblock after a reconnect or an unsized hashblock gap, or to the end of the soak when none
-  // came. Only blocks inside one may go without a hashblock beyond what sized gaps account for.
-  const blind = []
-  let blindOpen = false
-  let blindFrom
-  let lastAnnounced
+  const blocks = new BlockAccounting()
   const checks = { confirmed: 0, unknown: 0, tipAtOnce: 0 }
   const health = {}
   // The walk at the end covers only the blocks the subscriber could have been told of: from the tip
@@ -434,15 +425,15 @@ async function zmqSoak(rpc, record, { zmqUrl, durationMs, intervalMs, during }) 
         if (startTip === undefined) {
           startTip = await retrying(() => rpc.getBestBlockHash())
           startHeight = (await retrying(() => rpc.getBlockHeader(startTip))).height
+          blocks.started = true
         }
+        blocks.message(message)
         counts[message.topic]++
         if (message.topic === 'rawblock') result.maxRawBlock = Math.max(result.maxRawBlock, message.bytes.length)
-        if (message.topic === 'sequence') result.sequence[message.event] = (result.sequence[message.event] ?? 0) + 1
+        if (message.topic === 'sequence') {
+          result.sequence[message.event] = (result.sequence[message.event] ?? 0) + 1
+        }
         if (message.topic === 'hashblock') {
-          if (blindOpen) blind.push([blindFrom, message.hash])
-          blindOpen = false
-          announced.add(message.hash)
-          lastAnnounced = message.hash
           pending.push(
             retrying(() => Promise.all([rpc.getBlockHeader(message.hash), rpc.getBestBlockHash()])).then(
               ([, best]) => {
@@ -459,20 +450,12 @@ async function zmqSoak(rpc, record, { zmqUrl, durationMs, intervalMs, during }) 
       } else if (event.kind === 'gap') {
         result.gaps++
         result.missed += event.missed ?? 0
-        if (event.topic === 'hashblock') {
-          if (event.missed !== undefined) result.hashblockMissed += event.missed
-          else {
-            result.hashblockUnsizedGaps++
-            if (!blindOpen) [blindOpen, blindFrom] = [true, lastAnnounced]
-          }
-        }
+        blocks.gap(event)
       } else if (event.kind === 'malformed') {
         result.malformed[event.error.code] = (result.malformed[event.error.code] ?? 0) + 1
       } else if (event.kind === 'reconnect') {
         result.reconnects[event.reason]++
-        // Blocks found while it is down are never announced. The next hashblock's gap says so too, but
-        // there may be none before the soak ends, or no baseline for one yet.
-        if (startTip !== undefined && !blindOpen) [blindOpen, blindFrom] = [true, lastAnnounced]
+        blocks.reconnect()
       }
     }
   } catch (error) {
@@ -483,23 +466,17 @@ async function zmqSoak(rpc, record, { zmqUrl, durationMs, intervalMs, during }) 
   }
   await Promise.all(pending)
   await background
-  // Every block on the active chain since the start, against the hashblocks.
-  const unannouncedHeights = []
-  let walked = 0
+  // Every block on the active chain since the start, against what the subscriber was told.
   const lastTip = startTip === undefined ? undefined : (endTip ?? (await rpc.getBestBlockHash()))
-  for (let hash = lastTip; hash !== undefined && hash !== startTip; walked++) {
-    const header = await rpc.getBlockHeader(hash)
-    if (header.height <= startHeight || header.previousBlockHash === undefined) break
-    if (!announced.has(hash)) unannouncedHeights.push(header.height)
-    hash = header.previousBlockHash
-  }
-  const unannounced = unannouncedHeights.length
-  if (blindOpen) blind.push([blindFrom, lastTip])
-  const heightOf = async hash =>
-    hash === undefined ? startHeight : (await retrying(() => rpc.getBlockHeader(hash))).height
-  const windows = []
-  for (const [from, to] of blind) windows.push({ from: await heightOf(from), to: await heightOf(to) })
-  const uncovered = uncoveredBlocks(unannouncedHeights, windows)
+  const { walked, unannounced, uncovered, windows } = await blocks.settle(
+    {
+      header: hash => retrying(() => rpc.getBlockHeader(hash)),
+      hashAt: height => retrying(() => rpc.getBlockHash(height)),
+    },
+    { startTip, startHeight, lastTip }
+  )
+  result.hashblockMissed = blocks.hashblockMissed
+  result.hashblockUnsizedGaps = blocks.hashblockUnsizedGaps
   const malformed = Object.values(result.malformed).reduce((a, b) => a + b, 0)
   const messages = Object.values(counts).reduce((a, b) => a + b, 0)
   for (const failure of soakFailures({
@@ -507,9 +484,9 @@ async function zmqSoak(rpc, record, { zmqUrl, durationMs, intervalMs, during }) 
     malformed,
     unknown: checks.unknown,
     uncovered,
-    hashblockMissed: result.hashblockMissed,
+    hashblockMissed: blocks.hashblockMissed,
     counts,
-    blocksSeen: announced.size,
+    blocksSeen: blocks.announced.size,
   }))
     record.fail(
       malformed > 0 && failure.endsWith('malformed ZMQ messages')
@@ -1070,14 +1047,6 @@ async function main() {
   const policy = sendPolicy({ mode: options.mode, chain, sendAmount }, parseQbt)
   const startedAt = new Date()
   const reportPath = resolve(repoRoot, options.report ?? defaultReportPath(startedAt, chain, options.mode))
-  // Never overwrite an earlier run's report, or the txid of a send it may not have finished.
-  for (const path of [reportPath, `${reportPath}.pending-txid`]) {
-    if (existsSync(path)) {
-      throw new TypeError(
-        `${relative(repoRoot, path)} exists: reconcile and keep it, and pass --report <path> to write this run elsewhere`
-      )
-    }
-  }
   // Claimed atomically before anything is sent, so two runs never share a report or its pending txid.
   const claim = `${reportPath}.lock`
   mkdirSync(dirname(reportPath), { recursive: true })
@@ -1088,6 +1057,16 @@ async function main() {
     throw new TypeError(
       `${relative(repoRoot, claim)} exists: another run writes that report. Pass --report <path>, or remove the file once no run is left`
     )
+  }
+  // Never overwrite an earlier run's report, or the txid of a send it may not have finished. Checked
+  // once the claim is held, so a run that finished while this one waited is seen too.
+  for (const path of [reportPath, `${reportPath}.pending-txid`]) {
+    if (existsSync(path)) {
+      rmSync(claim, { force: true })
+      throw new TypeError(
+        `${relative(repoRoot, path)} exists: reconcile and keep it, and pass --report <path> to write this run elsewhere`
+      )
+    }
   }
   const record = new Record()
   if (!own) record.hide(env.url, env.zmqUrl, hostOf(env.url), hostOf(env.zmqUrl))
