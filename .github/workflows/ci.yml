@@ -116,7 +116,7 @@ jobs:
   # scripts/regtest-smoke.sh: both packages against a throwaway qbit Core
   # regtest node on 127.0.0.1, with every ZMQ topic. The release named in
   # scripts/qbit-core-release.mjs runs only after scripts/qbit-release.mjs has
-  # verified SHA256SUMS against a quorum of the keys in
+  # verified SHA256SUMS against a quorum of qbit's key policy, as pinned in
   # scripts/qbit-release-keys/, and the tarball against SHA256SUMS. No path
   # filter, so it can be a required check.
   regtest-smoke:

@@ -1,0 +1,27 @@
+{
+  "commit": "7ebcddb622d6e639041f005a189b048ec2a221fe",
+  "policy_id": "qbit-release-keys-mainnet-000002",
+  "policy_sha256": "f04ae262bd40cdda5c481fc18cef29b405878e66d06c33b49865ea42b38eaf9f",
+  "signers": {
+    "operator-01": {
+      "certificate_sha256": "abf8e64b87607594d2700f18e38ab72f8f0f0279db54ce6b477e2123b8b1eceb",
+      "primary_fingerprint": "51F569645F0545B0E6C840C2357052443CE094D8"
+    },
+    "operator-02": {
+      "certificate_sha256": "798a89bd2c624510563eb15d84b24c3a100670dbc094f916f4ba4437091056a7",
+      "primary_fingerprint": "A762712935A3FFBC6523EAEBA637B315184F8119"
+    },
+    "operator-03": {
+      "certificate_sha256": "5761edd04bdb582580c258060d044357fd2229fa5b927469b7b7155a53dd2e1b",
+      "primary_fingerprint": "E875FE223D78E2BA7F785B587BFF9C2A1FB522FC"
+    },
+    "operator-04": {
+      "certificate_sha256": "41de6d2ce5e5e5f716b31420d0cbdd31883984d01275b4b58fb1ee1deba817c6",
+      "primary_fingerprint": "4317D4DF4268F36F4ACDF971371CB0839D6DF8C0"
+    },
+    "operator-05": {
+      "certificate_sha256": "9a354b34bcf1bff472a4e826b557998e9a4fa65f93a6ac0e629ebdf5c621fff7",
+      "primary_fingerprint": "C1B34E63408E73C6CE9E74979E845F66807D4014"
+    }
+  }
+}

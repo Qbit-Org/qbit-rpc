@@ -111,16 +111,19 @@ bin="$(node scripts/qbit-release.mjs fetch "$(mktemp -d)/qbit-core")"
 QBIT_BIN_DIR="$bin" scripts/regtest-smoke.sh
 ```
 
-`scripts/qbit-release.mjs` downloads `SHA256SUMS` and `SHA256SUMS.asc` from
-the release on `github.com/Qbit-Org/qbit`, and verifies them with `gpg` in a
-temporary GnuPG home holding only the keys in `scripts/qbit-release-keys/`:
-copies of qbit's own `contrib/keys/operator-keys/` at the release tag, which
-its `README.md` names. Every signature must be good and by a listed signing
-key, and the distinct signers must meet the release line's quorum in
-`keys.json` (3 of 5 for `mainnet`, which v1.0.0 is). Only then does it take
-the tarball's SHA-256 from `SHA256SUMS`, and it extracts the tarball only if
-it has that hash. CI caches the tarball under that hash, and checks a
-restored one again before use.
+`scripts/qbit-release.mjs` first downloads qbit's release key policy from its
+one source of truth, qbit's own `contrib/keys/operator-keys/` (`keys.json` and
+the signers' certificates), at the commit `scripts/qbit-release-keys/pin.json`
+pins, and refuses any file that lacks its pinned SHA-256; this repository
+keeps no copy of the keys. It then downloads `SHA256SUMS` and
+`SHA256SUMS.asc` from the release on `github.com/Qbit-Org/qbit`, and verifies
+them with `gpg` in a temporary GnuPG home holding only those certificates.
+Every signature must be good and by a listed signing key, and the distinct
+signers must meet the release line's quorum in `keys.json` (3 of 5 for
+`mainnet`, which v1.0.0 is). Only then does it take the tarball's SHA-256 from
+`SHA256SUMS`, and it extracts the tarball only if it has that hash. CI caches
+the tarball under that hash, and checks a restored one, and the stored policy,
+again before use.
 
 The release under test is named in one place, `scripts/qbit-core-release.mjs`;
 the tag, asset names and cache key follow from it, and the smoke script
@@ -128,8 +131,10 @@ refuses a `QBIT_BIN_DIR` of another version. The versions `@qbit-oss/rpc`
 supports are defined in one place too, `packages/rpc/src/version.ts`; widen
 them only after the smoke test passes against the new release, and say so in
 [CHANGELOG.md](CHANGELOG.md). A release signed under a newer
-key policy also needs `scripts/qbit-release-keys/` updated, as its `README.md`
-describes.
+key policy also needs `scripts/qbit-release-keys/pin.json` updated, which
+`node scripts/qbit-release.mjs pin <qbit-commit>` proposes and
+`scripts/qbit-release-keys/README.md` says how to review; a release signed
+under the pinned policy, such as v1.0.0, keeps verifying until then.
 
 ## Property tests and fixtures
 

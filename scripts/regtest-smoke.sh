@@ -6,7 +6,7 @@
 # QBIT_BIN_DIR must hold qbitd and qbit-cli from the release named in
 # scripts/qbit-core-release.mjs, verified. `node scripts/qbit-release.mjs fetch
 # <new directory>` downloads it, checks SHA256SUMS against a quorum of the
-# release keys in scripts/qbit-release-keys/ and the tarball against
+# release keys pinned in scripts/qbit-release-keys/ and the tarball against
 # SHA256SUMS, and prints the bin directory; CI's "regtest smoke" job runs this
 # script with that directory on every pull request and push to main.
 #
