@@ -272,11 +272,15 @@ function privateKey(key: unknown, passphrase: string | undefined): void {
     })
   } catch (error) {
     const code = codeOf(error)
-    throw new TypeError(
-      code === 'ERR_OSSL_BAD_DECRYPT'
-        ? 'tls.passphrase does not decrypt tls.key'
-        : `tls.key must be a PEM private key${code === undefined ? '' : ` (${code})`}`
-    )
+    if (code === 'ERR_OSSL_BAD_DECRYPT') throw new TypeError('tls.passphrase does not decrypt tls.key')
+    // A wrong passphrase passes OpenSSL's padding check now and then (about 1 in 256), and what it
+    // decrypts to then fails to parse, with another code: for an encrypted key, say so either way.
+    if (passphrase !== undefined && ENCRYPTED_KEY.test(pemText(key, 'tls.key'))) {
+      throw new TypeError(
+        `tls.passphrase does not decrypt tls.key, or tls.key is damaged${code === undefined ? '' : ` (${code})`}`
+      )
+    }
+    throw new TypeError(`tls.key must be a PEM private key${code === undefined ? '' : ` (${code})`}`)
   }
 }
 

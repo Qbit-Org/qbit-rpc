@@ -516,6 +516,38 @@ describe('the TLS context', () => {
   })
 })
 
+describe('a wrong tls.passphrase that passes the padding check', () => {
+  // About 1 in 256 wrong passphrases decrypt to bytes that pass OpenSSL's padding check, and those then
+  // fail to parse with another code. The key is random, so the test stubs that failure.
+  it('is reported as the passphrase or a damaged key, not as a key that is no PEM', () => {
+    const crypto = createRequire(import.meta.url)('node:crypto') as typeof import('node:crypto')
+    const real = crypto.createPrivateKey
+    crypto.createPrivateKey = () => {
+      throw Object.assign(new Error('unsupported'), { code: 'ERR_OSSL_UNSUPPORTED' })
+    }
+    syncBuiltinESMExports()
+    try {
+      const create = (key: string, passphrase?: string): QbitRpcClient =>
+        new QbitRpcClient({
+          url: 'https://node.test/',
+          auth: { username: 'u', password: 'p' },
+          expectedChain: 'main',
+          tls: { cert: pki.client.cert, key, ...(passphrase === undefined ? {} : { passphrase }) },
+        })
+      expect(() => create(encryptedKey(pki.client, 'pw'), 'no')).toThrow(
+        new TypeError('tls.passphrase does not decrypt tls.key, or tls.key is damaged (ERR_OSSL_UNSUPPORTED)')
+      )
+      // A key that is not encrypted keeps the plain message.
+      expect(() => create(pki.client.key)).toThrow(
+        new TypeError('tls.key must be a PEM private key (ERR_OSSL_UNSUPPORTED)')
+      )
+    } finally {
+      crypto.createPrivateKey = real
+      syncBuiltinESMExports()
+    }
+  })
+})
+
 // Node's own default, rejectUnauthorized: !NODE_TLS_REJECT_UNAUTHORIZED, would
 // let a handshake through that failed its checks, and skip the pins.
 describe('NODE_TLS_REJECT_UNAUTHORIZED=0', () => {

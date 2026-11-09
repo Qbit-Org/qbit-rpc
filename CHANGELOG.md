@@ -88,7 +88,9 @@ The first release of both packages.
   `wallet-write`; `checkPqcSigning(psbt)` runs the check alone.
 - **Remote nodes** behind a TLS terminator: a private CA, a client
   certificate, key pins and a `connect` function for proxies, with certificate
-  verification that cannot be turned off.
+  verification that cannot be turned off. An encrypted client key that
+  `tls.passphrase` does not decrypt is refused as that, whichever OpenSSL error
+  it gives.
 - **`ClientSatisfies<Copy>`**, a type that checks an interface you declare for
   the client instead of importing its types: `true` when `QbitRpcClient` fits
   it, and otherwise each member that does not, with parameters compared both
