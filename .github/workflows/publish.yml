@@ -223,7 +223,8 @@ jobs:
 
       # As in CI's regtest smoke job, but with no cache: the tarball is
       # downloaded, and used only once SHA256SUMS verifies against a quorum of
-      # the keys in scripts/qbit-release-keys/ and the tarball against it.
+      # qbit's key policy, as pinned in scripts/qbit-release-keys/, and the
+      # tarball against it.
       - name: Download and verify qbit Core
         id: core
         run: |
