@@ -1,6 +1,7 @@
 {
   "name": "@qbit-oss/rpc",
-  "version": "0.1.0",
+  "version": "0.0.0",
+  "private": true,
   "description": "Node.js JSON-RPC client for qbit Core with capability gating, chain guard, strict result validation and lossless amounts",
   "main": "lib/index.js",
   "module": "lib/index.mjs",

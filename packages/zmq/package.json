@@ -1,6 +1,7 @@
 {
   "name": "@qbit-oss/zmq",
-  "version": "0.1.0",
+  "version": "0.0.0",
+  "private": true,
   "description": "Node.js ZeroMQ subscriber and strict parser for qbit Core notifications, with sequence-gap events",
   "main": "lib/index.js",
   "module": "lib/index.mjs",
