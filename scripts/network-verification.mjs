@@ -135,6 +135,8 @@ export class BlockAccounting {
   #announcedAt = new Map()
   #announcedAtLastConnected
   #announcedAtSequenceBaseline
+  /** How many hashblocks had come at the latest unsized sequence gap: the counter began again there. */
+  #announcedAtSequenceRestart = 0
 
   /** How many blocks any message named: a missing `hashblock` publisher must not turn off the check on topics. */
   get seen() {
@@ -194,9 +196,20 @@ export class BlockAccounting {
   gap(event, tip) {
     if (event.topic === 'sequence') {
       this.sequenceGaps++
+      // A gap that cannot say how many it lost (the counter began again, as after a reconnect) opens no
+      // window: the reconnect's covers that spell. Losses before it are no later gap's to count.
+      if (event.missed === undefined) {
+        this.#announcedAtSequenceRestart = this.#announcedAt.size
+        return
+      }
       const window = this.#sequenceWindow
-      if (!window.open) window.since = this.#announcedAtLastConnected ?? this.#announcedAtSequenceBaseline ?? 0
-      this.#open(window, this.#lastConnected, event.missed ?? 0)
+      if (!window.open) {
+        window.since = Math.max(
+          this.#announcedAtLastConnected ?? this.#announcedAtSequenceBaseline ?? 0,
+          this.#announcedAtSequenceRestart
+        )
+      }
+      this.#open(window, this.#lastConnected, event.missed)
       if (tip !== undefined) window.tip = tip
       return
     }
