@@ -439,6 +439,26 @@ describe('BlockAccounting', () => {
     assert.equal(settledLater.uncovered, 0)
   })
 
+  it('lets a sized sequence gap excuse no more blocks than it lost messages', async () => {
+    const blocks = { s: block(100, 'p'), a: block(101, 's'), b: block(102, 'a'), c: block(103, 'b') }
+    // One lost message, a mempool event or a block's, while two blocks went unnamed before c.
+    const accounting = started()
+    accounting.gap({ topic: 'sequence', expected: 1, received: 2, missed: 1 })
+    feed(accounting, connected('c'), hashblock('c'))
+    assert.equal((await settle(accounting, blocks, 'c')).uncovered, 1)
+  })
+
+  it('lets a sequence gap no block_connected closed excuse nothing: the publisher went silent', async () => {
+    // A lost mempool event, then nothing on any topic while b and c connect.
+    const blocks = { s: block(100, 'p'), a: block(101, 's'), b: block(102, 'a'), c: block(103, 'b') }
+    const accounting = started()
+    feed(accounting, connected('a'), hashblock('a'))
+    accounting.gap({ topic: 'sequence', expected: 5, received: 6, missed: 1 })
+    const settled = await settle(accounting, blocks, 'c')
+    assert.equal(settled.uncovered, 2)
+    assert.equal(soakFailures({ ...quietSoak, uncovered: settled.uncovered }).length, 1)
+  })
+
   it('lets a sized hashblock gap excuse no block that no message named (#84, 3)', async () => {
     // A hashblock gap of 1 stood for b, whose block_connected arrived. d, which nothing named, is outside
     // every window, and fails: the gap's allowance no longer covers it.

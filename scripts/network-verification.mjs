@@ -104,8 +104,10 @@ export function hostOf(url) {
  * - after a reconnect or an unsized `hashblock` gap, from the last `hashblock`
  *   (undefined: the start) to the next, or to the end of the soak when none
  *   came;
- * - after a `sequence` gap, sized or not, from the last `block_connected` to
- *   the next: lost `sequence` messages can be blocks' as well as the mempool's.
+ * - after a `sequence` gap, from the last `block_connected` to the next: lost
+ *   `sequence` messages can be blocks' as well as the mempool's, which share
+ *   its counter. A gap that says how many it lost excuses at most that many
+ *   blocks, and a window no `block_connected` closed by the end excuses none.
  * A block no message named passes only inside a window. A sized `hashblock`
  * gap excuses none: the block whose `hashblock` was lost is still named by its
  * `block_connected`, unless `sequence` lost it too, which a `sequence` gap
@@ -120,8 +122,8 @@ export class BlockAccounting {
   hashblockUnsizedGaps = 0
   sequenceGaps = 0
   started = false
-  #hashblockWindow = { open: false, from: undefined }
-  #sequenceWindow = { open: false, from: undefined }
+  #hashblockWindow = { open: false, from: undefined, limit: Infinity }
+  #sequenceWindow = { open: false, from: undefined, limit: 0 }
   #lastAnnounced
   #lastConnected
 
@@ -130,12 +132,14 @@ export class BlockAccounting {
     return new Set([...this.announced, ...this.connected]).size
   }
 
-  #open(window, from) {
-    if (!window.open) Object.assign(window, { open: true, from })
+  /** Opens `window` from `from`, or widens the allowance of one open: `limit` more blocks it may excuse. */
+  #open(window, from, limit = Infinity) {
+    if (window.open) window.limit += limit
+    else Object.assign(window, { open: true, from, limit })
   }
 
   #close(window, to) {
-    if (window.open) this.blind.push([window.from, to])
+    if (window.open) this.blind.push([window.from, to, window.limit])
     window.open = false
   }
 
@@ -154,7 +158,7 @@ export class BlockAccounting {
   gap(event) {
     if (event.topic === 'sequence') {
       this.sequenceGaps++
-      this.#open(this.#sequenceWindow, this.#lastConnected)
+      this.#open(this.#sequenceWindow, this.#lastConnected, event.missed ?? Infinity)
       return
     }
     if (event.topic !== 'hashblock') return
@@ -200,11 +204,14 @@ export class BlockAccounting {
     }
     const covered = new Set()
     const windows = []
-    const open = [this.#hashblockWindow, this.#sequenceWindow].filter(w => w.open).map(w => [w.from, lastTip])
-    for (const [from, to] of [...this.blind, ...open]) {
+    // Only a reconnect's window stays open to the end: a block_connected closes a sequence gap's.
+    const open = this.#hashblockWindow.open ? [[this.#hashblockWindow.from, lastTip, Infinity]] : []
+    const unnamedSet = new Set(unnamed)
+    for (const [from, to, limit] of [...this.blind, ...open]) {
       if (to === undefined) continue
       const meets = from === undefined ? new Set() : await ancestors(from)
       let fork = startHeight
+      let excused = 0
       // Back from `to` to the first block on `from`'s chain (`from` itself when no reorg came between).
       for (let at = to; at !== undefined && at !== startTip;) {
         const header = await chain.header(at)
@@ -213,7 +220,11 @@ export class BlockAccounting {
           break
         }
         if (header.height <= startHeight) break
-        covered.add(at)
+        // A sized gap excuses as many unnamed blocks as it lost messages, the nearest to its end first.
+        if (unnamedSet.has(at) && excused < limit) {
+          covered.add(at)
+          excused++
+        }
         at = header.previousBlockHash
       }
       windows.push({ from: fork, to: (await chain.header(to)).height })
