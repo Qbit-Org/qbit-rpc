@@ -1,0 +1,8 @@
+{
+  "name": "release-branch-creation",
+  "target": "branch",
+  "enforcement": "active",
+  "conditions": { "ref_name": { "include": ["refs/heads/release/*"], "exclude": [] } },
+  "rules": [{ "type": "creation" }],
+  "bypass_actors": [{ "actor_type": "Team", "actor_id": null, "bypass_mode": "always" }]
+}
