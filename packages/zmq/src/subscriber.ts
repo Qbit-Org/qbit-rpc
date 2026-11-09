@@ -358,7 +358,7 @@ const SETUP_ERROR_BRAND = Symbol.for('qbit-zmq.ZmqSetupError')
 Object.defineProperty(ZmqSetupError.prototype, SETUP_ERROR_BRAND, { value: true })
 
 /** The `zeromq` range of package.json's `peerDependencies`, for messages; a test keeps the two equal. */
-const ZEROMQ_RANGE = '^6.5.0'
+const ZEROMQ_RANGE = '^6.8.0'
 
 /**
  * A `zeromq` `Subscriber` with `settings` applied, which libzmq does not

@@ -41,7 +41,7 @@ accepted.
 manual arm64 jobs below load its packed builds too); it is expected to work
 wherever a supported Node.js runs.
 
-`@qbit-oss/zmq` is tested with `zeromq` 6.5.0, the floor of its peer range,
+`@qbit-oss/zmq` is tested with `zeromq` 6.8.0, the floor of its peer range,
 which ships a prebuilt addon for each platform below:
 
 | Platform | Minimum | CI |

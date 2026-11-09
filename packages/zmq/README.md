@@ -11,11 +11,11 @@ some.
 ## Install
 
 ```sh
-npm install @qbit-oss/zmq zeromq@^6.5.0
+npm install @qbit-oss/zmq zeromq@^6.8.0
 # or
-pnpm add @qbit-oss/zmq zeromq@^6.5.0
+pnpm add @qbit-oss/zmq zeromq@^6.8.0
 # or
-yarn add @qbit-oss/zmq zeromq@^6.5.0
+yarn add @qbit-oss/zmq zeromq@^6.8.0
 ```
 
 [`zeromq`](https://www.npmjs.com/package/zeromq), the native ZeroMQ addon, is

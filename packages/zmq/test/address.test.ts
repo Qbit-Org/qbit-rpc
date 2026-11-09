@@ -9,7 +9,7 @@ import { Publisher, Subscriber } from 'zeromq'
 import { QbitZmqSubscriber } from '../src'
 
 // Each address form is checked three ways: the constructor, libzmq's own
-// connect() on a real zeromq 6.5.0 Subscriber, and whether a subscriber on it
+// connect() on a real zeromq Subscriber (the dev dependency, 6.8.0), and whether a subscriber on it
 // receives from a publisher. `{P}` stands for the publisher's port, and
 // `{DIR}` for a temporary directory holding its ipc socket.
 

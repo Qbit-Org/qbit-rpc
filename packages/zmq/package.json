@@ -67,7 +67,7 @@
   },
   "homepage": "https://github.com/Qbit-Org/qbit-rpc/tree/main/packages/zmq#readme",
   "peerDependencies": {
-    "zeromq": "^6.5.0"
+    "zeromq": "^6.8.0"
   },
   "peerDependenciesMeta": {
     "zeromq": {
@@ -81,6 +81,6 @@
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
     "vitest": "^5.0.5",
-    "zeromq": "6.5.0"
+    "zeromq": "6.8.0"
   }
 }

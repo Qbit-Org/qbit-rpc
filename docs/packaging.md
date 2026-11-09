@@ -21,7 +21,7 @@ errors from the CommonJS build.
 ## `zeromq`
 
 `@qbit-oss/rpc` has no runtime dependencies. `@qbit-oss/zmq` has one optional
-peer dependency, `zeromq` `^6.5.0`, and no others. It is optional because
+peer dependency, `zeromq` `^6.8.0`, and no others. It is optional because
 only `QbitZmqSubscriber`'s default socket (`createZeromqSocket`) loads it, at
 the first iteration: the parser, a custom `socketFactory` and the types work
 without it, and without it a subscriber fails with `ZmqSetupError`
@@ -29,7 +29,7 @@ without it, and without it a subscriber fails with `ZmqSetupError`
 updates the one copy of the native addon, and an install on a platform
 without a prebuilt addon (where `zeromq`'s install script tries to build
 libzmq from source) fails only for those who install `zeromq`. Applications
-that subscribe add it themselves (`npm install zeromq@^6.5.0`); npm and pnpm
+that subscribe add it themselves (`npm install zeromq@^6.8.0`); npm and pnpm
 do not install an optional peer. A bundler must leave `zeromq` external, as
 for any native addon.
 
