@@ -147,7 +147,8 @@ The first release of both packages.
 ### Known limitations
 
 - Tested against regtest only. The checks against a mainnet node, read-only
-  and with ZMQ (#7), have not been run yet; testnet4 is not in the plan.
+  and with ZMQ, that [docs/network-verification.md](docs/network-verification.md)
+  plans have not been run yet; testnet4 is not in the plan.
 - On regtest `estimatesmartfee` never returns a fee rate, so the typed
   `estimateSmartFee` has not parsed a real estimate, and AuxPoW (merge-mined)
   blocks, peers, pruned nodes and initial block download have not been seen.
