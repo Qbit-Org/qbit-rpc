@@ -177,7 +177,11 @@ Steps 2 to 5 bring these to the settings below.
       one code owner ([Gaps](#gaps)), otherwise empty.
    2. Branch ruleset `release-branches`, target `release/*`: the same rules as
       `main`, with the same bypass: the release approvers team only while there
-      is one code owner ([Gaps](#gaps)), otherwise empty. Without it, the only
+      is one code owner ([Gaps](#gaps)), otherwise empty. Under Require a pull
+      request, Allowed merge methods: Merge and Squash only, so each pull
+      request adds one commit to the branch's first-parent chain, the one
+      `publish.yml` releases. A rebase merge would put every commit of the
+      pull request there. Without the bypass, the only
       code owner's `release:version` pull request, which changes both
       manifests, could never merge. The workflow's release-branch check means
       "reviewed" only while every change to `release/X.Y` comes through such a
@@ -395,8 +399,11 @@ nothing if that file was edited. The approver checks, against their own
 `git fetch origin --tags` rather than the run's log:
 
 - [ ] the run is for the expected tag, and its commit (on the run page) is
-      that tag's commit and is on `release/X.Y`:
-      `git merge-base --is-ancestor <commit> origin/release/X.Y`;
+      that tag's commit and is on `release/X.Y`'s first-parent chain, as a
+      merge or squash commit there (an ancestor is not enough: every commit
+      inside a merged pull request is one):
+      `git rev-list --first-parent origin/release/X.Y | grep -Fx <commit>`
+      prints it;
 - [ ] `.github/workflows/publish.yml` and `scripts/check-release.mjs`,
       `scripts/release-checks.mjs` and `scripts/check-pack.mjs` at that commit
       are the versions reviewed on `release/X.Y`:

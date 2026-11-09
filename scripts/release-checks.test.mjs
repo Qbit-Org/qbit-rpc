@@ -1,13 +1,15 @@
-// Tests for release-checks.mjs, set-version.mjs and check-changelog.mjs. Run
+// Tests for release-checks.mjs, set-version.mjs, check-changelog.mjs and check-release-branch.mjs. Run
 // by `pnpm test:scripts`.
 import assert from 'node:assert/strict'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { describe, it } from 'node:test'
 
 import { missingChangelogEntry, readChange } from './check-changelog.mjs'
+import { onFirstParentChain } from './check-release-branch.mjs'
 import {
   changelogProblems,
   devManifestProblems,
@@ -325,6 +327,59 @@ describe('readChange', () => {
       assert.deepEqual(change.files.sort(), ['CHANGELOG.md', 'packages/rpc/b.ts', 'packages/rpc/src/a.ts'])
       assert.equal(change.changelogAdded, 0)
       assert.match(missingChangelogEntry(change), /packages\/rpc\/src\/a\.ts/)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('onFirstParentChain', () => {
+  it("releases a pull request's merge commit, never a commit inside it", () => {
+    const dir = mkdtempSync(join(tmpdir(), 'qbit-rpc-first-parent-'))
+    try {
+      const git = (...args) =>
+        execFileSync(
+          'git',
+          ['-c', 'user.name=t', '-c', 'user.email=t@example.com', '-c', 'commit.gpgSign=false', ...args],
+          { cwd: dir, encoding: 'utf8' }
+        ).trim()
+      const commit = (file, text, message) => {
+        writeFileSync(join(dir, file), text)
+        git('add', file)
+        git('commit', '-q', '-m', message)
+        return git('rev-parse', 'HEAD')
+      }
+      git('init', '-q', '-b', 'release/0.1')
+      const base = commit('index.js', 'export const ok = true\n', 'base')
+      // A pull request: A bumps the version with changed source, B reverts the source, M merges it.
+      git('checkout', '-q', '-b', 'bump')
+      writeFileSync(join(dir, 'package.json'), '{ "version": "0.1.1" }\n')
+      const a = commit('index.js', 'export const ok = steal()\n', 'bump to 0.1.1')
+      const b = commit('index.js', 'export const ok = true\n', 'revert the source')
+      git('checkout', '-q', 'release/0.1')
+      git('merge', '-q', '--no-ff', '-m', 'Merge pull request #1', 'bump')
+      const m = git('rev-parse', 'HEAD')
+      // A and B are ancestors of the branch, which merge-base --is-ancestor accepted.
+      git('merge-base', '--is-ancestor', a, 'release/0.1')
+      assert.equal(onFirstParentChain('release/0.1', a, dir), false)
+      assert.equal(onFirstParentChain('release/0.1', b, dir), false)
+      assert.equal(onFirstParentChain('release/0.1', m, dir), true)
+      assert.equal(onFirstParentChain('release/0.1', base, dir), true)
+      assert.equal(onFirstParentChain('release/0.1', 'HEAD', dir), true)
+      // The command line, as the workflows run it.
+      const check = rev =>
+        spawnSync(
+          process.execPath,
+          [fileURLToPath(new URL('./check-release-branch.mjs', import.meta.url)), 'release/0.1', rev],
+          {
+            cwd: dir,
+            encoding: 'utf8',
+          }
+        )
+      assert.equal(check(m).status, 0)
+      const refused = check(a)
+      assert.equal(refused.status, 1)
+      assert.match(refused.stderr, /not on the first-parent chain of release\/0\.1/)
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
