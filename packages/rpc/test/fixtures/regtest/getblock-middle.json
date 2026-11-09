@@ -1,0 +1,31 @@
+{
+  "description": "getblock of block 500, a coinbase only",
+  "builder": "getBlock",
+  "args": ["70a0b04d2b08597bab2217ce179c2bcc1789607e6f05e855371b6c8de3dd5391"],
+  "method": "getblock",
+  "params": ["70a0b04d2b08597bab2217ce179c2bcc1789607e6f05e855371b6c8de3dd5391",1],
+  "result": {
+    "hash": "70a0b04d2b08597bab2217ce179c2bcc1789607e6f05e855371b6c8de3dd5391",
+    "confirmations": 512,
+    "height": 500,
+    "version": 536870912,
+    "versionHex": "20000000",
+    "merkleroot": "6bcac103d1adb51813a9d9b080226c0017dd049f9b14ebe05d30509e1bcdfe23",
+    "time": 1794245223,
+    "mediantime": 1794245222,
+    "nonce": 2,
+    "bits": "207fffff",
+    "target": "7fffff0000000000000000000000000000000000000000000000000000000000",
+    "difficulty": 4.656542373906925e-10,
+    "chainwork": "00000000000000000000000000000000000000000000000000000000000003ea",
+    "nTx": 1,
+    "previousblockhash": "10b5d5768d41c52c4e98a9862227112218b8110454fb195220cad4d083e54ae6",
+    "nextblockhash": "54bbae4994119ddec3fdeba0ec539c2567c98006595ae7caf72c3acb7810e46c",
+    "strippedsize": 226,
+    "size": 262,
+    "weight": 262,
+    "tx": [
+      "6bcac103d1adb51813a9d9b080226c0017dd049f9b14ebe05d30509e1bcdfe23"
+    ]
+  }
+}

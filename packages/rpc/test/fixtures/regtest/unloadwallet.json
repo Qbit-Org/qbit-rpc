@@ -1,0 +1,8 @@
+{
+  "description": "unloadwallet of the watch-only wallet",
+  "builder": "unloadWallet",
+  "args": ["watching"],
+  "method": "unloadwallet",
+  "params": ["watching"],
+  "result": {}
+}

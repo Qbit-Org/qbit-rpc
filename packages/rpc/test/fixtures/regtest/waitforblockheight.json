@@ -1,0 +1,11 @@
+{
+  "description": "waitforblockheight of a height reached already",
+  "builder": "waitForBlockHeight",
+  "args": [1011,100],
+  "method": "waitforblockheight",
+  "params": [1011,100],
+  "result": {
+    "hash": "688a5305f3bf91eabfe2c5cb4a55b2d9757eda358a31d903b4d62f6db2e920bc",
+    "height": 1011
+  }
+}

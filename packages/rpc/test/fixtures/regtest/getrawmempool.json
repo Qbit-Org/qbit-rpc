@@ -1,0 +1,10 @@
+{
+  "description": "getrawmempool with the payment",
+  "builder": "getRawMempool",
+  "args": [],
+  "method": "getrawmempool",
+  "params": [false],
+  "result": [
+    "467abf254d18d0cabffa38a1ea4f0a742f6c3ee75aa0420199e2c8380953fc2d"
+  ]
+}

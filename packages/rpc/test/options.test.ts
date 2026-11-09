@@ -453,7 +453,7 @@ describe('client methods', () => {
       c => c.psbtBumpFee(HASH_A, { conf_target: 6 } as never),
       /^options\.conf_target is not a known key: use options\.confTarget$/,
     ],
-    // A call option among them, as the merged options of earlier versions took it.
+    // A call option among a method's options, where a caller might put it: it belongs in the call options.
     [
       'listUnspent (a call option)',
       c => c.listUnspent({ minConf: 1, timeoutMs: 1000 } as never),

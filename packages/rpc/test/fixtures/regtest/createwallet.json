@@ -1,0 +1,10 @@
+{
+  "description": "createwallet of a watch-only blank wallet",
+  "builder": "createWallet",
+  "args": ["watching",{"disablePrivateKeys":true,"blank":true}],
+  "method": "createwallet",
+  "params": ["watching",true,true],
+  "result": {
+    "name": "watching"
+  }
+}

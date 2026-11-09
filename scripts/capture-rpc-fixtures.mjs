@@ -4,6 +4,9 @@
 //
 // Usage: corepack pnpm build && QBIT_BIN_DIR=/path/to/qbit-1.0.0/bin node scripts/capture-rpc-fixtures.mjs
 //
+// Needs Node.js 24 or 22.18 and later, which strip types: blocks and AuxPoW
+// proofs are built with packages/rpc/test/helpers/block-builder.ts.
+//
 // Starts a throwaway node of the release named in scripts/qbit-core-release.mjs
 // with -regtest only, in a temporary data directory, RPC bound to 127.0.0.1
 // on a free port and no network, as scripts/regtest-smoke.sh does. Every
@@ -11,7 +14,8 @@
 // fixture holds the builder, its arguments, the method and params it sent,
 // and the result exactly as the node wrote it: numbers keep their source
 // text. Each result must pass its builder's validator, and a fixture holding
-// the data directory, the host name or a home directory is refused. The
+// the data directory, the host name or a home directory is refused, as is one
+// holding a private key (descriptors are imported public only). The
 // fixtures directory is emptied of earlier .json files and written afresh;
 // on exit, a failure, SIGINT or SIGTERM, the node is stopped (killed if it
 // does not stop within 60 s) and its data directory removed.
@@ -26,7 +30,12 @@ import { hostDetailsIn, stopNode } from './regtest-node.mjs'
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)))
 const outDir = join(repoRoot, 'packages/rpc/test/fixtures/regtest')
-const { requests, JsonNumber } = await import(pathToFileURL(join(repoRoot, 'packages/rpc/lib/index.mjs')).href)
+const { requests, JsonNumber, formatQbt } = await import(
+  pathToFileURL(join(repoRoot, 'packages/rpc/lib/index.mjs')).href
+)
+const { buildAuxPow, buildBlock } = await import(
+  pathToFileURL(join(repoRoot, 'packages/rpc/test/helpers/block-builder.ts')).href
+)
 const { QBIT_CORE_VERSION } = await import(pathToFileURL(join(repoRoot, 'scripts/qbit-core-release.mjs')).href)
 
 const binDir = process.env.QBIT_BIN_DIR
@@ -95,21 +104,26 @@ process.once('SIGTERM', () => {
 const fixtures = []
 try {
   datadir = mkdtempSync(join(tmpdir(), 'qbit-rpc-fixtures-'))
-  execFileSync(qbitd, [
-    '-regtest',
-    '-daemonwait',
-    `-datadir=${datadir}`,
-    '-server=1',
-    '-rpcbind=127.0.0.1',
-    '-rpcallowip=127.0.0.1',
-    `-rpcport=${rpcPort}`,
-    '-listen=0',
-    '-connect=0',
-    '-dnsseed=0',
-    '-fixedseeds=0',
-    '-fallbackfee=0.0001',
-    '-txindex=1',
-  ])
+  // Started in its data directory, so backupwallet's relative path lands there and no fixture names it.
+  execFileSync(
+    qbitd,
+    [
+      '-regtest',
+      '-daemonwait',
+      `-datadir=${datadir}`,
+      '-server=1',
+      '-rpcbind=127.0.0.1',
+      '-rpcallowip=127.0.0.1',
+      `-rpcport=${rpcPort}`,
+      '-listen=0',
+      '-connect=0',
+      '-dnsseed=0',
+      '-fixedseeds=0',
+      '-fallbackfee=0.0001',
+      '-txindex=1',
+    ],
+    { cwd: datadir }
+  )
   cli('-rpcwait', '-rpcwaittimeout=60', 'getblockchaininfo')
   const cookie = readFileSync(join(datadir, 'regtest/.cookie'), 'utf8').trim()
   let id = 0
@@ -177,6 +191,13 @@ try {
     'not-an-address',
   ])
   const proofAddress = cli('-rpcwallet=fixtures', 'getnewaddress', '', 'p2mr')
+  await capture(
+    'signdatapqchash',
+    'signdatapqchash with the PQC usage',
+    'signDataPqcHash',
+    [proofAddress, '22'.repeat(32), { includePqcUsage: true }],
+    W
+  )
   const proof = await raw('signdatapqchash', [proofAddress, '11'.repeat(32)], W)
   await capture('verifydatapqchash', 'verifydatapqchash of a proof signdatapqchash made', 'verifyDataPqcHash', [
     {
@@ -278,6 +299,22 @@ try {
     sent,
   ])
   await capture('gettxout-mempool', 'gettxout of the payment output 0 in the mempool', 'getTxOut', [sent, 0])
+  await capture('getmempoolinfo', 'getmempoolinfo with the payment', 'getMempoolInfo', [])
+  await capture('getrawmempool', 'getrawmempool with the payment', 'getRawMempool', [])
+  await capture('getrawmempool-verbose', 'getrawmempool verbose with the payment', 'getRawMempoolVerbose', [])
+  await capture('getrawmempool-sequence', 'getrawmempool with its mempool sequence', 'getRawMempoolSequence', [])
+  const paymentInput = (await raw('getrawtransaction', [sent, true])).vin[0]
+  await capture(
+    'gettxspendingprevout',
+    "gettxspendingprevout of the payment's input, spent, and of its output 0, unspent",
+    'getTxSpendingPrevout',
+    [
+      [
+        { txid: paymentInput.txid, vout: Number(paymentInput.vout) },
+        { txid: sent, vout: 0 },
+      ],
+    ]
+  )
 
   // Replaced by a fee bump, then the replacement mined.
   const bumped = await capture(
@@ -340,10 +377,138 @@ try {
   )
   await capture('listtransactions', 'listtransactions, the 10 newest entries', 'listTransactions', [{ count: 10 }], W)
 
+  // Chain reads.
+  await capture('getchaintips', 'getchaintips: one active tip', 'getChainTips', [])
+  await capture('getmininginfo', 'getmininginfo on regtest', 'getMiningInfo', [])
+  await capture('getblock-middle', 'getblock of block 500, a coinbase only', 'getBlock', [middle])
+  await capture('getblockhex-middle', 'getblock verbosity 0 of block 500', 'getBlockHex', [middle])
+  const replacementBlock = (await raw('getrawtransaction', [replacement, true])).blockhash
+  await capture(
+    'getblock-transactions',
+    'getblock verbosity 2 of the block holding the replacement',
+    'getBlockWithTransactions',
+    [replacementBlock]
+  )
+  const now = await requests.getBlockCount().parse(asValidatorInput(await send(requests.getBlockCount())))
+  await capture('waitforblockheight', 'waitforblockheight of a height reached already', 'waitForBlockHeight', [
+    now,
+    100,
+  ])
+  await capture('waitfornewblock', 'waitfornewblock with a current tip that is not the tip', 'waitForNewBlock', [
+    100,
+    { currentTip: '00'.repeat(32) },
+  ])
+
+  // Descriptors, public only: the single-key descriptor getaddressinfo gives for one of the wallet's addresses.
+  const { desc: publicDesc } = await raw('getaddressinfo', [mineTo], W)
+  if (!/^mr\(pk\([0-9a-f]{64}\)\)#[a-z0-9]{8}$/.test(publicDesc)) {
+    throw new Error(`getaddressinfo gave '${publicDesc}', not a public single-key P2MR descriptor`)
+  }
+  await capture('getdescriptorinfo', 'getdescriptorinfo of a public P2MR descriptor', 'getDescriptorInfo', [publicDesc])
+  await capture('deriveaddresses', 'deriveaddresses of that descriptor', 'deriveAddresses', [publicDesc])
+
+  // Wallet administration.
+  await capture('listwalletdir', 'listwalletdir with the fixture wallets', 'listWalletDir', [])
+  await capture('createwallet', 'createwallet of a watch-only blank wallet', 'createWallet', [
+    'watching',
+    { disablePrivateKeys: true, blank: true },
+  ])
+  await capture(
+    'importdescriptors',
+    'importdescriptors of the public descriptor into the watch-only wallet',
+    'importDescriptors',
+    [[{ desc: publicDesc, timestamp: 'now', label: 'watched' }]],
+    'watching'
+  )
+  await capture('unloadwallet', 'unloadwallet of the watch-only wallet', 'unloadWallet', ['watching'])
+  await capture('loadwallet', 'loadwallet of the watch-only wallet', 'loadWallet', ['watching'])
+  await capture('keypoolrefill', 'keypoolrefill to 10 keys', 'keypoolRefill', [{ newSize: 10 }], W)
+  const height = await requests.getBlockCount().parse(asValidatorInput(await send(requests.getBlockCount())))
+  await capture(
+    'rescanblockchain',
+    'rescanblockchain of the 5 blocks below the tip',
+    'rescanBlockchain',
+    [{ startHeight: height - 5, stopHeight: height - 1 }],
+    W
+  )
+  await capture('backupwallet', 'backupwallet to a relative path', 'backupWallet', ['fixtures-backup.dat'], W)
+  await capture(
+    'walletpassphrasechange',
+    'walletpassphrasechange of the encrypted wallet',
+    'walletPassphraseChange',
+    ['fixtures-passphrase', 'fixtures-passphrase-2'],
+    'locked'
+  )
+
+  // A package: a parent and a child paying for both, signed by the wallet.
+  const spend = (input, feeBits, to) => {
+    const amountBits = input.amountBits - feeBits
+    const created = cli(
+      'createrawtransaction',
+      JSON.stringify([{ txid: input.txid, vout: input.vout }]),
+      `[{"${to}":${formatQbt(amountBits)}}]`
+    )
+    const prev =
+      input.scriptPubKey === undefined
+        ? []
+        : [
+            JSON.stringify([
+              {
+                txid: input.txid,
+                vout: input.vout,
+                scriptPubKey: input.scriptPubKey,
+                amount: Number(formatQbt(input.amountBits)),
+              },
+            ]),
+          ]
+    const signed = JSON.parse(cli('-rpcwallet=fixtures', 'signrawtransactionwithwallet', created, ...prev))
+    if (!signed.complete) throw new Error('signrawtransactionwithwallet left the package transaction incomplete')
+    const decoded = JSON.parse(cli('decoderawtransaction', signed.hex))
+    return {
+      hex: signed.hex,
+      output: { txid: decoded.txid, vout: 0, amountBits, scriptPubKey: decoded.vout[0].scriptPubKey.hex },
+    }
+  }
+  const [packageCoin] = await requests
+    .listUnspent({ maximumCount: 1 })
+    .parse(asValidatorInput(await send(requests.listUnspent({ maximumCount: 1 }), W)))
+  // The parent pays the fixtures wallet, so it can sign the child, which pays the payee.
+  const packageParent = spend(packageCoin, 100_000n, cli('-rpcwallet=fixtures', 'getnewaddress', '', 'p2mr'))
+  const packageChild = spend(packageParent.output, 10_000_000n, payee())
+  await capture('submitpackage', 'submitpackage of a parent and a child paying for both', 'submitPackage', [
+    [packageParent.hex, packageChild.hex],
+  ])
+
+  // Mining: a block built from the template, checked and submitted, then a merge-mined one.
+  const payoutScript = (await raw('validateaddress', [mineTo])).scriptPubKey
+  const template = await capture(
+    'getblocktemplate',
+    'getblocktemplate with the package in the mempool',
+    'getBlockTemplate',
+    []
+  )
+  const built = buildBlock(template, payoutScript)
+  await capture('checkblockproposal', 'getblocktemplate proposal of a block built here: valid', 'checkBlockProposal', [
+    built.hex,
+  ])
+  await capture('submitblock', 'submitblock of that block: accepted', 'submitBlock', [built.hex])
+  const candidate = await capture('createauxblock', 'createauxblock paying the fixtures wallet', 'createAuxBlock', [
+    mineTo,
+  ])
+  await capture('submitauxblock', 'submitauxblock of a proof built here: accepted', 'submitAuxBlock', [
+    candidate.hash,
+    buildAuxPow(candidate),
+  ])
+
   const host = { datadir, home: homedir(), host: hostname() }
   for (const { name, text } of fixtures) {
     const [found] = hostDetailsIn(text, host)
     if (found !== undefined) throw new Error(`fixture ${name} holds '${found}'; scrub it before committing`)
+    // A private key: an extended one, or a descriptor's pqc() key, which only a private listing holds;
+    // the public descriptors captured here name their key as pk(<hex>).
+    if (/\b[tx]prv[1-9A-HJ-NP-Za-km-z]{20,}|pqc\(|"privkey"/.test(text)) {
+      throw new Error(`fixture ${name} may hold a private key; capture public descriptors only`)
+    }
   }
   mkdirSync(outDir, { recursive: true })
   for (const file of readdirSync(outDir)) if (file.endsWith('.json')) unlinkSync(join(outDir, file))

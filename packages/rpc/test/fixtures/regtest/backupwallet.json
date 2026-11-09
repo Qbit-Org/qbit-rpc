@@ -1,0 +1,8 @@
+{
+  "description": "backupwallet to a relative path",
+  "builder": "backupWallet",
+  "args": ["fixtures-backup.dat"],
+  "method": "backupwallet",
+  "params": ["fixtures-backup.dat"],
+  "result": null
+}

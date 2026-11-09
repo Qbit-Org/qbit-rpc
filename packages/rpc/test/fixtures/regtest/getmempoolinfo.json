@@ -1,0 +1,22 @@
+{
+  "description": "getmempoolinfo with the payment",
+  "builder": "getMempoolInfo",
+  "args": [],
+  "method": "getmempoolinfo",
+  "params": [],
+  "result": {
+    "loaded": true,
+    "size": 1,
+    "bytes": 3860,
+    "usage": 4864,
+    "total_fee": 0.00003861,
+    "maxmempool": 300000000,
+    "mempoolminfee": 0.00000250,
+    "minrelaytxfee": 0.00000250,
+    "incrementalrelayfee": 0.00000250,
+    "unbroadcastcount": 1,
+    "fullrbf": true,
+    "permitbaremultisig": true,
+    "maxdatacarriersize": 200000
+  }
+}

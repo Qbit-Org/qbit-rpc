@@ -29,13 +29,13 @@
     },
     "external_signer": false,
     "blank": false,
-    "birthtime": 1793817223,
+    "birthtime": 1794245139,
     "flags": [
       "last_hardened_xpub_cached",
       "descriptor_wallet"
     ],
     "lastprocessedblock": {
-      "hash": "7724d166ca8142f998906fe58d12857494f26b8dbd2c93d9dbbccfb8977c7556",
+      "hash": "75e0a168ec94a62a59ae63075ab3a3ad7219de1de3dcd3c1826c41e2db23e296",
       "height": 1010
     }
   }

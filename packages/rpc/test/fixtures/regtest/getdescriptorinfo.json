@@ -1,0 +1,15 @@
+{
+  "description": "getdescriptorinfo of a public P2MR descriptor",
+  "builder": "getDescriptorInfo",
+  "args": ["mr(pk(88753b1745dba17f050f829eec006542927265be0f3cbb3853d98f30aca3f168))#swgjc6m0"],
+  "method": "getdescriptorinfo",
+  "params": ["mr(pk(88753b1745dba17f050f829eec006542927265be0f3cbb3853d98f30aca3f168))#swgjc6m0"],
+  "result": {
+    "descriptor": "mr(pk(88753b1745dba17f050f829eec006542927265be0f3cbb3853d98f30aca3f168))#swgjc6m0",
+    "checksum": "swgjc6m0",
+    "isrange": false,
+    "issolvable": true,
+    "has_p2mr_standard_satisfaction": true,
+    "hasprivatekeys": false
+  }
+}

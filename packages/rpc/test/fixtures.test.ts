@@ -31,39 +31,6 @@ import {
 // other exception is a validator bug.
 
 const fixtures = loadFixtures()
-// Typed methods with no captured reply yet; #44 captures them. Only ever removed from.
-const NOT_YET_CAPTURED: readonly string[] = [
-  'backupWallet',
-  'checkBlockProposal',
-  'createAuxBlock',
-  'createWallet',
-  'deriveAddresses',
-  'getBlock',
-  'getBlockHex',
-  'getBlockTemplate',
-  'getBlockWithTransactions',
-  'getChainTips',
-  'getDescriptorInfo',
-  'getMempoolInfo',
-  'getMiningInfo',
-  'getRawMempool',
-  'getRawMempoolSequence',
-  'getRawMempoolVerbose',
-  'getTxSpendingPrevout',
-  'importDescriptors',
-  'keypoolRefill',
-  'listWalletDir',
-  'loadWallet',
-  'rescanBlockchain',
-  'signDataPqcHash',
-  'submitAuxBlock',
-  'submitBlock',
-  'submitPackage',
-  'unloadWallet',
-  'waitForBlockHeight',
-  'waitForNewBlock',
-  'walletPassphraseChange',
-]
 const byName = new Map(fixtures.map(f => [f.name, f]))
 type Builder = (...args: unknown[]) => RpcRequest<unknown>
 const build = (f: Fixture): RpcRequest<unknown> =>
@@ -96,8 +63,12 @@ const DEPENDS: Readonly<Record<string, readonly string[]>> = {
   height: ['previousblockhash'],
   // validateaddress: an address when valid, an error when not.
   isvalid: ['address', 'error'],
-  // gettxout: a coinbase output's confirmations.
-  coinbase: ['confirmations'],
+  // gettxout: a coinbase output's confirmations; a block's coinbase input has coinbase, not scriptSig.
+  coinbase: ['confirmations', 'scriptSig'],
+  // getblock: nTx counts tx.
+  nTx: ['tx'],
+  // importdescriptors: an entry holds error exactly when it did not succeed.
+  success: ['error'],
   // A wallet transaction's block fields come with its blockhash, or not at all.
   blocktime: ['blockhash'],
   blockindex: ['blockhash'],
@@ -112,8 +83,11 @@ function located(path: Path, issuePath: string, replacement: unknown): 'field' |
   if (typeof key === 'string' && DEPENDS[key]?.some(sibling => within(issuePath, `${parent}.${sibling}`))) {
     return 'sibling'
   }
-  // An array item removed: the array is shorter than its request says (one testmempoolaccept entry per transaction).
-  if (typeof key === 'number' && replacement === REMOVE && issuePath === parent) return 'container'
+  // An item removed: the array is shorter than its request says (one testmempoolaccept entry per
+  // transaction), or a map keyed by txid misses one (submitpackage's tx-results, one per wtxid).
+  if (replacement === REMOVE && issuePath === parent) return 'container'
+  // getchaintips: exactly one tip is active, which the whole list shows.
+  if (key === 'status' && issuePath === pathName(path.slice(0, -2))) return 'container'
   return undefined
 }
 
@@ -140,12 +114,8 @@ describe('captured regtest replies', () => {
   it('cover every typed method', () => {
     const typed = Object.keys(requests).filter(name => name !== 'raw')
     const captured = new Set(fixtures.map(f => f.builder))
-    for (const name of NOT_YET_CAPTURED) {
-      expect(typed, `${name} is not a builder`).toContain(name)
-      expect(captured.has(name), `${name} is captured: drop it from NOT_YET_CAPTURED`).toBe(false)
-    }
-    expect([...captured].sort()).toEqual(typed.filter(name => !NOT_YET_CAPTURED.includes(name)).sort())
-    expect(fixtures.length).toBeGreaterThanOrEqual(40)
+    expect([...captured].sort()).toEqual(typed.sort())
+    expect(fixtures.length).toBeGreaterThanOrEqual(77)
     for (const name of [
       'gettransaction-send',
       'gettransaction-replaced',
@@ -206,18 +176,25 @@ describe('captured regtest replies', () => {
   it('locates those refusals at the field itself, but for a few stated dependencies', () => {
     const tally = { field: 0, sibling: 0, container: 0 }
     for (const f of fixtures) for (const { where } of refusals(f)) if (where !== undefined) tally[where] += 1
-    // With the fixtures of qbit Core v1.0.0: 12,762 at the field, 35 at a
-    // sibling in DEPENDS, 2 at the array an item left.
+    // With the fixtures of qbit Core v1.0.0, nearly all at the field; a few
+    // dozen at a sibling in DEPENDS or at the container an item left.
     expect(tally.field).toBeGreaterThan(10_000)
     expect(tally.sibling + tally.container).toBeLessThan(tally.field / 100)
   })
 
+  // Objects whose keys are data, where a key that is no txid or deployment name is refused, not ignored.
+  const MAPS: Readonly<Record<string, readonly string[]>> = {
+    getblocktemplate: ['result.vbavailable', 'result.coinbaseaux'],
+    'getrawmempool-verbose': ['result'],
+    submitpackage: ['result.tx-results'],
+  }
   it.each(fixtures.map(f => [f.name, f] as const))('%s: an unknown field in any object is ignored', (_name, f) => {
     const request = build(f)
     const expected = validate(request, clone(f.result))
     for (const path of paths(f.result)) {
       const node = get(f.result, path)
       if (typeof node !== 'object' || node === null || Array.isArray(node) || node instanceof JsonNumber) continue
+      if (MAPS[f.name]?.includes(pathName(path))) continue
       const extended = mutate(f.result, [...path, 'qbit_rpc_unknown_field'], { nested: [1] })
       expect(validate(request, extended)).toEqual(expected)
     }
@@ -257,13 +234,21 @@ describe('mutated replies through the client', () => {
       url: node.url,
       auth: { username: 'u', password: 'p' },
       expectedChain: 'regtest',
-      capabilities: ['wallet-read', 'wallet-write', 'broadcast'],
+      capabilities: ['wallet-read', 'wallet-write', 'broadcast', 'wallet-admin', 'mining'],
     })
   const send = (rpc: QbitRpcClient, f: Fixture): Promise<unknown> =>
     (rpc as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>)[f.builder]!(...clientArgs(f))
-  /** What the client method resolves with for a validated value: these four resolve with nothing. */
-  const returned = (f: Fixture, value: unknown): unknown =>
-    ['lockUnspent', 'unlockUnspent', 'walletPassphrase', 'walletLock'].includes(f.builder) ? undefined : value
+  /** What the client method resolves with for a validated value: these resolve with nothing. */
+  const NOTHING = [
+    'lockUnspent',
+    'unlockUnspent',
+    'walletPassphrase',
+    'walletLock',
+    'backupWallet',
+    'keypoolRefill',
+    'walletPassphraseChange',
+  ]
+  const returned = (f: Fixture, value: unknown): unknown => (NOTHING.includes(f.builder) ? undefined : value)
 
   it('returns each captured reply as its validator converts it', async () => {
     const rpc = client()

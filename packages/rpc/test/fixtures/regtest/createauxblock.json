@@ -1,0 +1,28 @@
+{
+  "description": "createauxblock paying the fixtures wallet",
+  "builder": "createAuxBlock",
+  "args": ["qbrt1z9uqgqx822ac0fafspacflnzqenaw9t3he5mmlcwlz35v0jqap88sl3ltcz"],
+  "method": "createauxblock",
+  "params": ["qbrt1z9uqgqx822ac0fafspacflnzqenaw9t3he5mmlcwlz35v0jqap88sl3ltcz"],
+  "result": {
+    "hash": "9aa4f36ba03c8d4737b3553f134787dfc6c7ae6ed97bf8c3628fe0f402c90367",
+    "chainid": 31430,
+    "previousblockhash": "1a7fbc3f8d6b65c21acf12798f7090d9e5366f1711b5c0d78e90fefb87783212",
+    "coinbasevalue": 16111882817,
+    "bits": "207fffff",
+    "height": 1013,
+    "p2mr_validation_weight": {
+      "per_sigop": 3683,
+      "v2_active": true,
+      "v2_activation_height": 0
+    },
+    "future_block_time": {
+      "limit_seconds": 600,
+      "v2_active": true,
+      "v2_activation_height": 0
+    },
+    "commitmentorder": "display",
+    "commitmentactivationheight": 0,
+    "target": "7fffff0000000000000000000000000000000000000000000000000000000000"
+  }
+}

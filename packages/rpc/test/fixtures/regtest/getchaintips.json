@@ -1,0 +1,15 @@
+{
+  "description": "getchaintips: one active tip",
+  "builder": "getChainTips",
+  "args": [],
+  "method": "getchaintips",
+  "params": [],
+  "result": [
+    {
+      "height": 1011,
+      "hash": "688a5305f3bf91eabfe2c5cb4a55b2d9757eda358a31d903b4d62f6db2e920bc",
+      "branchlen": 0,
+      "status": "active"
+    }
+  ]
+}

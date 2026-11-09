@@ -1,32 +1,54 @@
 {
   "description": "listsinceblock since the block before the replacement, with removed",
   "builder": "listSinceBlock",
-  "args": [{"blockHash":"7724d166ca8142f998906fe58d12857494f26b8dbd2c93d9dbbccfb8977c7556","includeRemoved":true}],
+  "args": [{"blockHash":"75e0a168ec94a62a59ae63075ab3a3ad7219de1de3dcd3c1826c41e2db23e296","includeRemoved":true}],
   "method": "listsinceblock",
-  "params": ["7724d166ca8142f998906fe58d12857494f26b8dbd2c93d9dbbccfb8977c7556",null,null,true],
+  "params": ["75e0a168ec94a62a59ae63075ab3a3ad7219de1de3dcd3c1826c41e2db23e296",null,null,true],
   "result": {
     "transactions": [
       {
-        "address": "qbrt1ztkajwxsy8cchct5jhnj35zyye9pyqru880w5e8zeatcwtj5hvqmqxu2rhh",
+        "address": "qbrt1zg4tcxt6jadczdvysxr6nl5vv3gl0c9x8pa9vx3cxkggqmg0hg0ysfgwqgv",
         "category": "send",
         "amount": -1.23456789,
         "vout": 0,
         "fee": -0.00003861,
         "confirmations": -1,
         "trusted": false,
-        "txid": "2db3cd151d8836f9231cad38662b1f18ba390431189d690233e4ea3729691f5e",
-        "wtxid": "ac94dbfc3df52a8421de8e780164c6565face854f59d81c5719777f076dcd63a",
+        "txid": "467abf254d18d0cabffa38a1ea4f0a742f6c3ee75aa0420199e2c8380953fc2d",
+        "wtxid": "799cf618211f7164a5a0e40de3f8c3a21456ae083f9453626ade8bc3380c84f9",
         "walletconflicts": [
-          "ac14e4c591d9109dd442853e4263748c358d11c28abca676453d89cdfdcd49a6"
+          "433e61bcc5f52422bc9321a96698d94ae4117fc9b299b3f89d227d16a434c5fe"
         ],
         "mempoolconflicts": [],
-        "time": 1793817248,
-        "timereceived": 1793817248,
+        "time": 1794245165,
+        "timereceived": 1794245165,
         "bip125-replaceable": "yes",
         "abandoned": false
       },
       {
-        "address": "qbrt1zst3uq7dclyhe3q93en60jn6v745gxecudfsa86fhxqm7hsrz244q6urs83",
+        "address": "qbrt1zg4tcxt6jadczdvysxr6nl5vv3gl0c9x8pa9vx3cxkggqmg0hg0ysfgwqgv",
+        "category": "send",
+        "amount": -1.23456789,
+        "vout": 0,
+        "fee": -0.00019305,
+        "confirmations": 1,
+        "blockhash": "688a5305f3bf91eabfe2c5cb4a55b2d9757eda358a31d903b4d62f6db2e920bc",
+        "blockheight": 1011,
+        "blockindex": 1,
+        "blocktime": 1794245308,
+        "txid": "433e61bcc5f52422bc9321a96698d94ae4117fc9b299b3f89d227d16a434c5fe",
+        "wtxid": "d545f69e53784d2ee087f1cdf81f73667753d0d2f0edc7aa9746eb9079f15acd",
+        "walletconflicts": [
+          "467abf254d18d0cabffa38a1ea4f0a742f6c3ee75aa0420199e2c8380953fc2d"
+        ],
+        "mempoolconflicts": [],
+        "time": 1794245165,
+        "timereceived": 1794245165,
+        "bip125-replaceable": "no",
+        "abandoned": false
+      },
+      {
+        "address": "qbrt1z9uqgqx822ac0fafspacflnzqenaw9t3he5mmlcwlz35v0jqap88sl3ltcz",
         "parent_descs": [],
         "category": "immature",
         "amount": 161.11902122,
@@ -35,42 +57,20 @@
         "abandoned": false,
         "confirmations": 1,
         "generated": true,
-        "blockhash": "3c436dbe82433b230a37442986fd77a0761282dc01082b5f7a45416c2bf87195",
+        "blockhash": "688a5305f3bf91eabfe2c5cb4a55b2d9757eda358a31d903b4d62f6db2e920bc",
         "blockheight": 1011,
         "blockindex": 0,
-        "blocktime": 1793817392,
-        "txid": "9afdcd2fbd85b4cdeffdb60ec15d2632f7de1439a66fb3f5eeade35263402425",
-        "wtxid": "a5ae4bc98452822e08b449d3fda4c14f41188add9559efb647ef99ed0b3f04a5",
+        "blocktime": 1794245308,
+        "txid": "6a478c51834f023c7e3f597cd9a65cd7d4949da505a63bbe2b62e33c672017e4",
+        "wtxid": "faf8882c14e45952f45b6e52f95dfd97dfbe0e2cd1a290f77e1cf71865e9a3ba",
         "walletconflicts": [],
         "mempoolconflicts": [],
-        "time": 1793817249,
-        "timereceived": 1793817249,
+        "time": 1794245165,
+        "timereceived": 1794245165,
         "bip125-replaceable": "no"
-      },
-      {
-        "address": "qbrt1ztkajwxsy8cchct5jhnj35zyye9pyqru880w5e8zeatcwtj5hvqmqxu2rhh",
-        "category": "send",
-        "amount": -1.23456789,
-        "vout": 1,
-        "fee": -0.00019305,
-        "confirmations": 1,
-        "blockhash": "3c436dbe82433b230a37442986fd77a0761282dc01082b5f7a45416c2bf87195",
-        "blockheight": 1011,
-        "blockindex": 1,
-        "blocktime": 1793817392,
-        "txid": "ac14e4c591d9109dd442853e4263748c358d11c28abca676453d89cdfdcd49a6",
-        "wtxid": "7a0a82d0acb0c8eb2d1028fcd79fdee8efd055701ceef41404a6b5331763946a",
-        "walletconflicts": [
-          "2db3cd151d8836f9231cad38662b1f18ba390431189d690233e4ea3729691f5e"
-        ],
-        "mempoolconflicts": [],
-        "time": 1793817249,
-        "timereceived": 1793817249,
-        "bip125-replaceable": "no",
-        "abandoned": false
       }
     ],
     "removed": [],
-    "lastblock": "3c436dbe82433b230a37442986fd77a0761282dc01082b5f7a45416c2bf87195"
+    "lastblock": "688a5305f3bf91eabfe2c5cb4a55b2d9757eda358a31d903b4d62f6db2e920bc"
   }
 }

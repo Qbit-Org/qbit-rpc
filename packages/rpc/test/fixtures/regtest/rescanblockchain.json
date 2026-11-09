@@ -1,0 +1,11 @@
+{
+  "description": "rescanblockchain of the 5 blocks below the tip",
+  "builder": "rescanBlockchain",
+  "args": [{"startHeight":1006,"stopHeight":1010}],
+  "method": "rescanblockchain",
+  "params": [1006,1010],
+  "result": {
+    "start_height": 1006,
+    "stop_height": 1010
+  }
+}

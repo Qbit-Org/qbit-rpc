@@ -1,0 +1,10 @@
+{
+  "description": "deriveaddresses of that descriptor",
+  "builder": "deriveAddresses",
+  "args": ["mr(pk(88753b1745dba17f050f829eec006542927265be0f3cbb3853d98f30aca3f168))#swgjc6m0"],
+  "method": "deriveaddresses",
+  "params": ["mr(pk(88753b1745dba17f050f829eec006542927265be0f3cbb3853d98f30aca3f168))#swgjc6m0"],
+  "result": [
+    "qbrt1z9uqgqx822ac0fafspacflnzqenaw9t3he5mmlcwlz35v0jqap88sl3ltcz"
+  ]
+}

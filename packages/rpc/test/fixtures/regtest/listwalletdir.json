@@ -1,0 +1,23 @@
+{
+  "description": "listwalletdir with the fixture wallets",
+  "builder": "listWalletDir",
+  "args": [],
+  "method": "listwalletdir",
+  "params": [],
+  "result": {
+    "wallets": [
+      {
+        "name": "locked",
+        "warnings": []
+      },
+      {
+        "name": "payee",
+        "warnings": []
+      },
+      {
+        "name": "fixtures",
+        "warnings": []
+      }
+    ]
+  }
+}
