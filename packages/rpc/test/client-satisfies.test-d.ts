@@ -2,7 +2,7 @@
 // typecheck:test` (Vitest does not run this file). Each line after a
 // `@ts-expect-error` must fail to compile, and each Equal must hold.
 
-import type { CallOptions, ChainStatus, ClientSatisfies, QbitRpcClient, UndeclaredKeys } from '../src'
+import type { CallOptions, ChainStatus, ClientSatisfies, NodeVersion, QbitRpcClient, UndeclaredKeys } from '../src'
 
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false
 
@@ -158,3 +158,77 @@ true satisfies Equal<UndeclaredKeys<{ a: 1 } | { b: 2 }, { a: number } | { b: nu
 true satisfies Equal<UndeclaredKeys<{ a: 1; c: 3 } | { b: 2 }, { a: number } | { b: number }>, 'c'>
 true satisfies Equal<UndeclaredKeys<{ a: { b: 1 } }, { a: unknown }>, never>
 true satisfies Equal<UndeclaredKeys<string | undefined, string>, never>
+
+// After review: each case below names a copy the type used to judge wrongly.
+
+/** The nodeVersion getter, copied exactly, undefined included. */
+true satisfies ClientSatisfies<Pick<QbitRpcClient, 'nodeVersion'>>
+true satisfies ClientSatisfies<{ readonly nodeVersion: NodeVersion | undefined }>
+
+/** A tuple argument where the client takes an array: its elements are checked against the array's element. */
+interface TupleExtra {
+  unlockUnspent(outputs: readonly [{ txid: string; vout: number; timeoutMs: number }]): Promise<void>
+}
+// @ts-expect-error An undeclared key inside a tuple element.
+true satisfies ClientSatisfies<TupleExtra>
+true satisfies Equal<ClientSatisfies<TupleExtra>, { unlockUnspent: 'parameters' }>
+true satisfies ClientSatisfies<{ unlockUnspent(outputs: readonly [Outpoint]): Promise<void> }>
+
+/** Options typed `object` or `{}` let any key through. */
+// @ts-expect-error Options of any shape.
+true satisfies ClientSatisfies<{ getTxOut(txid: string, vout: number, options?: object): Promise<unknown> }>
+// @ts-expect-error Options of any shape.
+true satisfies ClientSatisfies<{ getTxOut(txid: string, vout: number, options?: {}): Promise<unknown> }>
+
+/** One output merging both forms of a funded PSBT's output union. */
+interface MergedOutput {
+  walletCreateFundedPsbt(args: {
+    readonly outputs: readonly { readonly address: string; readonly amountBits: bigint; readonly data?: string }[]
+  }): Promise<unknown>
+}
+// @ts-expect-error `data` beside `address`: no member of the union declares both.
+true satisfies ClientSatisfies<MergedOutput>
+
+/** Both forms' keys required at once: the argument fits both members, and the client refuses it as either. */
+interface BothForms {
+  walletCreateFundedPsbt(args: {
+    readonly outputs: readonly { readonly address: string; readonly amountBits: bigint; readonly data: string }[]
+  }): Promise<unknown>
+}
+// @ts-expect-error Every output holds `address` and `data`, which the client refuses together.
+true satisfies ClientSatisfies<BothForms>
+true satisfies Equal<ClientSatisfies<BothForms>, { walletCreateFundedPsbt: 'parameters' }>
+
+/** The usual exclusive-or union: each form names the other's keys as `never`, which only hold undefined. */
+interface ExclusiveForms {
+  walletCreateFundedPsbt(args: {
+    readonly outputs: readonly (
+      | { readonly address: string; readonly amountBits: bigint; readonly data?: never }
+      | { readonly data: string; readonly address?: never; readonly amountBits?: never }
+    )[]
+  }): Promise<unknown>
+}
+true satisfies ClientSatisfies<ExclusiveForms>
+
+/** A key no member of the union declares is still reported, even when it can only be undefined. */
+interface UnknownNever {
+  walletCreateFundedPsbt(args: {
+    readonly outputs: readonly { readonly address: string; readonly amountBits: bigint; readonly memo?: never }[]
+  }): Promise<unknown>
+}
+// @ts-expect-error `memo` is no key of either form.
+true satisfies ClientSatisfies<UnknownNever>
+
+/** A member typed as a nullable function is still checked as a method. */
+interface NullableSplit {
+  getTxOut:
+    | ((txid: string, vout: number, options?: { readonly includeMempool?: boolean } & CallOptions) => Promise<unknown>)
+    | null
+}
+// @ts-expect-error Split options behind `| null`.
+true satisfies ClientSatisfies<NullableSplit>
+true satisfies Equal<ClientSatisfies<NullableSplit>, { getTxOut: 'parameters' }>
+
+/** A branded txid is still a string. */
+type Txid = string & { readonly __brand: 'Txid' }
+true satisfies ClientSatisfies<{ getMempoolEntry(txid: Txid): Promise<unknown> }>
