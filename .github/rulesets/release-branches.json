@@ -2,7 +2,12 @@
   "name": "release-branches",
   "target": "branch",
   "enforcement": "active",
-  "conditions": { "ref_name": { "include": ["refs/heads/release/*"], "exclude": [] } },
+  "conditions": {
+    "ref_name": {
+      "include": ["refs/heads/release/*"],
+      "exclude": []
+    }
+  },
   "rules": [
     {
       "type": "pull_request",
@@ -17,19 +22,17 @@
       }
     },
     {
-      "type": "required_status_checks",
-      "parameters": {
-        "strict_required_status_checks_policy": true,
-        "do_not_enforce_on_create": false,
-        "required_status_checks": [
-          { "context": "verify", "integration_id": 15368 },
-          { "context": "regtest smoke", "integration_id": 15368 },
-          { "context": "changelog", "integration_id": 15368 }
-        ]
-      }
+      "type": "non_fast_forward"
     },
-    { "type": "non_fast_forward" },
-    { "type": "deletion" }
+    {
+      "type": "deletion"
+    }
   ],
-  "bypass_actors": [{ "actor_type": "Team", "actor_id": null, "bypass_mode": "pull_request" }]
+  "bypass_actors": [
+    {
+      "actor_type": "Team",
+      "actor_id": null,
+      "bypass_mode": "pull_request"
+    }
+  ]
 }

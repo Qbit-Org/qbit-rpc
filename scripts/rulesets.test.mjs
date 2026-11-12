@@ -60,7 +60,7 @@ const applied = rulesets =>
       ),
   }))
 
-test('the files are the six rulesets, in apply order, each restricting the release refs', () => {
+test('the files are the eight rulesets, in apply order, each restricting the release refs', () => {
   const rulesets = loadRulesets(dir)
   assert.deepEqual(
     rulesets.map(r => r.name),
@@ -79,6 +79,34 @@ test('the files are the six rulesets, in apply order, each restricting the relea
     assert.deepEqual(pr.allowed_merge_methods, ['merge'], name)
     assert.equal(pr.require_code_owner_review, true, name)
     assert.deepEqual(byName[name].bypass_actors[0].bypass_mode, 'pull_request', name)
+    assert.ok(
+      !byName[name].rules.some(r => r.type === 'required_status_checks'),
+      `${name}: its bypass must not cover a check`
+    )
+  }
+  for (const [name, include] of [
+    ['required-checks', ['~DEFAULT_BRANCH']],
+    ['required-checks-release', ['refs/heads/release/*']],
+  ]) {
+    assert.deepEqual(byName[name].bypass_actors, [], `${name}: no one may bypass a required check`)
+    assert.deepEqual(byName[name].conditions.ref_name.include, include, name)
+    assert.deepEqual(
+      byName[name].rules.map(r => r.type),
+      ['required_status_checks'],
+      name
+    )
+    assert.deepEqual(
+      byName[name].rules[0].parameters.required_status_checks.map(c => c.context),
+      ['verify', 'regtest smoke', 'changelog', 'signed-landing'],
+      name
+    )
+    assert.equal(byName[name].rules[0].parameters.strict_required_status_checks_policy, true, name)
+    // Cutting a release branch pushes a commit that was never a pull request's head.
+    assert.equal(byName[name].rules[0].parameters.do_not_enforce_on_create, name === 'required-checks-release', name)
+    assert.ok(
+      byName[name].rules[0].parameters.required_status_checks.every(c => c.integration_id === 15368),
+      `${name}: every check must come from GitHub Actions`
+    )
   }
   assert.deepEqual(byName['release-tags-fixed'].bypass_actors, [])
   assert.deepEqual(byName['signed-commits'].bypass_actors, [], 'no one may bypass the signature rule')
@@ -93,7 +121,7 @@ test('fillTeam sets only the null team ids, and refuses a missing id', () => {
   assert.throws(() => fillTeam(loadRulesets(dir)[0], undefined), /not a team id/)
 })
 
-test('against the rulesets before step 4, it creates four, updates main and renames v*', () => {
+test('against the rulesets before step 4, it creates six, updates main and renames v*', () => {
   const { actions, unmanaged } = planRulesets(desired(), BEFORE)
   assert.deepEqual(
     actions.map(a => [a.action, a.name, a.id, a.was]),
@@ -101,6 +129,8 @@ test('against the rulesets before step 4, it creates four, updates main and rena
       ['create', 'release-tag-creation', undefined, undefined],
       ['create', 'release-branch-creation', undefined, undefined],
       ['create', 'signed-commits', undefined, undefined],
+      ['create', 'required-checks', undefined, undefined],
+      ['create', 'required-checks-release', undefined, undefined],
       ['create', 'release-branches', undefined, undefined],
       ['update', 'main', 26646830, undefined],
       ['update', 'release-tags-fixed', 26646873, 'v*'],
@@ -109,7 +139,7 @@ test('against the rulesets before step 4, it creates four, updates main and rena
   assert.deepEqual(unmanaged, [])
   const main = actions.find(a => a.name === 'main').diff.join('\n')
   assert.match(main, /bypass_actors/)
-  assert.match(main, /rules: /)
+  assert.match(main, /required_approving_review_count: 0 -> 1/)
 })
 
 test('once applied, every ruleset is unchanged, whatever order and defaults GitHub returns', () => {
@@ -126,13 +156,15 @@ test('a rule, check or bypass actor added on GitHub is reported', () => {
   const live = applied(want)
   const main = live.find(r => r.name === 'main')
   main.bypass_actors.push({ actor_id: 5, actor_type: 'RepositoryRole', bypass_mode: 'always' })
-  const checks = live.find(r => r.name === 'release-branches').rules.find(r => r.type === 'required_status_checks')
+  const checks = live
+    .find(r => r.name === 'required-checks-release')
+    .rules.find(r => r.type === 'required_status_checks')
   checks.parameters.required_status_checks.pop()
   live.find(r => r.name === 'release-tags-fixed').rules.push({ type: 'creation' })
   const { actions } = planRulesets(want, live)
   assert.deepEqual(
     actions.filter(a => a.action === 'update').map(a => a.name),
-    ['release-branches', 'main', 'release-tags-fixed']
+    ['required-checks-release', 'main', 'release-tags-fixed']
   )
   assert.equal(
     diffRuleset(

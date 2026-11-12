@@ -1,0 +1,39 @@
+{
+  "name": "required-checks-release",
+  "target": "branch",
+  "enforcement": "active",
+  "conditions": {
+    "ref_name": {
+      "include": ["refs/heads/release/*"],
+      "exclude": []
+    }
+  },
+  "rules": [
+    {
+      "type": "required_status_checks",
+      "parameters": {
+        "strict_required_status_checks_policy": true,
+        "do_not_enforce_on_create": true,
+        "required_status_checks": [
+          {
+            "context": "verify",
+            "integration_id": 15368
+          },
+          {
+            "context": "regtest smoke",
+            "integration_id": 15368
+          },
+          {
+            "context": "changelog",
+            "integration_id": 15368
+          },
+          {
+            "context": "signed-landing",
+            "integration_id": 15368
+          }
+        ]
+      }
+    }
+  ],
+  "bypass_actors": []
+}
