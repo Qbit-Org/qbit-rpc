@@ -36,13 +36,19 @@ don't need to sign your own commits. When a pull request is ready, a
 maintainer squashes it into one commit, signs it and merges it. That commit's
 message is the pull request's title and description, then a list of the
 squashed commits with their `Co-authored-by` and `Signed-off-by` trailers. Put
-credits in your commits, not in the description.
+credits in your commits, not in the description. An open pull request
+usually shows a failing `signed-landing` check until that is done. That is
+expected.
 
 A back-merge pull request from `backmerge/X.Y` (see
 [RELEASING.md](RELEASING.md)) is the exception. It is merged as it is, with a
 merge commit, so that the release commits join `main`'s history, and every
 commit in it must already carry a verified signature. That includes the merge
-of `main` and the version reset that the `backmerge/X.Y` branch adds.
+of `main` and the version reset that the `backmerge/X.Y` branch adds. Make that merge
+locally and sign it (`git merge -S origin/main`; if it stops on conflicts,
+finish it with `git commit -S`, because `git merge --continue` does not sign),
+never with GitHub's "Update branch" button or its web conflict editor: GitHub
+signs those commits itself, and the check doesn't judge a back-merge.
 
 ## Versions and the changelog
 

@@ -173,10 +173,9 @@ Steps 2 to 5 bring these to the settings below.
    1. Branch ruleset `main`, target the default branch: Require a pull
       request before merging (1 approval, Dismiss stale pull request approvals
       when new commits are pushed, Require review from Code Owners, Require
-      approval of the most recent reviewable push), Require status checks to
-      pass (`verify`, `regtest smoke` and `changelog`, from GitHub Actions,
-      with Require branches to be up to date), Block force pushes, Restrict
-      deletions. Under Require a pull request, Allowed merge methods: Merge
+      approval of the most recent reviewable push), Block force pushes,
+      Restrict deletions. Its status checks are in ruleset 7, which nobody
+      can bypass. Under Require a pull request, Allowed merge methods: Merge
       only. A release branch is cut from `main` and inherits its
       first-parent chain, so a rebase merge into `main` would put every
       commit of a pull request where a release can be tagged, and a squash
@@ -185,7 +184,8 @@ Steps 2 to 5 bring these to the settings below.
       the release approvers team only while there is one code owner
       ([Gaps](#gaps)), otherwise empty.
    2. Branch ruleset `release-branches`, target `release/*`: the same rules as
-      `main`, with the same bypass: the release approvers team only while there
+      `main`, with its status checks in ruleset 8,
+      and the same bypass: the release approvers team only while there
       is one code owner ([Gaps](#gaps)), otherwise empty, and the same
       allowed merge method, Merge only, so each pull request adds
       one commit to the branch's first-parent chain, the one `publish.yml`
@@ -217,8 +217,55 @@ Steps 2 to 5 bring these to the settings below.
       `gh api -X PATCH repos/Qbit-Org/qbit-rpc -F allow_merge_commit=true -F allow_squash_merge=false -F allow_rebase_merge=false`,
       and read it with
       `gh api repos/Qbit-Org/qbit-rpc --jq '{allow_merge_commit, allow_squash_merge, allow_rebase_merge}'`.
+   7. Branch ruleset `required-checks`, target the default branch: Require
+      status checks to pass (`verify`, `regtest smoke`, `changelog` and
+      `signed-landing`, from GitHub Actions, with Require branches to be up
+      to date), with no bypass actors, so the team's bypass in ruleset 1
+      covers the review and never a check. `signed-landing`
+      ([`.github/workflows/signed-landing.yml`](.github/workflows/signed-landing.yml))
+      passes when a pull request is one commit that a person signed, and
+      fails until then. GitHub's signature rule can't tell that by itself,
+      because it also accepts commits GitHub signs, such as a web edit or an
+      "Update branch" merge. A pull request from a `backmerge/*` branch of
+      this repository merges as it is, and passes without being judged. That
+      goes by the name alone, so keep such names for back-merges. The check
+      always runs from `main`'s copy of the workflow, whatever branch the
+      pull request targets. Its result belongs to the commit, so it passes
+      only if every open pull request the commit heads, drafts aside, may
+      land: a second pull request that takes the same commit into another
+      branch, where it is several commits, fails both until it is closed or
+      turned into a draft, either of which runs the check again, or is made
+      ready too and the check re-run. A run starts a few seconds after its
+      event, and until then the commit keeps the result it had. A change
+      that a workflow makes with its own token starts no run at all. The
+      check guards against landing a pull request by mistake, not against
+      someone set on getting round it: a pull request could still add a
+      workflow of its own that reports a check of the same name, which
+      review and the maintainers' daily audit of merged pull requests are
+      there to catch. Before applying this ruleset, merge the workflow
+      into `main` and have an Actions policy allow `pull_request_target` for
+      that file, which GitHub blocks in public repositories otherwise: until
+      both are done nothing reports the check, and no pull request can
+      merge. A red `signed-landing` usually means the pull request hasn't
+      been squashed and signed yet; if its message says it could not check,
+      do what the message says, which is usually to re-run it. A pull
+      request that was open before this ruleset shows the check as expected
+      until its next push or edit. If the check ever stops reporting, a
+      repository admin disables rulesets 7 and 8 on GitHub, merges the fix,
+      and applies them again; each open pull request then needs a push or an
+      edit to be judged by the fixed copy. A run that stays queued, as can
+      happen after an Actions incident, leaves the commit's last result in
+      place too: cancel it, and edit the pull request's description to start
+      another. The check reads GitHub with the workflow's token, and every
+      run in the repository draws on that token's hourly allowance of
+      requests. A flood of pull request events can use it up, and the check
+      then fails for every pull request until the hour is over.
+   8. Branch ruleset `required-checks-release`, target `release/*`: the same
+      four checks, with no bypass actors, and not enforced when the branch
+      is created, since the commit it is cut from was never a pull request's
+      head.
 
-   The six rulesets are in [`.github/rulesets/`](.github/rulesets/), with
+   The eight rulesets are in [`.github/rulesets/`](.github/rulesets/), with
    the team's bypass "For pull requests only" on rulesets 1 and 2, so it
    merges a pull request without the review but never pushes past one. With
    `gh` logged in as a repository admin who can read the team,
