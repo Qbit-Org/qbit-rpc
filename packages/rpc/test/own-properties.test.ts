@@ -682,6 +682,58 @@ describe('replies under a polluted Object.prototype', () => {
     expect(polluted({ removed: [] }, () => history.removed)).toBeUndefined()
   })
 
+  it('a fee-only send entry never gains a vout, address or label from Object.prototype', () => {
+    // qbit Core v1.0.1's entry for a change-only self-transfer, which has none of the three.
+    const entry = {
+      category: 'send',
+      amount: 0,
+      fee: -0.00003861,
+      confirmations: 0,
+      trusted: true,
+      txid: HASH_A,
+      wtxid: HASH_A,
+      walletconflicts: [],
+      mempoolconflicts: [],
+      time: 1700000000,
+      timereceived: 1700000000,
+      'bip125-replaceable': 'yes',
+      abandoned: false,
+    }
+    const detail = { category: 'send', amount: 0, fee: -0.00003861, abandoned: false }
+    const keys = { vout: 0, address: 'rq1attacker', label: 'attacker', parent_descs: ['attacker'] }
+    const [listed] = parsedUnder(requests.listTransactions(), JSON.stringify([entry]), keys)
+    const tx = parsedUnder(
+      requests.getTransaction(HASH_A),
+      JSON.stringify({
+        amount: 0,
+        fee: -0.00003861,
+        confirmations: 0,
+        trusted: true,
+        txid: HASH_A,
+        wtxid: HASH_A,
+        walletconflicts: [],
+        mempoolconflicts: [],
+        time: 1700000000,
+        timereceived: 1700000000,
+        'bip125-replaceable': 'yes',
+        details: [detail],
+        hex: '00',
+        lastprocessedblock: { hash: HASH_B, height: 10 },
+      }),
+      keys
+    )
+    expect(withPrototype([listed, tx])).toEqual([])
+    polluted({ ...keys, parentDescs: ['attacker'] }, () => {
+      for (const parsed of [listed!, tx.details[0]!]) {
+        expect(parsed.vout).toBeUndefined()
+        expect('vout' in parsed).toBe(false)
+        expect(parsed.address).toBeUndefined()
+        expect(parsed.label).toBeUndefined()
+        expect(parsed.parentDescs).toBeUndefined()
+      }
+    })
+  })
+
   it('getRawTransactionVerbose: a mempool transaction gains no block, and an output no address', () => {
     const reply = JSON.stringify({
       txid: HASH_A,

@@ -286,6 +286,13 @@ describe('request builders', () => {
       bip125Replaceable: 'no',
     }
     expect(requests.unlockUnspent([entry]).params[1]).toEqual([{ txid: HASH_A, vout: 1 }])
+    // qbit Core v1.0.1's fee-only send entry names no output: it is refused, never read as output 0.
+    const { address: _address, vout: _vout, ...rest } = entry
+    const feeOnly = { ...rest, category: 'send', amountBits: 0n, feeBits: -3_861n }
+    expect(() => requests.lockUnspent([feeOnly] as never)).toThrow(/outputs\[0\]\.vout must be an integer/)
+    expect(() => requests.walletCreateFundedPsbt({ inputs: [feeOnly] as never, outputs: [OUTPUT] })).toThrow(
+      /args\.inputs\[0\]\.vout must be an integer/
+    )
   })
 
   it('ignore an enumerable key on a polluted Object.prototype, but not the same key set by the caller', () => {

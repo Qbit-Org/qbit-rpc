@@ -1,16 +1,16 @@
 {
   "description": "validateaddress of a P2MR address",
   "builder": "validateAddress",
-  "args": ["qbrt1z2e76fj2gtlkg9au0um74f8x9d7q2yuw93s6senhjxk4f09r5uqtsj8rj66"],
+  "args": ["qbrt1ztujjnhc3fhkynjmf7l4pz70h5fvkpqyc985jv39g3c06whftx8vsa8f9m5"],
   "method": "validateaddress",
-  "params": ["qbrt1z2e76fj2gtlkg9au0um74f8x9d7q2yuw93s6senhjxk4f09r5uqtsj8rj66"],
+  "params": ["qbrt1ztujjnhc3fhkynjmf7l4pz70h5fvkpqyc985jv39g3c06whftx8vsa8f9m5"],
   "result": {
     "isvalid": true,
-    "address": "qbrt1z2e76fj2gtlkg9au0um74f8x9d7q2yuw93s6senhjxk4f09r5uqtsj8rj66",
-    "scriptPubKey": "5220567da4c9485fec82f78fe6fd549cc56f80a271c58c350ccef235aa979474e017",
+    "address": "qbrt1ztujjnhc3fhkynjmf7l4pz70h5fvkpqyc985jv39g3c06whftx8vsa8f9m5",
+    "scriptPubKey": "52205f2529df114dec49cb69f7ea1179f7a25960809829e92644a88e1fa75d2b31d9",
     "isscript": true,
     "iswitness": true,
     "witness_version": 2,
-    "witness_program": "567da4c9485fec82f78fe6fd549cc56f80a271c58c350ccef235aa979474e017"
+    "witness_program": "5f2529df114dec49cb69f7ea1179f7a25960809829e92644a88e1fa75d2b31d9"
   }
 }

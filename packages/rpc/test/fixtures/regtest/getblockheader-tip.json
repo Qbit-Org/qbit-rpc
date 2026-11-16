@@ -1,24 +1,24 @@
 {
   "description": "getblockheader of the tip (no nextblockhash)",
   "builder": "getBlockHeader",
-  "args": ["1f8c548e56d6e82560ef0a38e274fd2b3d0304e06031c3a4a66afa0ba822ba38"],
+  "args": ["3f766da85f5d062c0a9d85ee4ebd3f07ebf67fbfe09bf7470770b805459f75c3"],
   "method": "getblockheader",
-  "params": ["1f8c548e56d6e82560ef0a38e274fd2b3d0304e06031c3a4a66afa0ba822ba38",true],
+  "params": ["3f766da85f5d062c0a9d85ee4ebd3f07ebf67fbfe09bf7470770b805459f75c3",true],
   "result": {
-    "hash": "1f8c548e56d6e82560ef0a38e274fd2b3d0304e06031c3a4a66afa0ba822ba38",
+    "hash": "3f766da85f5d062c0a9d85ee4ebd3f07ebf67fbfe09bf7470770b805459f75c3",
     "confirmations": 1,
     "height": 1010,
     "version": 536870912,
     "versionHex": "20000000",
-    "merkleroot": "b4591f757af9848da11e18233e7bae32708aaba29d5813e9e994b20ba1753ae3",
-    "time": 1794846469,
-    "mediantime": 1794846468,
+    "merkleroot": "53fbcf8c148eab004861d327f86423d0f29f65c3beeccaec61051146130b0e7d",
+    "time": 1794862124,
+    "mediantime": 1794862123,
     "nonce": 1,
     "bits": "207fffff",
     "target": "7fffff0000000000000000000000000000000000000000000000000000000000",
     "difficulty": 4.656542373906925e-10,
     "chainwork": "00000000000000000000000000000000000000000000000000000000000007e6",
     "nTx": 1,
-    "previousblockhash": "1b16ab81adf8469bb960dd933993fb6b3ae17bcaa3e500891e14e370a821642f"
+    "previousblockhash": "297f2b24e934d08660e4ae1a62b84fe081b762462db59a980fb99a12bfc35888"
   }
 }

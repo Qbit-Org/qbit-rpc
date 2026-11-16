@@ -2482,25 +2482,54 @@ export interface WalletTransaction {
   readonly bip125Replaceable: 'yes' | 'no' | 'unknown'
   /** The descriptors of the output script received. Only for a receive. */
   readonly parentDescs?: readonly string[]
-  /** One entry per output that concerns the wallet, and per output a send pays. */
-  readonly details: readonly {
-    /** The address paid. */
-    readonly address?: string
-    /** What the entry is: sent, received, or mined (by maturity). */
-    readonly category: WalletTxCategory
-    /** The amount, in bits: negative for a send. */
-    readonly amountBits: bigint
-    /** The address's label, when it has one. */
-    readonly label?: string
-    /** The output's index. */
-    readonly vout: number
-    /** The fee, in bits, negative. Only for a send. */
-    readonly feeBits?: bigint
-    /** Whether the transaction was abandoned, so its inputs can be spent again. */
-    readonly abandoned: boolean
-    /** The descriptors of the output script received. Only for a receive. */
-    readonly parentDescs?: readonly string[]
-  }[]
+  /**
+   * One entry per output that concerns the wallet, and per output a send pays,
+   * or one fee-only entry. A change-only self-transfer (every input is this
+   * wallet's, every output is change) has no such output: if it pays a fee,
+   * qbit Core v1.0.1 and later give it one fee-only `send` entry, its only one,
+   * with `amountBits` 0n, the fee in `feeBits`, and no `vout`, `address`,
+   * `label` or `parentDescs`; v1.0.0 gives it none. Check
+   * `vout !== undefined`, or a category other than `send`, before using an
+   * entry as an output.
+   */
+  readonly details: readonly (
+    | {
+        /** The address paid. */
+        readonly address?: string
+        /** What the entry is: sent, received, or mined (by maturity). */
+        readonly category: WalletTxCategory
+        /** The amount, in bits: negative for a send. */
+        readonly amountBits: bigint
+        /** The address's label, when it has one. */
+        readonly label?: string
+        /** The output's index. */
+        readonly vout: number
+        /** The fee, in bits, negative. Only for a send. */
+        readonly feeBits?: bigint
+        /** Whether the transaction was abandoned, so its inputs can be spent again. */
+        readonly abandoned: boolean
+        /** The descriptors of the output script received. Only for a receive. */
+        readonly parentDescs?: readonly string[]
+      }
+    | {
+        /** Never present: the entry is the transaction's, not an output's. */
+        readonly address?: never
+        /** Always `send`. */
+        readonly category: 'send'
+        /** Always 0n: only the fee left the wallet. */
+        readonly amountBits: bigint
+        /** Never present. */
+        readonly label?: never
+        /** Never present: no output of the transaction is listed. */
+        readonly vout?: never
+        /** The fee, in bits, negative. */
+        readonly feeBits: bigint
+        /** Whether the transaction was abandoned, so its inputs can be spent again. */
+        readonly abandoned: boolean
+        /** Never present. */
+        readonly parentDescs?: never
+      }
+  )[]
   /** The serialized transaction, as hex. */
   readonly hex: string
   /** The block this information was computed at. */
@@ -2534,26 +2563,83 @@ function parseWalletTransaction(requestedTxid: string): (value: unknown) => Wall
       comment: optional(o, 'comment', R, string),
       bip125Replaceable: field(o, 'bip125-replaceable', R, oneOf(['yes', 'no', 'unknown'] as const)),
       parentDescs: optional(o, 'parent_descs', R, strings),
-      details: field(o, 'details', R, (v, p) =>
-        array(v, p, (entry, ep) => {
+      details: field(o, 'details', R, (v, p) => {
+        const details = array(v, p, (entry, ep) => {
           const d = object(entry, ep)
-          return compact<WalletTransaction['details'][number]>({
-            address: optional(d, 'address', ep, string),
-            category: field(d, 'category', ep, oneOf(WALLET_TX_CATEGORIES)),
+          const address = optional(d, 'address', ep, string)
+          const category = field(d, 'category', ep, oneOf(WALLET_TX_CATEGORIES))
+          const detail = compact<WalletTransaction['details'][number]>({
+            address,
+            category,
             amountBits: field(d, 'amount', ep, signedAmount),
             label: optional(d, 'label', ep, string),
-            vout: field(d, 'vout', ep, uint32),
+            vout: outputIndex(d, category, ep),
             feeBits: optional(d, 'fee', ep, signedAmount),
             abandoned: field(d, 'abandoned', ep, boolean),
             parentDescs: optional(d, 'parent_descs', ep, strings),
           })
+          checkOutputOrFeeOnly(detail, ep)
+          return detail
         })
-      ),
+        // The node adds a fee-only entry only when it lists no output of the transaction.
+        if (details.length > 1 && details.some(detail => detail.vout === undefined)) {
+          throw new ResultIssue(p, 'no other entry beside a fee-only send entry')
+        }
+        return details
+      }),
       hex: field(o, 'hex', R, hex()),
       lastProcessedBlock: field(o, 'lastprocessedblock', R, parseLastProcessedBlock),
     })
     if (tx.txid !== requestedTxid) throw new ResultIssue(`${R}.txid`, 'the requested txid')
     return tx
+  }
+}
+
+/** The fields of a `gettransaction` detail or a history entry that tell an output's entry from a fee-only one. */
+interface EntryShape {
+  readonly address?: string
+  readonly category: WalletTxCategory
+  readonly amountBits: bigint
+  readonly label?: string
+  readonly vout?: number
+  readonly feeBits?: bigint
+  readonly parentDescs?: readonly string[]
+  readonly generated?: boolean
+}
+
+/**
+ * An entry's `vout`: required, as on v1.0.0, but on a `send` entry, which can
+ * be qbit Core v1.0.1's fee-only one ({@link checkOutputOrFeeOnly} checks it).
+ */
+function outputIndex(source: JsonObject, category: WalletTxCategory, path: string): number | undefined {
+  return category === 'send' ? optional(source, 'vout', path, uint32) : field(source, 'vout', path, uint32)
+}
+
+/**
+ * Refuse an entry without `vout` unless it is the fee-only `send` entry of
+ * qbit Core v1.0.1 (`ListTransactions` in src/wallet/rpc/transactions.cpp),
+ * which it adds for a transaction whose inputs are all the wallet's and whose
+ * outputs are all change, outside `include_change`: amount 0, the fee, which
+ * is above 0 and printed negative, and no address, label or parent
+ * descriptors. A coinbase's input is never the wallet's, so it is never
+ * `generated`. Every other entry names its output, as on v1.0.0.
+ */
+function checkOutputOrFeeOnly(entry: EntryShape, path: string): void {
+  if (entry.vout !== undefined) return
+  if (entry.category !== 'send') throw new ResultIssue(`${path}.vout`, 'a value (the field is missing)')
+  const feeOnly =
+    entry.amountBits === 0n &&
+    entry.feeBits !== undefined &&
+    entry.feeBits < 0n &&
+    entry.address === undefined &&
+    entry.label === undefined &&
+    entry.parentDescs === undefined &&
+    entry.generated === undefined
+  if (!feeOnly) {
+    throw new ResultIssue(
+      `${path}.vout`,
+      'a value: only a fee-only send entry (amount 0, a negative fee, no address, label, parent_descs or generated) has none'
+    )
   }
 }
 
@@ -2640,8 +2726,9 @@ const LIST_UNSPENT_OPTIONS = keysOf<ListUnspentOptions>({
 /**
  * The fields beside `txid` and `vout` of each typed result that is also an
  * outpoint: a `listUnspent()` entry, a decoded transaction input, and a
- * `listSinceBlock()` or `listTransactions()` entry. Allowed, and not read,
- * where an outpoint is expected, so such a result can be passed as it is.
+ * `listSinceBlock()` or `listTransactions()` entry with a `vout` (a fee-only
+ * entry has none, so it is refused). Allowed, and not read, where an outpoint
+ * is expected, so such a result can be passed as it is.
  */
 const OUTPOINT_EXTRAS = [
   ...new Set([
@@ -2817,27 +2904,60 @@ function parseOutpoint(value: unknown, path: string): Outpoint {
 
 /**
  * One `listsinceblock` or `listtransactions` entry: one output of a wallet
- * transaction, seen from one side. A payment to the wallet itself is a `send`
- * and a `receive` entry for the same `vout`. Amounts are signed bits.
+ * transaction, seen from one side, or the fee-only `send` entry of a
+ * change-only self-transfer. A payment to the wallet itself is a `send` and a
+ * `receive` entry for the same `vout`. Amounts are signed bits.
+ *
+ * A change-only self-transfer (every input is this wallet's, every output is
+ * change, as in a consolidation or a cancel paid to a change address) has no
+ * output to list without `includeChange`. If it pays a fee, qbit Core v1.0.1
+ * and later list it as one fee-only `send` entry, the second member of the union and the
+ * transaction's only entry in the list: `amountBits` 0n, the fee in `feeBits`,
+ * and no `vout`, `address`, `label` or `parentDescs`. v1.0.0 lists nothing for
+ * it. With `includeChange`, each of its outputs is a `send` and a `receive`
+ * entry instead, and there is no fee-only entry. Check `vout !== undefined`, or
+ * a category other than `send`, before using an entry as an output: TypeScript
+ * then narrows it to the first member.
  */
-export interface WalletHistoryEntry {
-  /** Absent for an output with no address, such as OP_RETURN. */
-  readonly address?: string
-  /** What the entry is: sent, received, or mined (by maturity). */
-  readonly category: WalletTxCategory
-  /** At most 0 for `send` (0 for OP_RETURN); at least 0 for every other category. */
-  readonly amountBits: bigint
-  /** The address book label of `address`; `''` is the default label. Absent when the address has no entry. */
-  readonly label?: string
-  /** The output's index. */
-  readonly vout: number
-  /**
-   * Only on `send` entries, and always on them. All outputs minus this wallet's
-   * inputs, repeated on each of the transaction's `send` entries, so do not sum
-   * it per entry. When every input is this wallet's, that is the fee, negative;
-   * with inputs from other wallets it is not the fee, and it can be positive.
-   */
-  readonly feeBits?: bigint
+export type WalletHistoryEntry = (
+  | {
+      /** Absent for an output with no address, such as OP_RETURN. */
+      readonly address?: string
+      /** What the entry is: sent, received, or mined (by maturity). */
+      readonly category: WalletTxCategory
+      /** At most 0 for `send` (0 for OP_RETURN); at least 0 for every other category. */
+      readonly amountBits: bigint
+      /** The address book label of `address`; `''` is the default label. Absent when the address has no entry. */
+      readonly label?: string
+      /** The output's index. */
+      readonly vout: number
+      /**
+       * Only on `send` entries, and always on them. All outputs minus this wallet's
+       * inputs, repeated on each of the transaction's `send` entries, so do not sum
+       * it per entry. When every input is this wallet's, that is the fee, negative;
+       * with inputs from other wallets it is not the fee, and it can be positive.
+       */
+      readonly feeBits?: bigint
+      /** Only on entries that receive: the descriptors of the output's script. Can be empty. */
+      readonly parentDescs?: readonly string[]
+    }
+  | {
+      /** Never present: the entry is the transaction's, not an output's. */
+      readonly address?: never
+      /** Always `send`. */
+      readonly category: 'send'
+      /** Always 0n: only the fee left the wallet. */
+      readonly amountBits: bigint
+      /** Never present. */
+      readonly label?: never
+      /** Never present: no output of the transaction is listed. */
+      readonly vout?: never
+      /** The fee, in bits, negative: every input is this wallet's. */
+      readonly feeBits: bigint
+      /** Never present. */
+      readonly parentDescs?: never
+    }
+) & {
   /**
    * The wallet abandoned the transaction (its inputs can be spent again), or its
    * coinbase was orphaned. At 0 confirmations, `listSinceBlock` lists it on
@@ -2847,8 +2967,6 @@ export interface WalletHistoryEntry {
    * `getTransaction` tells which.
    */
   readonly abandoned: boolean
-  /** Only on entries that receive: the descriptors of the output's script. Can be empty. */
-  readonly parentDescs?: readonly string[]
   /** 0 when unconfirmed. Negative when the transaction conflicted that many blocks ago. */
   readonly confirmations: number
   /** True for a coinbase transaction. */
@@ -2902,12 +3020,14 @@ export interface WalletHistoryEntry {
 
 function parseHistoryEntry(value: unknown, path: string): WalletHistoryEntry {
   const o = object(value, path)
+  const address = optional(o, 'address', path, parseAddress)
+  const category = field(o, 'category', path, oneOf(WALLET_TX_CATEGORIES))
   const entry = compact<WalletHistoryEntry>({
-    address: optional(o, 'address', path, parseAddress),
-    category: field(o, 'category', path, oneOf(WALLET_TX_CATEGORIES)),
+    address,
+    category,
     amountBits: field(o, 'amount', path, signedAmount),
     label: optional(o, 'label', path, string),
-    vout: field(o, 'vout', path, uint32),
+    vout: outputIndex(o, category, path),
     feeBits: optional(o, 'fee', path, signedAmount),
     abandoned: field(o, 'abandoned', path, boolean),
     parentDescs: optional(o, 'parent_descs', path, strings),
@@ -2930,6 +3050,8 @@ function parseHistoryEntry(value: unknown, path: string): WalletHistoryEntry {
     comment: optional(o, 'comment', path, string),
     bip125Replaceable: field(o, 'bip125-replaceable', path, oneOf(['yes', 'no', 'unknown'] as const)),
   })
+  // Before the other checks across fields, as 0.1.0 reported a missing vout first.
+  checkOutputOrFeeOnly(entry, path)
   const isSend = entry.category === 'send'
   if (isSend ? entry.amountBits > 0n : entry.amountBits < 0n) {
     throw new ResultIssue(
@@ -2952,7 +3074,32 @@ function parseHistoryEntry(value: unknown, path: string): WalletHistoryEntry {
   return entry
 }
 
-const historyEntries = (v: unknown, p: string): WalletHistoryEntry[] => array(v, p, parseHistoryEntry)
+/**
+ * A history list's entries. The node adds a fee-only entry only when it lists
+ * no output of the transaction, so it is the only entry of its txid in the
+ * list, and never with `include_change`, which lists every output instead, or
+ * with a label filter, which lists no send entry. (`removed` is a list of its
+ * own: a transaction can be in it and in `transactions`.)
+ */
+function historyEntries(
+  filtered?: 'include_change' | 'a label filter'
+): (v: unknown, p: string) => WalletHistoryEntry[] {
+  return (v, p) => {
+    const entries = array(v, p, parseHistoryEntry)
+    const feeOnly = new Set<string>()
+    for (const [i, entry] of entries.entries()) {
+      if (entry.vout !== undefined) continue
+      if (filtered !== undefined) {
+        throw new ResultIssue(`${p}[${i}].vout`, `a value: with ${filtered} the node lists no fee-only entry`)
+      }
+      feeOnly.add(entry.txid)
+    }
+    if (feeOnly.size > 0 && entries.filter(entry => feeOnly.has(entry.txid)).length > feeOnly.size) {
+      throw new ResultIssue(p, 'no other entry for the txid of a fee-only send entry')
+    }
+    return entries
+  }
+}
 
 const LIST_SINCE_BLOCK_OPTIONS = keysOf<ListSinceBlockOptions>({
   blockHash: true,
@@ -2975,7 +3122,11 @@ export interface ListSinceBlockOptions {
   readonly includeWatchOnly?: boolean
   /** Whether to return `removed`. Default true. */
   readonly includeRemoved?: boolean
-  /** Also list change outputs, each as a `send` and a `receive` entry. Default false. */
+  /**
+   * Also list change outputs, each as a `send` and a `receive` entry, so a
+   * change-only self-transfer is listed by its outputs, not as a fee-only
+   * entry. Default false.
+   */
   readonly includeChange?: boolean
 }
 
@@ -2999,12 +3150,16 @@ export interface SinceBlockHistory {
   readonly lastBlock: string
 }
 
-function parseSinceBlock(includeRemoved: boolean | undefined): (value: unknown) => SinceBlockHistory {
+function parseSinceBlock(
+  includeRemoved: boolean | undefined,
+  includeChange: boolean
+): (value: unknown) => SinceBlockHistory {
   return value => {
     const o = object(value, R)
+    const entries = historyEntries(includeChange ? 'include_change' : undefined)
     const history = compact<SinceBlockHistory>({
-      transactions: field(o, 'transactions', R, historyEntries),
-      removed: optional(o, 'removed', R, historyEntries),
+      transactions: field(o, 'transactions', R, entries),
+      removed: optional(o, 'removed', R, entries),
       lastBlock: field(o, 'lastblock', R, hash),
     })
     // A reply without the reorg list it was asked for must not read as "nothing removed".
@@ -4224,17 +4379,14 @@ export const requests = {
   listSinceBlock(options?: ListSinceBlockOptions): RpcRequest<SinceBlockHistory> {
     const o = methodOptions(options, LIST_SINCE_BLOCK_OPTIONS)
     const includeRemoved = opt(o['includeRemoved'], v => argBoolean(v, 'options.includeRemoved'))
-    return request(
-      'listsinceblock',
-      [
-        opt(o['blockHash'], v => argHash(v, 'options.blockHash')),
-        opt(o['targetConfirmations'], v => argInteger(v, 'options.targetConfirmations', 1, 0x7fff_ffff)),
-        opt(o['includeWatchOnly'], v => argBoolean(v, 'options.includeWatchOnly')),
-        includeRemoved,
-        opt(o['includeChange'], v => argBoolean(v, 'options.includeChange')),
-      ],
-      parseSinceBlock(includeRemoved)
-    )
+    const params = [
+      opt(o['blockHash'], v => argHash(v, 'options.blockHash')),
+      opt(o['targetConfirmations'], v => argInteger(v, 'options.targetConfirmations', 1, 0x7fff_ffff)),
+      opt(o['includeWatchOnly'], v => argBoolean(v, 'options.includeWatchOnly')),
+      includeRemoved,
+      opt(o['includeChange'], v => argBoolean(v, 'options.includeChange')),
+    ]
+    return request('listsinceblock', params, parseSinceBlock(includeRemoved, params[4] === true))
   },
   /** The wallet's newest entries, oldest of them first. Change outputs and a conflicted transaction's `receive` entries are not listed. */
   listTransactions(options?: ListTransactionsOptions): RpcRequest<WalletHistoryEntry[]> {
@@ -4245,16 +4397,13 @@ export const requests = {
     if ((count ?? 10) + (skip ?? 0) > 0x7fff_ffff) {
       throw new RangeError('options.count + options.skip must be at most 2147483647')
     }
+    // qbit Core refuses an empty label here (-8): only `*` or a label name.
+    const label = opt(o['label'], v => argString(v, 'options.label', { nonEmpty: true }))
+    const entries = historyEntries(label === undefined || label === '*' ? undefined : 'a label filter')
     return request(
       'listtransactions',
-      [
-        // qbit Core refuses an empty label here (-8): only `*` or a label name.
-        opt(o['label'], v => argString(v, 'options.label', { nonEmpty: true })),
-        count,
-        skip,
-        opt(o['includeWatchOnly'], v => argBoolean(v, 'options.includeWatchOnly')),
-      ],
-      v => historyEntries(v, R)
+      [label, count, skip, opt(o['includeWatchOnly'], v => argBoolean(v, 'options.includeWatchOnly'))],
+      v => entries(v, R)
     )
   },
   /** The wallet's balances, in bits. */

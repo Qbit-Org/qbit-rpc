@@ -1,10 +1,10 @@
 {
   "description": "deriveaddresses of that descriptor",
   "builder": "deriveAddresses",
-  "args": ["mr(pk(f88bf3a4548efc94f8c03e323349f4ec9fa06a08ec2bd5ab57829e251797bbc7))#4zjnxs02"],
+  "args": ["mr(pk(281a9c1389c89f52434cda05cc4f44f891e9651918d43a98de48fc2d76f7737c))#dz34qnxy"],
   "method": "deriveaddresses",
-  "params": ["mr(pk(f88bf3a4548efc94f8c03e323349f4ec9fa06a08ec2bd5ab57829e251797bbc7))#4zjnxs02"],
+  "params": ["mr(pk(281a9c1389c89f52434cda05cc4f44f891e9651918d43a98de48fc2d76f7737c))#dz34qnxy"],
   "result": [
-    "qbrt1z2e76fj2gtlkg9au0um74f8x9d7q2yuw93s6senhjxk4f09r5uqtsj8rj66"
+    "qbrt1ztujjnhc3fhkynjmf7l4pz70h5fvkpqyc985jv39g3c06whftx8vsa8f9m5"
   ]
 }

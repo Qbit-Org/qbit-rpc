@@ -1,16 +1,16 @@
 {
   "description": "createauxblock paying the fixtures wallet",
   "builder": "createAuxBlock",
-  "args": ["qbrt1z2e76fj2gtlkg9au0um74f8x9d7q2yuw93s6senhjxk4f09r5uqtsj8rj66"],
+  "args": ["qbrt1ztujjnhc3fhkynjmf7l4pz70h5fvkpqyc985jv39g3c06whftx8vsa8f9m5"],
   "method": "createauxblock",
-  "params": ["qbrt1z2e76fj2gtlkg9au0um74f8x9d7q2yuw93s6senhjxk4f09r5uqtsj8rj66"],
+  "params": ["qbrt1ztujjnhc3fhkynjmf7l4pz70h5fvkpqyc985jv39g3c06whftx8vsa8f9m5"],
   "result": {
-    "hash": "22bee38e6e8b7e8298e94f03fe6f04e21310156b43bbe74476781c33cc4892a0",
+    "hash": "025463173e1809c40c93abd152d9ce29ba734a76c30066ff79cb7b3ff4ad5745",
     "chainid": 31430,
-    "previousblockhash": "56de97adc52b05106fbab62690f2d263371126a51b3bc2303a5b4465de07d0e9",
+    "previousblockhash": "2641aa08a331ee7471fc6d203df750f05ffc4df09ef5c0168ec5b7037b8d94d7",
     "coinbasevalue": 16111882817,
     "bits": "207fffff",
-    "height": 1013,
+    "height": 1014,
     "p2mr_validation_weight": {
       "per_sigop": 3683,
       "v2_active": true,

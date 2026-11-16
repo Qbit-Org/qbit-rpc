@@ -984,6 +984,81 @@ describe.runIf(enabled)('qbit Core v1.0.1 regtest', () => {
     expect(tips.filter(tip => tip.status === 'invalid')).toEqual([])
   })
 
+  // A change-only self-transfer on a wallet this case creates, funded from the
+  // script's smoke wallet: a payment to its own change address, with change,
+  // as a cancel or a consolidation to a change address is. Without includeChange,
+  // qbit Core v1.0.1 lists it as one fee-only send entry with no vout, address
+  // or label, in getTransaction, listTransactions and listSinceBlock, and in
+  // removed after a reorg; with includeChange, as its outputs. It mines what it
+  // leaves in the mempool, and ends with no block marked invalid.
+  it('lists a change-only self-transfer as one fee-only send entry, and with includeChange as its outputs', async () => {
+    cli('-named', 'createwallet', 'wallet_name=self-transfer', 'descriptors=true')
+    const wallet = client({ wallet: 'self-transfer', capabilities: ['wallet-read', 'wallet-write', 'broadcast'] })
+    const funder = client({ wallet: 'smoke', capabilities: ['wallet-read', 'wallet-write', 'broadcast'] })
+    await wallet.confirmChain()
+    await funder.confirmChain()
+    const mineTo = await funder.getNewAddress({ addressType: 'p2mr' })
+    const mine = (): string => (JSON.parse(cli('generatetoaddress', '1', mineTo)) as string[])[0]!
+    const funding = await funder.walletCreateFundedPsbt({
+      outputs: [{ address: await wallet.getNewAddress({ addressType: 'p2mr' }), amountBits: 1_000_000_000n }],
+    })
+    await funder.sendRawTransaction((await funder.walletProcessPsbt(funding.psbt)).hex!)
+    const cursor = mine()
+
+    // The payment to the wallet's own change address, with change: every output is change.
+    const built = await wallet.walletCreateFundedPsbt({
+      outputs: [{ address: await wallet.getRawChangeAddress({ addressType: 'p2mr' }), amountBits: 300_000_000n }],
+      options: { feeRateBitsPerKvB: 2000n, changeType: 'p2mr' },
+    })
+    expect(built.changePos).toBeGreaterThanOrEqual(0)
+    const txid = await wallet.sendRawTransaction((await wallet.walletProcessPsbt(built.psbt)).hex!)
+    const feeOnly = { category: 'send', amountBits: 0n, feeBits: -built.feeBits, abandoned: false }
+    const outputFields = ['vout', 'address', 'label', 'parentDescs']
+
+    const tx = await wallet.getTransaction(txid)
+    expect(tx).toMatchObject({ amountBits: 0n, feeBits: -built.feeBits, confirmations: 0, trusted: true })
+    expect(tx.details).toEqual([feeOnly])
+    const [newest] = await wallet.listTransactions({ count: 1 })
+    expect(newest).toMatchObject({ ...feeOnly, txid, wtxid: tx.wtxid, confirmations: 0, trusted: true })
+    for (const key of outputFields) expect(newest).not.toHaveProperty(key)
+    expect(await wallet.listSinceBlock({ blockHash: cursor })).toEqual({
+      transactions: [newest],
+      removed: [],
+      lastBlock: cursor,
+    })
+    // With includeChange: a send and a receive entry for each output, each with its vout.
+    const withChange = await wallet.listSinceBlock({ blockHash: cursor, includeChange: true })
+    expect(withChange.transactions.map(entry => [entry.category, entry.txid, entry.vout]).sort()).toEqual([
+      ['receive', txid, 0],
+      ['receive', txid, 1],
+      ['send', txid, 0],
+      ['send', txid, 1],
+    ])
+    // Only the fee left the wallet.
+    expect((await wallet.getBalances()).mine.trustedBits).toBe(1_000_000_000n - built.feeBits)
+
+    // Mined, then its block disconnected: back in the mempool, and in removed.
+    const minedIn = mine()
+    const confirmed = await wallet.listSinceBlock({ blockHash: cursor })
+    expect(confirmed.transactions).toEqual([
+      expect.objectContaining({ ...feeOnly, txid, confirmations: 1, blockHash: minedIn }),
+    ])
+    for (const key of outputFields) expect(confirmed.transactions[0]).not.toHaveProperty(key)
+    expect((await wallet.getTransaction(txid)).details).toEqual([feeOnly])
+    try {
+      cli('invalidateblock', minedIn)
+      const reorged = await wallet.listSinceBlock({ blockHash: minedIn })
+      expect(reorged.lastBlock).toBe(cursor)
+      expect(reorged.removed).toEqual([expect.objectContaining({ ...feeOnly, txid, confirmations: 0 })])
+      for (const key of outputFields) expect(reorged.removed![0]).not.toHaveProperty(key)
+      expect(reorged.transactions).toContainEqual(reorged.removed![0])
+    } finally {
+      cli('reconsiderblock', minedIn)
+    }
+    expect(await wallet.getBestBlockHash()).toBe(minedIn)
+    expect((await wallet.getTransaction(txid)).confirmations).toBe(1)
+  })
+
   // psbtbumpfee on wallets this case creates, funded from the script's smoke
   // wallet: a stuck payment bumped and replaced through the typed methods, the
   // option names the node reads, what each path leaves in the wallet, and a

@@ -1,11 +1,11 @@
 {
   "description": "walletcreatefundedpsbt of a replaceable payment with change",
   "builder": "walletCreateFundedPsbt",
-  "args": [{"outputs":[{"address":"qbrt1zldne995j9hh5gu9x5v8fyjw378yxytqq7yz4pkjrkzugkm2wj98qndd4aj","amountBits":{"$bigint":"123456789"}}],"options":{"feeRateBitsPerKvB":{"$bigint":"1000"},"changeType":"p2mr","replaceable":true}}],
+  "args": [{"outputs":[{"address":"qbrt1znas7mze2l4jhwtcm4ltsym0l48nt2399r3cx2y456fvt82r8s8vswd4lpc","amountBits":{"$bigint":"123456789"}}],"options":{"feeRateBitsPerKvB":{"$bigint":"1000"},"changeType":"p2mr","replaceable":true}}],
   "method": "walletcreatefundedpsbt",
-  "params": [[],[{"qbrt1zldne995j9hh5gu9x5v8fyjw378yxytqq7yz4pkjrkzugkm2wj98qndd4aj":1.23456789}],null,{"change_type":"p2mr","fee_rate":1.000,"replaceable":true}],
+  "params": [[],[{"qbrt1znas7mze2l4jhwtcm4ltsym0l48nt2399r3cx2y456fvt82r8s8vswd4lpc":1.23456789}],null,{"change_type":"p2mr","fee_rate":1.000,"replaceable":true}],
   "result": {
-    "psbt": "cHNidP8BAIkCAAAAAXZz8tFzT9FVMKfox6Iltkwcx9qqxOfpO8XHNqLHERX0AAAAAAD9////AhXNWwcAAAAAIlIg+2eSlpIt70RwpqMOkknR8chiLADxBVDaQ7C4i21OkU7WtVbcBAAAACJSIBrXY05FP7IWVMvt9pCkmxM5M05/uj6jkDNMLuXdcXjgAAAAAAABASsAkrLjBAAAACJSIFZ9pMlIX+yC94/m/VScxW+AonHFjDUMzvI1qpeUdOAXAh3BIyD4i/OkVI78lPjAPjIzSfTsn6BqCOwr1atXgp4lF5e7x7PAB/wEcWJpdAEgVn2kyUhf7IL3j+b9VJzFb4CiccWMNQzO8jWql5R04BcAAAA=",
+    "psbt": "cHNidP8BAIkCAAAAAaiTgem9QwHJhNGtbnhCB0bujdxbtKHFsr5/viF9za58AAAAAAD9////AhXNWwcAAAAAIlIgn2Htiyr9ZXcvG6/XAm3/qea1RKUccGUStNJYs6hngdnWtVbcBAAAACJSIAHOspMVzOuTqKXnwRLo//vhH41zC0t+NeK3EP+KRDbhAAAAAAABASsAkrLjBAAAACJSIF8lKd8RTexJy2n36hF596JZYICYKekmRKiOH6ddKzHZAh3BIyAoGpwTicifUkNM2gXMT0T4kellGRjUOpjeSPwtdvdzfLPAB/wEcWJpdAEgXyUp3xFN7EnLaffqEXn3ollggJgp6SZEqI4fp10rMdkAAAA=",
     "fee": 0.00003861,
     "changepos": 1
   }

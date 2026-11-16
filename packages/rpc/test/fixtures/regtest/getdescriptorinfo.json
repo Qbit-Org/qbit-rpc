@@ -1,12 +1,12 @@
 {
   "description": "getdescriptorinfo of a public P2MR descriptor",
   "builder": "getDescriptorInfo",
-  "args": ["mr(pk(f88bf3a4548efc94f8c03e323349f4ec9fa06a08ec2bd5ab57829e251797bbc7))#4zjnxs02"],
+  "args": ["mr(pk(281a9c1389c89f52434cda05cc4f44f891e9651918d43a98de48fc2d76f7737c))#dz34qnxy"],
   "method": "getdescriptorinfo",
-  "params": ["mr(pk(f88bf3a4548efc94f8c03e323349f4ec9fa06a08ec2bd5ab57829e251797bbc7))#4zjnxs02"],
+  "params": ["mr(pk(281a9c1389c89f52434cda05cc4f44f891e9651918d43a98de48fc2d76f7737c))#dz34qnxy"],
   "result": {
-    "descriptor": "mr(pk(f88bf3a4548efc94f8c03e323349f4ec9fa06a08ec2bd5ab57829e251797bbc7))#4zjnxs02",
-    "checksum": "4zjnxs02",
+    "descriptor": "mr(pk(281a9c1389c89f52434cda05cc4f44f891e9651918d43a98de48fc2d76f7737c))#dz34qnxy",
+    "checksum": "dz34qnxy",
     "isrange": false,
     "issolvable": true,
     "has_p2mr_standard_satisfaction": true,
