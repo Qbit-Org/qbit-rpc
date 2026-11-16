@@ -8,12 +8,12 @@
     "chain": "regtest",
     "blocks": 1010,
     "headers": 1010,
-    "bestblockhash": "1f8c548e56d6e82560ef0a38e274fd2b3d0304e06031c3a4a66afa0ba822ba38",
+    "bestblockhash": "3f766da85f5d062c0a9d85ee4ebd3f07ebf67fbfe09bf7470770b805459f75c3",
     "bits": "207fffff",
     "target": "7fffff0000000000000000000000000000000000000000000000000000000000",
     "difficulty": 4.656542373906925e-10,
-    "time": 1794846469,
-    "mediantime": 1794846468,
+    "time": 1794862124,
+    "mediantime": 1794862123,
     "verificationprogress": 1,
     "initialblockdownload": false,
     "chainwork": "00000000000000000000000000000000000000000000000000000000000007e6",
@@ -36,9 +36,9 @@
       "tip_limit_seconds": 600,
       "next_block_limit_seconds": 600,
       "blocks_remaining": 0,
-      "next_block_min_time": 1794846469,
-      "next_block_max_time": 1794846914,
-      "next_block_time_headroom_seconds": 445
+      "next_block_min_time": 1794862124,
+      "next_block_max_time": 1794862560,
+      "next_block_time_headroom_seconds": 436
     },
     "warnings": []
   }

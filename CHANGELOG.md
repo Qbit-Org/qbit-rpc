@@ -15,6 +15,38 @@ changes a package's `src/` adds a line here, which CI checks.
 How the code changed before its first release, review by review, is in
 [docs/history/before-0.1.0.md](docs/history/before-0.1.0.md).
 
+## 0.2.0 (unreleased)
+
+### `@qbit-oss/rpc`
+
+- **Breaking: qbit Core v1.0.1's fee-only `send` entry is typed and
+  accepted.** qbit Core v1.0.1 lists a change-only self-transfer that pays a
+  fee (every input the wallet's, every output change, as when a consolidation
+  or a cancel pays a `getRawChangeAddress` address) as one `send` entry with
+  `amount` 0, the fee, and no `vout`, `address` or `label`: in
+  `gettransaction`'s `details`, in `listtransactions`, and in `listsinceblock`
+  without `include_change`. 0.1.0 refused such a reply (`RpcResponseError` at
+  `….vout`), so on a v1.0.1 node, which it supports, `getTransaction`,
+  `listTransactions` and `listSinceBlock` failed once the wallet held one.
+  They now accept an entry of exactly that shape, and still refuse any other
+  entry without `vout`, a fee-only entry beside another entry of its txid (in
+  `details`, or in one list), one listed with `includeChange`, and one in
+  `listTransactions` with a label filter (any label but `*`); v1.0.0's replies
+  parse as before. `WalletHistoryEntry` is now a union, and so is a
+  `WalletTransaction.details` entry: an output's entry, as before, or the
+  fee-only one, a `send` with `feeBits` always present and `vout`, `address`,
+  `label` and `parentDescs` typed `?: never`. Unnarrowed, `vout` is `number |
+  undefined`, so code that uses it as a number, or passes an entry as an
+  `Outpoint`, no longer compiles; a template string such as `${txid}:${vout}`
+  still does, and gives `…:undefined`. **Migrating:** check `entry.vout !==
+  undefined`, or a category other than `send`, first; TypeScript then narrows
+  the entry to an output's. Code that reads `vout` only after narrowing to
+  `receive`, `generate`, `immature` or `orphan` compiles as it is. An
+  interface can no longer extend `WalletHistoryEntry` (use an intersection
+  type), and a copy of the client checked with `ClientSatisfies` that declares
+  `vout` required on these results now reports `returns`: declare it optional.
+  See [wallet history](docs/rpc/wallet.md#wallet-history).
+
 ## 0.1.0 - 2026-11-09
 
 The first release of both packages.

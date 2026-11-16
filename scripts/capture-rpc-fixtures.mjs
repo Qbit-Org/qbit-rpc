@@ -377,6 +377,54 @@ try {
   )
   await capture('listtransactions', 'listtransactions, the 10 newest entries', 'listTransactions', [{ count: 10 }], W)
 
+  // A change-only self-transfer: a payment to the wallet's own change address,
+  // with change. Without include_change, qbit Core v1.0.1 lists it as one
+  // fee-only send entry, with no vout, address or label (v1.0.0 lists nothing
+  // for it). Mined afterwards, so the captures below see no more in the mempool.
+  const parsed = async (request, wallet) => request.parse(asValidatorInput(await send(request, wallet)))
+  const beforeSelfTransfer = await parsed(requests.getBestBlockHash())
+  const selfFunded = await parsed(
+    requests.walletCreateFundedPsbt({
+      outputs: [
+        { address: await parsed(requests.getRawChangeAddress({ addressType: 'p2mr' }), W), amountBits: 100_000_000n },
+      ],
+      options: { feeRateBitsPerKvB: 1000n, changeType: 'p2mr' },
+    }),
+    W
+  )
+  const selfTransfer = await parsed(
+    requests.sendRawTransaction((await parsed(requests.walletProcessPsbt(selfFunded.psbt), W)).hex)
+  )
+  await capture(
+    'gettransaction-self-transfer',
+    'gettransaction of a change-only self-transfer in the mempool: one fee-only send entry',
+    'getTransaction',
+    [selfTransfer],
+    W
+  )
+  await capture(
+    'listtransactions-self-transfer',
+    'listtransactions, the newest entry: the fee-only send entry of the self-transfer',
+    'listTransactions',
+    [{ count: 1 }],
+    W
+  )
+  await capture(
+    'listsinceblock-self-transfer',
+    'listsinceblock since the block before the self-transfer: its fee-only send entry',
+    'listSinceBlock',
+    [{ blockHash: beforeSelfTransfer }],
+    W
+  )
+  await capture(
+    'listsinceblock-self-transfer-change',
+    'listsinceblock with include_change: a send and a receive entry per output of the self-transfer, no fee-only entry',
+    'listSinceBlock',
+    [{ blockHash: beforeSelfTransfer, includeChange: true }],
+    W
+  )
+  cli('generatetoaddress', '1', mineTo)
+
   // Chain reads.
   await capture('getchaintips', 'getchaintips: one active tip', 'getChainTips', [])
   await capture('getmininginfo', 'getmininginfo on regtest', 'getMiningInfo', [])

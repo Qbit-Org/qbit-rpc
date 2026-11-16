@@ -1308,34 +1308,43 @@ export interface WalletDirEntry {
 }
 
 // @public
-export interface WalletHistoryEntry {
-    readonly abandoned: boolean;
+export type WalletHistoryEntry = ({
     readonly address?: string;
+    readonly category: WalletTxCategory;
     readonly amountBits: bigint;
-    readonly bip125Replaceable: 'yes' | 'no' | 'unknown';
+    readonly label?: string;
+    readonly vout: number;
+    readonly feeBits?: bigint;
+    readonly parentDescs?: readonly string[];
+} | {
+    readonly address?: never;
+    readonly category: 'send';
+    readonly amountBits: bigint;
+    readonly label?: never;
+    readonly vout?: never;
+    readonly feeBits: bigint;
+    readonly parentDescs?: never;
+}) & {
+    readonly abandoned: boolean;
+    readonly confirmations: number;
+    readonly generated?: boolean;
+    readonly trusted?: boolean;
     readonly blockHash?: string;
     readonly blockHeight?: number;
     readonly blockIndex?: number;
     readonly blockTime?: number;
-    readonly category: WalletTxCategory;
-    readonly comment?: string;
-    readonly confirmations: number;
-    readonly feeBits?: bigint;
-    readonly generated?: boolean;
-    readonly label?: string;
-    readonly mempoolConflicts: readonly string[];
-    readonly parentDescs?: readonly string[];
+    readonly txid: string;
+    readonly wtxid: string;
+    readonly walletConflicts: readonly string[];
     readonly replacedByTxid?: string;
     readonly replacesTxid?: string;
+    readonly mempoolConflicts: readonly string[];
+    readonly to?: string;
     readonly time: number;
     readonly timeReceived: number;
-    readonly to?: string;
-    readonly trusted?: boolean;
-    readonly txid: string;
-    readonly vout: number;
-    readonly walletConflicts: readonly string[];
-    readonly wtxid: string;
-}
+    readonly comment?: string;
+    readonly bip125Replaceable: 'yes' | 'no' | 'unknown';
+};
 
 // @public
 export interface WalletInfo {
@@ -1381,7 +1390,7 @@ export interface WalletTransaction {
     readonly blockTime?: number;
     readonly comment?: string;
     readonly confirmations: number;
-    readonly details: readonly {
+    readonly details: readonly ({
         readonly address?: string;
         readonly category: WalletTxCategory;
         readonly amountBits: bigint;
@@ -1390,7 +1399,16 @@ export interface WalletTransaction {
         readonly feeBits?: bigint;
         readonly abandoned: boolean;
         readonly parentDescs?: readonly string[];
-    }[];
+    } | {
+        readonly address?: never;
+        readonly category: 'send';
+        readonly amountBits: bigint;
+        readonly label?: never;
+        readonly vout?: never;
+        readonly feeBits: bigint;
+        readonly abandoned: boolean;
+        readonly parentDescs?: never;
+    })[];
     readonly feeBits?: bigint;
     readonly generated?: boolean;
     readonly hex: string;

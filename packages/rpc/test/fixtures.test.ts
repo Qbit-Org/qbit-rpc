@@ -75,14 +75,35 @@ const DEPENDS: Readonly<Record<string, readonly string[]>> = {
   blockheight: ['blockhash'],
 }
 
-/** How a refused mutation of `path` was located: at the field, at a sibling it depends on, or not at all. */
-function located(path: Path, issuePath: string, replacement: unknown): 'field' | 'sibling' | 'container' | undefined {
+/**
+ * The same, for a wallet transaction entry (an object with a `category`) that
+ * has no `vout`: it must be qbit Core v1.0.1's fee-only send entry, amount 0
+ * with a negative fee, or its vout is reported missing.
+ */
+const DEPENDS_WITHOUT_VOUT: Readonly<Record<string, readonly string[]>> = {
+  amount: ['vout'],
+  fee: ['vout'],
+}
+
+/**
+ * How a refused mutation of `path` in `root` was located: at the field, at a
+ * sibling it depends on, or not at all.
+ */
+function located(
+  root: unknown,
+  path: Path,
+  issuePath: string,
+  replacement: unknown
+): 'field' | 'sibling' | 'container' | undefined {
   if (within(issuePath, pathName(path))) return 'field'
   const key = path.at(-1)
   const parent = pathName(path.slice(0, -1))
-  if (typeof key === 'string' && DEPENDS[key]?.some(sibling => within(issuePath, `${parent}.${sibling}`))) {
-    return 'sibling'
-  }
+  const holder = get(root, path.slice(0, -1))
+  const feeOnlyShaped =
+    typeof holder === 'object' && holder !== null && Object.hasOwn(holder, 'category') && !Object.hasOwn(holder, 'vout')
+  const depends = [...((typeof key === 'string' && DEPENDS[key]) || [])]
+  if (typeof key === 'string' && feeOnlyShaped) depends.push(...(DEPENDS_WITHOUT_VOUT[key] ?? []))
+  if (depends.some(sibling => within(issuePath, `${parent}.${sibling}`))) return 'sibling'
   // An item removed: the array is shorter than its request says (one testmempoolaccept entry per
   // transaction), or a map keyed by txid misses one (submitpackage's tx-results, one per wtxid).
   if (replacement === REMOVE && issuePath === parent) return 'container'
@@ -102,7 +123,7 @@ function refusals(f: Fixture): { mutated: string; issue: string; where: ReturnTy
         out.push({
           mutated: pathName(path),
           issue: outcome.issue.path,
-          where: located(path, outcome.issue.path, replacement),
+          where: located(f.result, path, outcome.issue.path, replacement),
         })
       }
     }
@@ -115,12 +136,16 @@ describe('captured regtest replies', () => {
     const typed = Object.keys(requests).filter(name => name !== 'raw')
     const captured = new Set(fixtures.map(f => f.builder))
     expect([...captured].sort()).toEqual(typed.sort())
-    expect(fixtures.length).toBeGreaterThanOrEqual(77)
+    expect(fixtures.length).toBeGreaterThanOrEqual(81)
     for (const name of [
       'gettransaction-send',
       'gettransaction-replaced',
       'gettransaction-immature',
       'gettransaction-generate',
+      'gettransaction-self-transfer',
+      'listtransactions-self-transfer',
+      'listsinceblock-self-transfer',
+      'listsinceblock-self-transfer-change',
     ]) {
       expect(byName.has(name)).toBe(true)
     }
@@ -159,6 +184,28 @@ describe('captured regtest replies', () => {
       byName.get('gettransaction-replaced')!.result
     )
     expect(replaced).toMatchObject({ value: { confirmations: 0, walletConflicts: [expect.any(String)] } })
+  })
+
+  it('records a change-only self-transfer as one fee-only send entry, and with include_change as its outputs', () => {
+    const value = (name: string): unknown =>
+      (validate(build(byName.get(name)!), byName.get(name)!.result) as { value: unknown }).value
+    const tx = value('gettransaction-self-transfer') as { amountBits: bigint; feeBits: bigint; details: object[] }
+    expect(tx.feeBits).toBeLessThan(0n)
+    expect(tx.amountBits).toBe(0n)
+    const feeOnly = { category: 'send', amountBits: 0n, feeBits: tx.feeBits, abandoned: false }
+    expect(tx.details).toEqual([feeOnly])
+    const [listed] = value('listtransactions-self-transfer') as Record<string, unknown>[]
+    expect(listed).toMatchObject({ ...feeOnly, txid: byName.get('gettransaction-self-transfer')!.args[0] })
+    for (const key of ['vout', 'address', 'label', 'parentDescs']) expect(listed).not.toHaveProperty(key)
+    const since = value('listsinceblock-self-transfer') as { transactions: unknown[]; removed: unknown[] }
+    expect(since).toMatchObject({ transactions: [listed], removed: [] })
+    const withChange = value('listsinceblock-self-transfer-change') as { transactions: Record<string, unknown>[] }
+    expect(withChange.transactions.map(entry => [entry['category'], typeof entry['vout']])).toEqual([
+      ['send', 'number'],
+      ['send', 'number'],
+      ['receive', 'number'],
+      ['receive', 'number'],
+    ])
   })
 
   it.each(fixtures.map(f => [f.name, f] as const))(

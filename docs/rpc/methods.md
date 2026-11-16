@@ -56,12 +56,12 @@ is the `cause` of an `RpcUnknownOutcomeError`. Each method also takes
 | `createAuxBlock(payoutAddress)` | `AuxBlock`; see [merge mining](mining.md#merge-mining-auxpow) |
 | `submitAuxBlock(blockHash, auxpowHex)` | `BlockSubmissionResult`: null, or the reason; see [merge mining](mining.md#merge-mining-auxpow) |
 | `getWalletInfo()` | `WalletInfo`, including `pqcKeyValidation` |
-| `getTransaction(txid)` | `WalletTransaction`; signed `amountBits` and `feeBits` |
+| `getTransaction(txid)` | `WalletTransaction`; signed `amountBits` and `feeBits`; on qbit Core v1.0.1, a change-only self-transfer that pays a fee has one `details` entry, fee-only, without `vout`; see [wallet history](wallet.md#wallet-history) |
 | `listUnspent(options?)` | `UnspentOutput[]` |
 | `getAddressInfo(address)` | `AddressInfo` with the PQC usage fields; checks the address, ignoring case only for bech32 and bech32m |
 | `listLockUnspent()` | `Outpoint[]` (`{ txid, vout }`) |
 | `listSinceBlock({ blockHash?, targetConfirmations?, includeWatchOnly?, includeRemoved?, includeChange? })` | `SinceBlockHistory`: `transactions`, `removed`, `lastBlock`; `RpcError` -5 for an unknown block |
-| `listTransactions({ label?, count?, skip?, includeWatchOnly? })` | `WalletHistoryEntry[]`, the newest `count` (default 10), oldest first |
+| `listTransactions({ label?, count?, skip?, includeWatchOnly? })` | `WalletHistoryEntry[]`, the newest `count` (default 10), oldest first; the fee-only `send` entry of a change-only self-transfer that pays a fee has no `vout` ([wallet history](wallet.md#wallet-history)) |
 | `getBalances()` | `WalletBalances`: `mine` (`trustedBits`, `untrustedPendingBits`, `immatureBits`, `usedBits?`) and `lastProcessedBlock` |
 | `walletCreateFundedPsbt({ inputs?, outputs, locktime?, options?, bip32derivs?, version? })` | `{ psbt, feeBits, changePos }` |
 | `walletProcessPsbt(psbt, { sign?, sighashType?, bip32derivs?, finalize?, pqcCheck? })` | `ProcessedPsbt` with the PQC usage fields; when it signs, after `checkPqcSigning` passes (`pqcCheck: false` skips it, unsafe), under one deadline |
@@ -146,8 +146,9 @@ skipped, as its value is never read, and an object left out reads as empty
 whatever `Object.prototype` holds. Arrays are read by their own elements: a hole
 rejects with a `TypeError` naming its index. Where an outpoint is expected (`lockUnspent` outputs,
 `walletCreateFundedPsbt` inputs), the other fields of a typed result that is
-also an outpoint (a `listUnspent()`, `listSinceBlock()` or `listTransactions()`
-entry, or a decoded transaction input) are allowed and ignored. Only `txid`,
+also an outpoint (a `listUnspent()` entry, a `listSinceBlock()` or
+`listTransactions()` entry with a `vout`, or a decoded transaction input) are
+allowed and ignored; a fee-only history entry, which has no `vout`, is refused. Only `txid`,
 `vout` and, for an input, `sequence` are read, so a decoded input passed to
 `walletCreateFundedPsbt` keeps its own sequence number. TypeScript catches
 unknown keys only in object literals, not in spread objects or options read from

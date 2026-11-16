@@ -1,11 +1,11 @@
 {
   "description": "psbtbumpfee of the payment at 5 bits/vB",
   "builder": "psbtBumpFee",
-  "args": ["73cc06e36b505bb2c28fb4777ddea3eb04d7815024d8e509948222106ce77656",{"feeRateBitsPerKvB":{"$bigint":"5000"}}],
+  "args": ["c34c4653aba38242e05259f47c8ceb1cda3f6fc285c78010b08756f0616096d5",{"feeRateBitsPerKvB":{"$bigint":"5000"}}],
   "method": "psbtbumpfee",
-  "params": ["73cc06e36b505bb2c28fb4777ddea3eb04d7815024d8e509948222106ce77656",{"fee_rate":5.000}],
+  "params": ["c34c4653aba38242e05259f47c8ceb1cda3f6fc285c78010b08756f0616096d5",{"fee_rate":5.000}],
   "result": {
-    "psbt": "cHNidP8BAIkCAAAAAXZz8tFzT9FVMKfox6Iltkwcx9qqxOfpO8XHNqLHERX0AAAAAAD9////AoJ5VtwEAAAAIlIgGtdjTkU/shZUy+32kKSbEzkzTn+6PqOQM0wu5d1xeOAVzVsHAAAAACJSIPtnkpaSLe9EcKajDpJJ0fHIYiwA8QVQ2kOwuIttTpFO8gMAAAABASsAkrLjBAAAACJSIFZ9pMlIX+yC94/m/VScxW+AonHFjDUMzvI1qpeUdOAXAh3BIyD4i/OkVI78lPjAPjIzSfTsn6BqCOwr1atXgp4lF5e7x7PAB/wEcWJpdAEgVn2kyUhf7IL3j+b9VJzFb4CiccWMNQzO8jWql5R04BcAAAA=",
+    "psbt": "cHNidP8BAIkCAAAAAaiTgem9QwHJhNGtbnhCB0bujdxbtKHFsr5/viF9za58AAAAAAD9////AhXNWwcAAAAAIlIgn2Htiyr9ZXcvG6/XAm3/qea1RKUccGUStNJYs6hngdmCeVbcBAAAACJSIAHOspMVzOuTqKXnwRLo//vhH41zC0t+NeK3EP+KRDbh8gMAAAABASsAkrLjBAAAACJSIF8lKd8RTexJy2n36hF596JZYICYKekmRKiOH6ddKzHZAh3BIyAoGpwTicifUkNM2gXMT0T4kellGRjUOpjeSPwtdvdzfLPAB/wEcWJpdAEgXyUp3xFN7EnLaffqEXn3ollggJgp6SZEqI4fp10rMdkAAAA=",
     "origfee": 0.00003861,
     "fee": 0.00019305,
     "errors": []

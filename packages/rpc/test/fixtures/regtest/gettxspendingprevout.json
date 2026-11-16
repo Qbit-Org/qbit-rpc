@@ -1,17 +1,17 @@
 {
   "description": "gettxspendingprevout of the payment's input, spent, and of its output 0, unspent",
   "builder": "getTxSpendingPrevout",
-  "args": [[{"txid":"f41511c7a236c7c53be9e7c4aadac71c4cb625a2c7e8a73055d14f73d1f27376","vout":0},{"txid":"73cc06e36b505bb2c28fb4777ddea3eb04d7815024d8e509948222106ce77656","vout":0}]],
+  "args": [[{"txid":"7caecd7d21be7fbeb2c5a1b45bdc8dee460742786eadd184c90143bde98193a8","vout":0},{"txid":"c34c4653aba38242e05259f47c8ceb1cda3f6fc285c78010b08756f0616096d5","vout":0}]],
   "method": "gettxspendingprevout",
-  "params": [[{"txid":"f41511c7a236c7c53be9e7c4aadac71c4cb625a2c7e8a73055d14f73d1f27376","vout":0},{"txid":"73cc06e36b505bb2c28fb4777ddea3eb04d7815024d8e509948222106ce77656","vout":0}]],
+  "params": [[{"txid":"7caecd7d21be7fbeb2c5a1b45bdc8dee460742786eadd184c90143bde98193a8","vout":0},{"txid":"c34c4653aba38242e05259f47c8ceb1cda3f6fc285c78010b08756f0616096d5","vout":0}]],
   "result": [
     {
-      "txid": "f41511c7a236c7c53be9e7c4aadac71c4cb625a2c7e8a73055d14f73d1f27376",
+      "txid": "7caecd7d21be7fbeb2c5a1b45bdc8dee460742786eadd184c90143bde98193a8",
       "vout": 0,
-      "spendingtxid": "73cc06e36b505bb2c28fb4777ddea3eb04d7815024d8e509948222106ce77656"
+      "spendingtxid": "c34c4653aba38242e05259f47c8ceb1cda3f6fc285c78010b08756f0616096d5"
     },
     {
-      "txid": "73cc06e36b505bb2c28fb4777ddea3eb04d7815024d8e509948222106ce77656",
+      "txid": "c34c4653aba38242e05259f47c8ceb1cda3f6fc285c78010b08756f0616096d5",
       "vout": 0
     }
   ]

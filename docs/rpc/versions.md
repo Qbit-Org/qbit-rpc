@@ -52,7 +52,11 @@ fails on such a reply too, at the same path.
 **Values a later qbit Core may add.** A field this package reads is required
 when qbit Core v1.0.0 prints it, except `paytxfee`
 (`WalletInfo.payTxFeeBitsPerKvB`), which Bitcoin Core has deprecated: it is
-optional, so its removal does not break `getWalletInfo()`. Fields the node adds
+optional, so its removal does not break `getWalletInfo()`. And except `vout`
+(with `address` and `label`, optional already) on a wallet history entry and a
+`getTransaction` detail: v1.0.1 leaves them out of the fee-only `send` entry it
+lists for a change-only self-transfer, and any other entry without `vout` still
+fails validation; see [wallet history](wallet.md#wallet-history). Fields the node adds
 are dropped. An enum is open or closed:
 
 | Value | An unknown value | Why |

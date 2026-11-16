@@ -1,0 +1,28 @@
+{
+  "description": "listsinceblock since the block before the self-transfer: its fee-only send entry",
+  "builder": "listSinceBlock",
+  "args": [{"blockHash":"4016da3a10517d6b9e81e8c255a4bd134d04939f62ae5c15859c4d05450d81ee"}],
+  "method": "listsinceblock",
+  "params": ["4016da3a10517d6b9e81e8c255a4bd134d04939f62ae5c15859c4d05450d81ee"],
+  "result": {
+    "transactions": [
+      {
+        "category": "send",
+        "amount": 0.00000000,
+        "fee": -0.00003861,
+        "confirmations": 0,
+        "trusted": true,
+        "txid": "8133bca346f38a5f9a8ed860e07f277c563a9d3024011ad08a7c0700c9feebfe",
+        "wtxid": "43e453ff783b90eceb5b21a37c6448722c9a58b34b1ca64ba9156c3581cc4a96",
+        "walletconflicts": [],
+        "mempoolconflicts": [],
+        "time": 1794861994,
+        "timereceived": 1794861994,
+        "bip125-replaceable": "yes",
+        "abandoned": false
+      }
+    ],
+    "removed": [],
+    "lastblock": "4016da3a10517d6b9e81e8c255a4bd134d04939f62ae5c15859c4d05450d81ee"
+  }
+}

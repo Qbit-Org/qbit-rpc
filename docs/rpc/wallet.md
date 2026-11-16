@@ -159,9 +159,10 @@ wallet's `-addresstype` or `-changetype` applies.
 ## Wallet history
 
 `listSinceBlock` and `listTransactions` return `WalletHistoryEntry` objects,
-one per output a wallet transaction sent or received, in signed bits:
-`amountBits` is at most 0 for `send` (0 for an OP_RETURN output, which has no
-`address`) and at least 0 for every other category. `feeBits` is on every
+one per output a wallet transaction sent or received (and, from qbit Core
+v1.0.1, a fee-only entry for a change-only self-transfer, below), in signed
+bits: `amountBits` is at most 0 for `send` (0 for an OP_RETURN output, which
+has no `address`) and at least 0 for every other category. `feeBits` is on every
 `send` entry and no other. It is all outputs minus this wallet's inputs,
 repeated on each of the transaction's `send` entries, so do not add it up per
 entry. When every input is this wallet's, that is the fee, as a negative
@@ -174,6 +175,31 @@ exactly when `confirmations` is above 0, and `trusted` exactly when it is not.
 and `abandoned` marks a transaction the wallet gave up on, or an orphaned
 coinbase.
 
+A change-only self-transfer, whose inputs are all the wallet's and whose outputs
+are all change (a consolidation or a cancel paid to a `getRawChangeAddress`
+address; one paid to a `getNewAddress` address is a payment to the wallet, a
+`send` and a `receive` entry), has no output to list. If it pays a fee, qbit
+Core v1.0.1 and later list it, without `includeChange`, as one **fee-only `send`
+entry**, the only entry of its `txid` in the list: `amountBits` `0n`, the fee in
+`feeBits` (negative), and no `vout`, `address`, `label` or `parentDescs`.
+`getTransaction` gives it as the only entry of `details`. qbit Core v1.0.0 lists
+nothing for it, and its `details` is empty. With `includeChange`, each of its
+outputs is a `send` and a `receive` entry with its `vout`, and there is no
+fee-only entry. It is the second member of the `WalletHistoryEntry` union (and
+of a `details` entry's type), whose `vout` is typed `?: never`: check
+`entry.vout !== undefined`, or a category other than `send`, before using an
+entry as an output, and TypeScript narrows it to the first member. A template
+string such as `${entry.txid}:${entry.vout}` still compiles, and gives
+`…:undefined`: narrow before building a key from `vout`. A missing `vout` is
+left out, never filled in as 0. Any other entry without `vout` fails validation,
+as on v1.0.0, and so does a fee-only entry beside another entry of its `txid`,
+one listed with `includeChange`, and one in `listTransactions` with a label
+filter (any label but `*`). One check per entry cannot tell a zero-value
+OP_RETURN `send` entry that lost its `vout` from a fee-only one. The node
+chooses the form each time it lists the transaction: should one of its change
+addresses get a label (an address-book entry) later, that output is a payment
+from then on, and the transaction is listed by its outputs instead.
+
 Use `listSinceBlock` as a cursor: store `lastBlock` and pass it as the next
 call's `blockHash`. `transactions` holds every entry of the later blocks and
 every entry at 0 confirmations, plus the `send` entries of a transaction a later
@@ -184,8 +210,9 @@ back on every call until it is mined after all (it then confirms, with
 orphaned block is reconnected; an entry that stops being listed may have gone
 either way, and `getTransaction` tells which. Key entries by `txid`, `vout` and
 whether the entry is a `send` (a payment to the wallet itself has a `send` and a
-`receive` entry for one `vout`), and keep the latest `category`: a coinbase
-output goes from `immature` to `generate`, or to `orphan`. With
+`receive` entry for one `vout`; a fee-only entry, by its `txid` alone), and keep
+the latest `category`: a coinbase output goes from `immature` to `generate`, or
+to `orphan`. With
 `targetConfirmations: n`, `lastBlock` is n - 1 blocks below the tip (the genesis
 block on a shorter chain), so entries keep coming back until they have n
 confirmations. When the stored block has left the active chain, the call lists
@@ -208,7 +235,11 @@ negative `confirmations`, with no `receive` entry in `details`.
 To add up what the wallet sent, take `send` entries without `includeChange`
 (which adds each change output as a `send` and a `receive` entry), count each
 `txid` and `vout` once, and skip `abandoned` entries and those with negative
-`confirmations`. A replaced payment appears as several transactions spending
+`confirmations`. A fee-only entry adds nothing to what was paid out, but it is
+the only entry that carries a change-only self-transfer's fee: to add up fees,
+count `feeBits` once per `txid`. v1.0.0 lists no entry for such a transaction,
+so there only `getTransaction` of its txid, which the wallet that built it
+knows, gives that fee. A replaced payment appears as several transactions spending
 the same inputs: the original and each replacement. `bumpfee` links them with
 `replacedByTxid` and `replacesTxid`; a replacement sent with
 `sendRawTransaction`, as after `psbtBumpFee`, sets neither, and only

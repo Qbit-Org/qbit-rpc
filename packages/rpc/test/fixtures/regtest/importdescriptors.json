@@ -1,9 +1,9 @@
 {
   "description": "importdescriptors of the public descriptor into the watch-only wallet",
   "builder": "importDescriptors",
-  "args": [[{"desc":"mr(pk(f88bf3a4548efc94f8c03e323349f4ec9fa06a08ec2bd5ab57829e251797bbc7))#4zjnxs02","timestamp":"now","label":"watched"}]],
+  "args": [[{"desc":"mr(pk(281a9c1389c89f52434cda05cc4f44f891e9651918d43a98de48fc2d76f7737c))#dz34qnxy","timestamp":"now","label":"watched"}]],
   "method": "importdescriptors",
-  "params": [[{"desc":"mr(pk(f88bf3a4548efc94f8c03e323349f4ec9fa06a08ec2bd5ab57829e251797bbc7))#4zjnxs02","timestamp":"now","label":"watched"}]],
+  "params": [[{"desc":"mr(pk(281a9c1389c89f52434cda05cc4f44f891e9651918d43a98de48fc2d76f7737c))#dz34qnxy","timestamp":"now","label":"watched"}]],
   "result": [
     {
       "success": true

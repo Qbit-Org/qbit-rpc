@@ -744,6 +744,335 @@ describe('wallet history entries', () => {
   })
 })
 
+// A change-only self-transfer: every input is the wallet's, every output is
+// change. Without include_change, qbit Core v1.0.1 lists it as one fee-only
+// send entry, here as a v1.0.1 regtest node printed it (captured by
+// scripts/capture-rpc-fixtures.mjs; hex shortened). v1.0.0 lists nothing for it,
+// and its gettransaction has no detail: v1.0.0's ListTransactions has no
+// fee-only branch, and v1.0.1 changed nothing else that these replies print.
+const SELF_TRANSFER = '8133bca346f38a5f9a8ed860e07f277c563a9d3024011ad08a7c0700c9feebfe'
+const FEE_ONLY: Entry = {
+  category: 'send',
+  amount: '#0.00000000',
+  fee: '#-0.00003861',
+  confirmations: 0,
+  trusted: true,
+  txid: SELF_TRANSFER,
+  wtxid: '43e453ff783b90eceb5b21a37c6448722c9a58b34b1ca64ba9156c3581cc4a96',
+  walletconflicts: [],
+  mempoolconflicts: [],
+  time: 1794861994,
+  timereceived: 1794861994,
+  'bip125-replaceable': 'yes',
+  abandoned: false,
+}
+const FEE_ONLY_DETAIL: Entry = { category: 'send', amount: '#0.00000000', fee: '#-0.00003861', abandoned: false }
+const SELF_TRANSFER_TX: Entry = {
+  amount: '#0.00000000',
+  fee: '#-0.00003861',
+  confirmations: 0,
+  trusted: true,
+  txid: SELF_TRANSFER,
+  wtxid: FEE_ONLY['wtxid'],
+  walletconflicts: [],
+  mempoolconflicts: [],
+  time: 1794861994,
+  timereceived: 1794861994,
+  'bip125-replaceable': 'yes',
+  details: [FEE_ONLY_DETAIL],
+  hex: '0200000000',
+  lastprocessedblock: { hash: '4016da3a10517d6b9e81e8c255a4bd134d04939f62ae5c15859c4d05450d81ee', height: 1011 },
+}
+const FEE_ONLY_PARSED = {
+  category: 'send',
+  amountBits: 0n,
+  feeBits: -3_861n,
+  abandoned: false,
+  confirmations: 0,
+  trusted: true,
+  txid: SELF_TRANSFER,
+  wtxid: FEE_ONLY['wtxid'],
+  walletConflicts: [],
+  mempoolConflicts: [],
+  time: 1794861994,
+  timeReceived: 1794861994,
+  bip125Replaceable: 'yes',
+}
+
+/** A payment's send entry as v1.0.1 printed it: the fields of v1.0.0's, in its order. */
+const SEND_V101: Entry = {
+  address: 'qbrt1znas7mze2l4jhwtcm4ltsym0l48nt2399r3cx2y456fvt82r8s8vswd4lpc',
+  category: 'send',
+  amount: '#-1.23456789',
+  vout: 0,
+  fee: '#-0.00019305',
+  confirmations: 1,
+  blockhash: '4016da3a10517d6b9e81e8c255a4bd134d04939f62ae5c15859c4d05450d81ee',
+  blockheight: 1011,
+  blockindex: 1,
+  blocktime: 1794862124,
+  txid: 'fca50f3fc8fbe886fe4b20f0ef7da070b4d84c18927bdf59fd2411873e0e5c32',
+  wtxid: '588c8460562d96cbd40a0decae7b6be8db201a8b1e9eae1248b43ea314199d76',
+  walletconflicts: ['c34c4653aba38242e05259f47c8ceb1cda3f6fc285c78010b08756f0616096d5'],
+  mempoolconflicts: [],
+  time: 1794861992,
+  timereceived: 1794861992,
+  'bip125-replaceable': 'no',
+  abandoned: false,
+}
+
+/** gettransaction of a payment as each version printed it (hex shortened): one send detail. */
+const PAYMENT_TX: Record<'v1.0.0' | 'v1.0.1', Entry> = {
+  'v1.0.0': {
+    amount: '#-1.23456789',
+    fee: '#-0.00019305',
+    confirmations: 1,
+    blockhash: '688a5305f3bf91eabfe2c5cb4a55b2d9757eda358a31d903b4d62f6db2e920bc',
+    blockheight: 1011,
+    blockindex: 1,
+    blocktime: 1794245308,
+    txid: '433e61bcc5f52422bc9321a96698d94ae4117fc9b299b3f89d227d16a434c5fe',
+    wtxid: 'd545f69e53784d2ee087f1cdf81f73667753d0d2f0edc7aa9746eb9079f15acd',
+    walletconflicts: ['467abf254d18d0cabffa38a1ea4f0a742f6c3ee75aa0420199e2c8380953fc2d'],
+    mempoolconflicts: [],
+    time: 1794245165,
+    timereceived: 1794245165,
+    'bip125-replaceable': 'no',
+    details: [
+      {
+        address: 'qbrt1zg4tcxt6jadczdvysxr6nl5vv3gl0c9x8pa9vx3cxkggqmg0hg0ysfgwqgv',
+        category: 'send',
+        amount: '#-1.23456789',
+        vout: 0,
+        fee: '#-0.00019305',
+        abandoned: false,
+      },
+    ],
+    hex: '0200000000',
+    lastprocessedblock: { hash: '688a5305f3bf91eabfe2c5cb4a55b2d9757eda358a31d903b4d62f6db2e920bc', height: 1011 },
+  },
+  'v1.0.1': {
+    amount: '#-1.23456789',
+    fee: '#-0.00019305',
+    confirmations: 1,
+    blockhash: SEND_V101['blockhash'],
+    blockheight: 1011,
+    blockindex: 1,
+    blocktime: 1794862124,
+    txid: SEND_V101['txid'],
+    wtxid: SEND_V101['wtxid'],
+    walletconflicts: SEND_V101['walletconflicts'],
+    mempoolconflicts: [],
+    time: 1794861992,
+    timereceived: 1794861992,
+    'bip125-replaceable': 'no',
+    details: [
+      {
+        address: SEND_V101['address'],
+        category: 'send',
+        amount: '#-1.23456789',
+        vout: 0,
+        fee: '#-0.00019305',
+        abandoned: false,
+      },
+    ],
+    hex: '0200000000',
+    lastprocessedblock: { hash: SEND_V101['blockhash'], height: 1011 },
+  },
+}
+
+describe('a change-only self-transfer, from qbit Core v1.0.0 and v1.0.1', () => {
+  it('listSinceBlock: v1.0.0 lists nothing for it, v1.0.1 its fee-only entry; output entries parse as before', async () => {
+    const rpc = client()
+    // v1.0.0: the payment's entry only, in transactions and in removed.
+    node.results({ listsinceblock: sinceBlock([SEND], [SEND]) })
+    const v100 = await rpc.listSinceBlock()
+    expect(v100.transactions).toStrictEqual([bare(SEND_PARSED)])
+    expect(v100.removed).toStrictEqual([bare(SEND_PARSED)])
+    // v1.0.1, a payment: its output's entry, as on v1.0.0.
+    node.results({ listsinceblock: sinceBlock([SEND_V101]) })
+    expect((await rpc.listSinceBlock()).transactions).toStrictEqual([
+      bare({
+        address: SEND_V101['address'],
+        category: 'send',
+        amountBits: -123_456_789n,
+        vout: 0,
+        feeBits: -19_305n,
+        abandoned: false,
+        confirmations: 1,
+        blockHash: SEND_V101['blockhash'],
+        blockHeight: 1011,
+        blockIndex: 1,
+        blockTime: 1794862124,
+        txid: SEND_V101['txid'],
+        wtxid: SEND_V101['wtxid'],
+        walletConflicts: SEND_V101['walletconflicts'],
+        mempoolConflicts: [],
+        time: 1794861992,
+        timeReceived: 1794861992,
+        bip125Replaceable: 'no',
+      }),
+    ])
+    // v1.0.1, the self-transfer too: its fee-only entry, also in removed after a reorg.
+    node.results({ listsinceblock: sinceBlock([SEND, FEE_ONLY], [FEE_ONLY]) })
+    const v101 = await rpc.listSinceBlock()
+    expect(v101.transactions).toStrictEqual([bare(SEND_PARSED), bare(FEE_ONLY_PARSED)])
+    expect(v101.removed).toStrictEqual([bare(FEE_ONLY_PARSED)])
+  })
+
+  it('listTransactions: v1.0.0 lists nothing for it, v1.0.1 its fee-only entry; output entries parse as before', async () => {
+    const rpc = client()
+    node.results({ listtransactions: json([RECEIVE, SEND]) })
+    expect(await rpc.listTransactions()).toStrictEqual([expect.objectContaining({ vout: 1 }), bare(SEND_PARSED)])
+    node.results({ listtransactions: json([SEND_V101]) })
+    expect(await rpc.listTransactions()).toStrictEqual([
+      expect.objectContaining({ category: 'send', vout: 0, amountBits: -123_456_789n }),
+    ])
+    node.results({ listtransactions: json([RECEIVE, SEND, FEE_ONLY]) })
+    const entries = await rpc.listTransactions()
+    expect(entries[1]).toStrictEqual(bare(SEND_PARSED))
+    expect(entries[2]).toStrictEqual(bare(FEE_ONLY_PARSED))
+  })
+
+  it('getTransaction: v1.0.0 gives it no detail, v1.0.1 the fee-only one; a payment parses as before', async () => {
+    const rpc = client()
+    node.results({ gettransaction: json({ ...SELF_TRANSFER_TX, details: [] }) })
+    expect(await rpc.getTransaction(SELF_TRANSFER)).toMatchObject({ amountBits: 0n, feeBits: -3_861n, details: [] })
+    node.results({ gettransaction: json(SELF_TRANSFER_TX) })
+    const v101 = await rpc.getTransaction(SELF_TRANSFER)
+    expect(v101).toMatchObject({ amountBits: 0n, feeBits: -3_861n, confirmations: 0, trusted: true })
+    expect(v101.details).toStrictEqual([bare({ category: 'send', amountBits: 0n, feeBits: -3_861n, abandoned: false })])
+    for (const [version, tx] of Object.entries(PAYMENT_TX)) {
+      node.results({ gettransaction: json(tx) })
+      const payment = await rpc.getTransaction(tx['txid'] as string)
+      const [detail] = (tx['details'] as Entry[]).map(d => ({
+        address: d['address'],
+        category: 'send',
+        amountBits: -123_456_789n,
+        vout: 0,
+        feeBits: -19_305n,
+        abandoned: false,
+      }))
+      expect(payment.details, version).toStrictEqual([bare(detail)])
+    }
+  })
+
+  it('leaves a missing vout out, never as 0: the fee-only entry has no vout, address or label key', async () => {
+    node.results({ listtransactions: json([FEE_ONLY]), gettransaction: json(SELF_TRANSFER_TX) })
+    const rpc = client()
+    const [entry] = await rpc.listTransactions()
+    const [detail] = (await rpc.getTransaction(SELF_TRANSFER)).details
+    for (const parsed of [entry!, detail!]) {
+      expect(Object.keys(parsed)).not.toContain('vout')
+      for (const key of ['vout', 'address', 'label', 'parentDescs']) expect(parsed).not.toHaveProperty(key)
+    }
+  })
+
+  // Entries without vout that qbit Core never prints: only the fee-only send
+  // entry has none. Each is reported at vout: another category's as by 0.1.0,
+  // a send's before any check across fields.
+  const NOT_FEE_ONLY: [string, Entry][] = [
+    ['a receive', without(RECEIVE, 'vout')],
+    ['a coinbase output', without(GENERATE, 'vout')],
+    ['an immature coinbase output', without(IMMATURE, 'vout')],
+    ['an orphaned coinbase output', without(ORPHAN, 'vout')],
+    ['a payment', without(SEND, 'vout')],
+    ['a payment without a fee', without(without(SEND, 'vout'), 'fee')],
+    ['a positive send', { ...without(SEND, 'vout'), amount: '#1.50000000' }],
+    ['a fee-only entry without its fee', without(FEE_ONLY, 'fee')],
+    ['a send paying something', { ...FEE_ONLY, amount: '#-0.00000001' }],
+    ['a send with an address', { ...FEE_ONLY, address: PEER }],
+    ['a send with a label', { ...FEE_ONLY, label: '' }],
+    ['a send with parent descriptors', { ...FEE_ONLY, parent_descs: [] }],
+    ['a send with a zero fee', { ...FEE_ONLY, fee: '#0.00000000' }],
+    ['a send with a positive fee', { ...FEE_ONLY, fee: '#0.00000001' }],
+  ]
+
+  it('refuses any other entry without vout, in listSinceBlock, listTransactions and getTransaction', async () => {
+    const rpc = client()
+    const details = (entry: Entry): Entry => {
+      const keys = ['address', 'category', 'amount', 'label', 'vout', 'fee', 'abandoned', 'parent_descs']
+      return Object.fromEntries(Object.entries(entry).filter(([key]) => keys.includes(key)))
+    }
+    for (const [name, entry] of NOT_FEE_ONLY) {
+      node.results({ listsinceblock: sinceBlock([SEND, entry]) })
+      expect(await failure(rpc.listSinceBlock()), name).toMatchObject({ path: 'result.transactions[1].vout' })
+      node.results({ listsinceblock: sinceBlock([], [entry]) })
+      expect(await failure(rpc.listSinceBlock()), name).toMatchObject({ path: 'result.removed[0].vout' })
+      node.results({ listtransactions: json([entry]) })
+      expect(await failure(rpc.listTransactions()), name).toMatchObject({ path: 'result[0].vout' })
+      node.results({ gettransaction: json({ ...SELF_TRANSFER_TX, details: [details(entry)] }) })
+      expect(await failure(rpc.getTransaction(SELF_TRANSFER)), name).toMatchObject({
+        reason: 'validation',
+        path: 'result.details[0].vout',
+      })
+    }
+    // A category other than send reads as before: vout is missing.
+    node.results({ listtransactions: json([without(RECEIVE, 'vout')]) })
+    expect(await failure(rpc.listTransactions())).toMatchObject({
+      message: expect.stringContaining('result[0].vout: expected a value (the field is missing)'),
+    })
+    // Another category's missing vout fails where 0.1.0 failed it, before the fields after it.
+    node.results({ listtransactions: json([without(without(RECEIVE, 'vout'), 'abandoned')]) })
+    await invalid(rpc.listTransactions(), 'result[0].vout')
+    node.results({ gettransaction: json({ ...SELF_TRANSFER_TX, details: [{ category: 'receive', amount: 1 }] }) })
+    await invalid(rpc.getTransaction(SELF_TRANSFER), 'result.details[0].vout')
+    // A coinbase's input is never the wallet's: a fee-only entry is never generated.
+    node.results({ listtransactions: json([{ ...FEE_ONLY, generated: true }]) })
+    await invalid(rpc.listTransactions(), 'result[0].vout')
+    // The limit of a check of one entry: a zero-value OP_RETURN send (no address,
+    // amount 0, a negative fee) that lost its vout has the fee-only entry's shape.
+    node.results({ listtransactions: json([without(DATA, 'vout')]) })
+    expect(await rpc.listTransactions()).toEqual([expect.objectContaining({ category: 'send', amountBits: 0n })])
+  })
+
+  it('refuses a fee-only detail beside another detail: the node adds it only when it lists no output', async () => {
+    const rpc = client()
+    const payment = (PAYMENT_TX['v1.0.1']['details'] as Entry[])[0]!
+    for (const details of [
+      [FEE_ONLY_DETAIL, payment],
+      [payment, FEE_ONLY_DETAIL],
+      [FEE_ONLY_DETAIL, FEE_ONLY_DETAIL],
+    ]) {
+      node.results({ gettransaction: json({ ...SELF_TRANSFER_TX, details }) })
+      await invalid(rpc.getTransaction(SELF_TRANSFER), 'result.details')
+    }
+  })
+
+  it('refuses a fee-only entry beside another entry of its txid in one list, or listed with includeChange', async () => {
+    const rpc = client()
+    const output = { ...SEND_V101, txid: SELF_TRANSFER, wtxid: FEE_ONLY['wtxid'] }
+    for (const entries of [
+      [FEE_ONLY, output],
+      [output, SEND, FEE_ONLY],
+      [FEE_ONLY, FEE_ONLY],
+    ]) {
+      node.results({ listsinceblock: sinceBlock(entries) })
+      await invalid(rpc.listSinceBlock(), 'result.transactions')
+      node.results({ listsinceblock: sinceBlock([], entries) })
+      await invalid(rpc.listSinceBlock(), 'result.removed')
+      node.results({ listtransactions: json(entries) })
+      await invalid(rpc.listTransactions(), 'result')
+    }
+    // Each list is checked on its own: after a reorg one transaction can be in both.
+    node.results({ listsinceblock: sinceBlock([SEND, FEE_ONLY], [FEE_ONLY]) })
+    expect((await rpc.listSinceBlock()).removed).toHaveLength(1)
+    // With include_change the node lists the outputs of a self-transfer, never a fee-only entry.
+    node.results({ listsinceblock: sinceBlock([SEND, FEE_ONLY], [FEE_ONLY]) })
+    await invalid(rpc.listSinceBlock({ includeChange: true }), 'result.transactions[1].vout')
+    node.results({ listsinceblock: sinceBlock([SEND], [FEE_ONLY]) })
+    await invalid(rpc.listSinceBlock({ includeChange: true }), 'result.removed[0].vout')
+    node.results({ listsinceblock: sinceBlock([SEND, FEE_ONLY], [FEE_ONLY]) })
+    expect((await rpc.listSinceBlock({ includeChange: false })).transactions).toHaveLength(2)
+    // A label filter lists incoming entries only, so never a fee-only one; `*` lists everything.
+    node.results({ listtransactions: json([FEE_ONLY]) })
+    await invalid(rpc.listTransactions({ label: 'deposit-alice' }), 'result[0].vout')
+    expect(await rpc.listTransactions({ label: '*' })).toHaveLength(1)
+    // includeChange is still checked after the options before it.
+    expect(() => requests.listSinceBlock({ targetConfirmations: 0, includeChange: 'x' } as never)).toThrow(RangeError)
+  })
+})
+
 describe('listTransactions', () => {
   it('parses the entries, oldest first, with the same parser as listSinceBlock', async () => {
     node.results({ listtransactions: json([IMMATURE, SEND, ABANDONED]) })

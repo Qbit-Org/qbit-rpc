@@ -5,7 +5,7 @@
   "method": "getmininginfo",
   "params": [],
   "result": {
-    "blocks": 1011,
+    "blocks": 1012,
     "currentblockweight": 7860,
     "currentblocktx": 1,
     "bits": "207fffff",
@@ -16,7 +16,7 @@
     "blockmintxfee": 0.00000001,
     "chain": "regtest",
     "next": {
-      "height": 1012,
+      "height": 1013,
       "bits": "207fffff",
       "difficulty": 4.656542373906925e-10,
       "target": "7fffff0000000000000000000000000000000000000000000000000000000000"
