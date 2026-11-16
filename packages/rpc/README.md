@@ -24,7 +24,7 @@ Requirements:
   newest 22.x, 24.x and 26.x on Linux x64; Node.js 27 and later, and other
   operating systems, are expected to work but untested.
 - **qbit Core** 1.0.x releases: 1.0.0 and any later 1.0 patch release, but no
-  pre-release. Tested against v1.0.0.
+  pre-release. Tested against v1.0.1.
 - **TypeScript** 5.0 or later, with **`@types/node`** 22.0.0 or later, which
   you install yourself, at the major of your Node.js line. JavaScript needs
   neither.

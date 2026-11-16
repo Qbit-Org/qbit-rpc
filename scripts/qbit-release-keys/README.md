@@ -8,8 +8,10 @@ it. `pin.json` pins it instead, and the verifier downloads it from qbit and
 checks every byte against the pin before it reads anything:
 
 - `commit`: the qbit commit the policy is read from,
-  `7ebcddb622d6e639041f005a189b048ec2a221fe`, the target of tag `v1.0.0`.
-  Files come from
+  `0439a7e5b37fb3f7e4ddfb735b68961445a882c8`, the target of tag `v1.0.1`.
+  Its `keys.json`, certificates and approvals are byte for byte those at
+  `7ebcddb622d6e639041f005a189b048ec2a221fe`, the target of `v1.0.0`, so the
+  policy and signer entries below did not change with it. Files come from
   `https://raw.githubusercontent.com/Qbit-Org/qbit/<commit>/contrib/keys/operator-keys/`.
 - `policy_id` and `policy_sha256`: policy `qbit-release-keys-mainnet-000002`,
   sequence 2, effective from `v1.0.0`, whose `keys.json` has SHA-256
@@ -38,13 +40,13 @@ against a pinned digest, and never point it at a branch.
 
 A release is `testnet` when its version contains `testnet`, and `mainnet`
 otherwise, as qbit's `ci/release/validate_release_artifacts.py` decides; so
-`v1.0.0` is `mainnet` and needs 3 signers.
+`v1.0.1` is `mainnet` and needs 3 signers.
 
 ## Key expiry
 
 operator-01's primary key expires on 2028-06-07; the other four keys and every
 signing subkey have no expiry. gpg then reports `EXPKEYSIG` for operator-01's
-signatures, which the verifier refuses, and `v1.0.0`, signed by operator-01, -02
+signatures, which the verifier refuses, and `v1.0.1`, signed by operator-01, -02
 and -03 against a quorum of 3, no longer verifies. Before that date, pin the
 refreshed certificate (or the next policy) from qbit as below. qbit's own
 `ci/release/validate_release_artifacts.py` would still count such a signature;
@@ -53,7 +55,7 @@ this verifier is stricter on purpose.
 ## Updating
 
 Keep the pin until a release under test needs another policy: a release
-signed under policy 000002, such as `v1.0.0`, keeps verifying against this pin
+signed under policy 000002, such as `v1.0.1`, keeps verifying against this pin
 however qbit's policy changes later. When it does need one:
 
 1. Find the qbit commit that introduced the policy, on a protected qbit branch

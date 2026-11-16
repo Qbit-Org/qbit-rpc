@@ -73,7 +73,7 @@ function client(options: Partial<QbitRpcClientOptions> = {}): QbitRpcClient {
   return new QbitRpcClient({ url, auth: { cookieFile }, expectedChain: 'regtest', ...options })
 }
 
-describe.runIf(enabled)('qbit Core v1.0.0 regtest', () => {
+describe.runIf(enabled)('qbit Core v1.0.1 regtest', () => {
   it('reads and validates chain state', async () => {
     const rpc = client()
     const info = await rpc.getBlockchainInfo()
@@ -1388,13 +1388,15 @@ describe.runIf(enabled)('qbit Core v1.0.0 regtest', () => {
     const stateOf = (count: number): State =>
       count >= LIMIT ? 'exhausted' : count >= CRITICAL_FROM ? 'critical' : count >= WARNING_FROM ? 'warning' : 'normal'
 
-    // The record layout written below is qbit Core v1.0.0's. On any other version this fails, on
-    // purpose, until the rewrite is checked against that version's src/wallet/walletdb.cpp.
+    // The record layout written below is qbit Core v1.0.0's, and v1.0.1's: its
+    // WriteDescriptorPQCKey (src/wallet/walletdb.cpp) and PQC_MAX_SIGNATURES are unchanged. On any
+    // other version this fails, on purpose, until the rewrite is checked against that version's
+    // src/wallet/walletdb.cpp.
     const { version, subversion } = await client().getNetworkInfo()
     expect(
       { version, subversion },
-      'the PQC record rewrite is written for qbit Core v1.0.0 only: check it against the new version'
-    ).toEqual({ version: 10000, subversion: '/qbit:1.0.0/' })
+      'the PQC record rewrite is checked for qbit Core v1.0.1 only: check it against the new version'
+    ).toEqual({ version: 10001, subversion: '/qbit:1.0.1/' })
 
     const name = 'pqc-budget'
     cli('-named', 'createwallet', `wallet_name=${name}`)

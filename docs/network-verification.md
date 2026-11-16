@@ -99,7 +99,7 @@ The gateway is an HTTP proxy the script runs on 127.0.0.1 in front of qbitd.
 ### 2. Mainnet: read-only sweep
 
 On a synced mainnet node (`qbit-cli getblockchaininfo` shows
-`initialblockdownload: false`), running qbit Core v1.0.0. `-txindex` is not
+`initialblockdownload: false`), running qbit Core v1.0.1. `-txindex` is not
 needed: the sweep passes each block's hash. Run it on the node's host, so the
 URL is loopback and the cookie can be used:
 

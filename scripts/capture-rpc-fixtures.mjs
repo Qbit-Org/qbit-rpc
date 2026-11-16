@@ -2,7 +2,7 @@
 // Capture real qbit Core replies as the seeds of the rpc package's validator
 // tests (packages/rpc/test/fixtures.test.ts).
 //
-// Usage: corepack pnpm build && QBIT_BIN_DIR=/path/to/qbit-1.0.0/bin node scripts/capture-rpc-fixtures.mjs
+// Usage: corepack pnpm build && QBIT_BIN_DIR=/path/to/qbit-1.0.1/bin node scripts/capture-rpc-fixtures.mjs
 //
 // Needs Node.js 24 or 22.18 and later, which strip types: blocks and AuxPoW
 // proofs are built with packages/rpc/test/helpers/block-builder.ts.

@@ -34,7 +34,7 @@ Requirements:
   newest 22.x, 24.x and 26.x on Linux x64, and loads the addon on Linux arm64
   and macOS arm64; other platforms, and Node.js 27 and later, are untested.
 - **qbit Core** 1.0.x releases, run with `-zmqpub…` options. Tested against
-  v1.0.0.
+  v1.0.1.
 - **TypeScript** 5.0 or later, with **`@types/node`** 22.0.0 or later, which
   you install yourself, at the major of your Node.js line.
 
