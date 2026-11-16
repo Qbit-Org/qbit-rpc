@@ -5,8 +5,8 @@
   "method": "getnetworkinfo",
   "params": [],
   "result": {
-    "version": 10000,
-    "subversion": "/qbit:1.0.0/",
+    "version": 10001,
+    "subversion": "/qbit:1.0.1/",
     "protocolversion": 70016,
     "localservices": "0000000000002c09",
     "localservicesnames": [

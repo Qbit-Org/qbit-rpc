@@ -4,5 +4,5 @@
   "args": [{"addressType":"p2mr"}],
   "method": "getnewaddress",
   "params": [null,"p2mr"],
-  "result": "qbrt1zy9vln3vq8rk4h2w80pz9nwx2xtyvulpez2e58jc6z2cc0yg3j2kq3kg7ly"
+  "result": "qbrt1znmjd7ql8h29pvsr08uutrsw5r45qystrx5hlxxwjzt9tu2n6nwpsqx0lck"
 }

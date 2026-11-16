@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Live smoke test against a throwaway qbit Core regtest node.
 #
-# Usage: QBIT_BIN_DIR=/path/to/qbit-1.0.0/bin scripts/regtest-smoke.sh
+# Usage: QBIT_BIN_DIR=/path/to/qbit-1.0.1/bin scripts/regtest-smoke.sh
 #
 # QBIT_BIN_DIR must hold qbitd and qbit-cli from the release named in
 # scripts/qbit-core-release.mjs, verified. `node scripts/qbit-release.mjs fetch

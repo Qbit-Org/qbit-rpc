@@ -65,7 +65,7 @@ for await (const event of zmq) {
 ## Requirements
 
 Node.js `^22.13.0 || ^24.0.0 || >=26.0.0`, and qbit Core 1.0.x releases,
-tested against v1.0.0. The type declarations need TypeScript 5.0 or later and
+tested against v1.0.1. The type declarations need TypeScript 5.0 or later and
 `@types/node` 22.0.0 or later. Neither package runs in a browser. See
 [Compatibility](docs/compatibility.md) for what CI tests, and
 [Limits](docs/limits.md).

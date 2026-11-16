@@ -7,15 +7,15 @@
   "result": {
     "wallets": [
       {
+        "name": "fixtures",
+        "warnings": []
+      },
+      {
         "name": "locked",
         "warnings": []
       },
       {
         "name": "payee",
-        "warnings": []
-      },
-      {
-        "name": "fixtures",
         "warnings": []
       }
     ]

@@ -24,7 +24,7 @@ import {
   type Path,
 } from './helpers/replies'
 
-// Real qbit Core v1.0.0 replies, captured on regtest by
+// Real qbit Core v1.0.1 replies, captured on regtest by
 // scripts/capture-rpc-fixtures.mjs, as the seeds of the validator tests: each
 // must validate, and each mutation of one field must either validate or fail
 // as a ResultIssue, which the client reports as an RpcResponseError. Any
@@ -176,7 +176,7 @@ describe('captured regtest replies', () => {
   it('locates those refusals at the field itself, but for a few stated dependencies', () => {
     const tally = { field: 0, sibling: 0, container: 0 }
     for (const f of fixtures) for (const { where } of refusals(f)) if (where !== undefined) tally[where] += 1
-    // With the fixtures of qbit Core v1.0.0, nearly all at the field; a few
+    // With the fixtures of qbit Core v1.0.1, nearly all at the field; a few
     // dozen at a sibling in DEPENDS or at the container an item left.
     expect(tally.field).toBeGreaterThan(10_000)
     expect(tally.sibling + tally.container).toBeLessThan(tally.field / 100)

@@ -266,9 +266,9 @@ describe('the pinned key policy', () => {
   /** The policy files, one replaced, under the original pin. */
   const tampered = (fixture, file, bytes) => ({ pin: fixture.pin, files: { ...fixture.files, [file]: bytes } })
 
-  it("pins v1.0.0's policy, qbit-release-keys-mainnet-000002", () => {
+  it("pins v1.0.1's policy, qbit-release-keys-mainnet-000002", () => {
     const pin = readPin()
-    assert.equal(pin.commit, '7ebcddb622d6e639041f005a189b048ec2a221fe')
+    assert.equal(pin.commit, '0439a7e5b37fb3f7e4ddfb735b68961445a882c8')
     assert.equal(pin.policy_id, 'qbit-release-keys-mainnet-000002')
     assert.equal(pin.policy_sha256, 'f04ae262bd40cdda5c481fc18cef29b405878e66d06c33b49865ea42b38eaf9f')
     assert.deepEqual(Object.keys(pin.signers), [

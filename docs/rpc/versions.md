@@ -1,7 +1,7 @@
 # Versions and compatibility
 
 This package supports **qbit Core 1.0.x releases**: 1.0.0 and any later 1.0
-patch release, and no pre-release. It is tested against v1.0.0, the release
+patch release, and no pre-release. It is tested against v1.0.1, the release
 `scripts/qbit-core-release.mjs` names, by the regtest smoke test (CI's
 `regtest smoke` job). A new minor version is supported only once that test
 passes against it, in a release of this package that says so. The range is

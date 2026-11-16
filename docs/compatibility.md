@@ -4,7 +4,7 @@
 
 **qbit Core 1.0.x releases**: 1.0.0 and any later 1.0 patch release, but no
 pre-release such as `1.0.1-rc1` or `0.1.2-testnet4`. Both packages are tested
-against v1.0.0, the release `scripts/qbit-core-release.mjs` names, by CI's
+against v1.0.1, the release `scripts/qbit-core-release.mjs` names, by CI's
 `regtest smoke` job. A new minor version is supported only once that job passes
 against it, in a release of these packages that says so.
 

@@ -142,7 +142,7 @@ keeps no copy of the keys. It then downloads `SHA256SUMS` and
 them with `gpg` in a temporary GnuPG home holding only those certificates.
 Every signature must be good and by a listed signing key, and the distinct
 signers must meet the release line's quorum in `keys.json` (3 of 5 for
-`mainnet`, which v1.0.0 is). Only then does it take the tarball's SHA-256 from
+`mainnet`, which v1.0.1 is). Only then does it take the tarball's SHA-256 from
 `SHA256SUMS`, and it extracts the tarball only if it has that hash. CI caches
 the tarball under that hash, and checks a restored one, and the stored policy,
 again before use.
@@ -156,7 +156,7 @@ them only after the smoke test passes against the new release, and say so in
 key policy also needs `scripts/qbit-release-keys/pin.json` updated, which
 `node scripts/qbit-release.mjs pin <qbit-commit>` proposes and
 `scripts/qbit-release-keys/README.md` says how to review; a release signed
-under the pinned policy, such as v1.0.0, keeps verifying until then.
+under the pinned policy, such as v1.0.1, keeps verifying until then.
 
 ## Property tests and fixtures
 

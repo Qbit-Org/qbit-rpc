@@ -72,7 +72,7 @@ function decodeArgs(value: unknown): unknown {
   return value
 }
 
-/** A reply captured from qbit Core v1.0.0 on regtest by scripts/capture-rpc-fixtures.mjs. */
+/** A reply captured from qbit Core v1.0.1 on regtest by scripts/capture-rpc-fixtures.mjs. */
 export interface Fixture {
   readonly name: string
   readonly description: string
