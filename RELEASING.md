@@ -92,8 +92,9 @@ setup below must be done, in order.
   `corepack pnpm release:version 0.0.0`, which puts both packages back to
   `"private": true` at `0.0.0`; `pack:check` fails the back-merge until it
   does. Keep the release's CHANGELOG section. Sign the commits you make on
-  that branch: a back-merge merges as it is, and `main` takes only commits
-  with a verified signature
+  that branch: a back-merge merges as it is, `main` takes only commits with a
+  verified signature, and `signed-landing` passes a back-merge only when a
+  person signed its head commit
   ([CONTRIBUTING.md](CONTRIBUTING.md#pull-requests)). Merge a back-merge at
   least once per published version and before the next line is cut.
 - A fix that lands on `main` first and is also needed on an active line is
@@ -230,8 +231,13 @@ Steps 2 to 5 bring these to the settings below.
       fails until then. GitHub's signature rule can't tell that by itself,
       because it also accepts commits GitHub signs, such as a web edit or an
       "Update branch" merge. A pull request from a `backmerge/*` branch of
-      this repository merges as it is, and passes without being judged. That
-      goes by the name alone, so keep such names for back-merges. The check
+      this repository (`AS_IS_HEADS` in the workflow) merges as it is, with
+      any number of commits, and passes when a person signed its head commit
+      with an OpenPGP key that is on their own GitHub account: that
+      signature covers the commit's tree and its parents, so it answers for
+      everything the pull request brings. A head commit that GitHub made,
+      such as an "Update branch" merge or a web conflict resolution, fails.
+      A fork's branch never merges as it is. The check
       always runs from `main`'s copy of the workflow, whatever branch the
       pull request targets. Its result belongs to the commit, so it passes
       only if every open pull request the commit heads, drafts aside, may

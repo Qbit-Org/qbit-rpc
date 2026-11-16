@@ -55,7 +55,10 @@ of `main` and the version reset that the `backmerge/X.Y` branch adds. Make that 
 locally and sign it (`git merge -S origin/main`; if it stops on conflicts,
 finish it with `git commit -S`, because `git merge --continue` does not sign),
 never with GitHub's "Update branch" button or its web conflict editor: GitHub
-signs those commits itself, and the check doesn't judge a back-merge.
+signs those commits itself, and the `signed-landing` check refuses a back-merge
+whose head commit GitHub signed. It passes one whose head commit a person
+signed with an OpenPGP key that is on their own GitHub account, and that
+signature answers for everything the back-merge brings.
 
 ## Versions and the changelog
 
