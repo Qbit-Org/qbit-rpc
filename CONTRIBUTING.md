@@ -31,14 +31,21 @@ There is no ESLint: Prettier formats, and `tsc` in strict mode checks the code.
 ## Pull requests
 
 Every commit on `main` and `release/*` must carry a verified signature, and
-pull requests merge with a merge commit: squash and rebase merges are off. You
+pull requests land with GitHub's squash merge: rebase merges are off. You
 don't need to sign your own commits. When a pull request is ready, a
-maintainer squashes it into one commit, signs it and merges it. That commit's
+maintainer squashes it into one commit, signs it and pushes it. That commit's
 message is the pull request's title and description, then a list of the
 squashed commits with their `Co-authored-by` and `Signed-off-by` trailers. Put
-credits in your commits, not in the description. An open pull request
-usually shows a failing `signed-landing` check until that is done. That is
-expected.
+credits in your commits, not in the description. An open pull request usually
+shows a failing `signed-landing` check until that is done. That is expected.
+The pull request is then squash-merged: GitHub makes one commit on the target
+branch, with the signed commit's message, and signs it itself, so the branch
+gains that one commit and no merge commit. The commit the maintainer signed
+stays as the pull request's head (`refs/pull/<number>/head`); when
+`squash-sign merge` makes the merge, the landed commit's `Signed-commit:` line
+names it. GitHub's signature satisfies the signature rule, so what requires a
+person's signature is the `signed-landing` check, which a ruleset nobody can
+bypass requires.
 
 A back-merge pull request from `backmerge/X.Y` (see
 [RELEASING.md](RELEASING.md)) is the exception. It is merged as it is, with a

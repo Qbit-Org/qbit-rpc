@@ -76,7 +76,7 @@ test('the files are the eight rulesets, in apply order, each restricting the rel
   const byName = Object.fromEntries(rulesets.map(r => [r.name, r]))
   for (const name of ['main', 'release-branches']) {
     const pr = byName[name].rules.find(r => r.type === 'pull_request').parameters
-    assert.deepEqual(pr.allowed_merge_methods, ['merge'], name)
+    assert.deepEqual(pr.allowed_merge_methods, ['merge', 'squash'], name)
     assert.equal(pr.require_code_owner_review, true, name)
     assert.deepEqual(byName[name].bypass_actors[0].bypass_mode, 'pull_request', name)
     assert.ok(

@@ -22,9 +22,9 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
  * first, so that `release-tags-fixed`, which drops the creation rule the
  * existing `v*` ruleset holds, never leaves tag creation open in between.
  * `signed-commits` comes next, so the signature rule is in force before the
- * branch rulesets allow merge commits only. The two `required-checks`
- * rulesets come before the branch rulesets that used to hold those checks,
- * so no check is ever left unrequired in between.
+ * branch rulesets allow only merge commits and squash merges. The two
+ * `required-checks` rulesets come before the branch rulesets that used to
+ * hold those checks, so no check is ever left unrequired in between.
  */
 export const ORDER = [
   'release-tag-creation',

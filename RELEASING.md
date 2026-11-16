@@ -176,18 +176,18 @@ Steps 2 to 5 bring these to the settings below.
       approval of the most recent reviewable push), Block force pushes,
       Restrict deletions. Its status checks are in ruleset 7, which nobody
       can bypass. Under Require a pull request, Allowed merge methods: Merge
-      only. A release branch is cut from `main` and inherits its
+      and Squash. A release branch is cut from `main` and inherits its
       first-parent chain, so a rebase merge into `main` would put every
-      commit of a pull request where a release can be tagged, and a squash
-      merge would replace the pull request's signed commit with one GitHub
-      signs (ruleset 6). Bypass list:
+      commit of a pull request where a release can be tagged. An ordinary
+      pull request lands with a squash merge, one commit that GitHub signs
+      (ruleset 6), and a back-merge as it is, with a merge commit. Bypass list:
       the release approvers team only while there is one code owner
       ([Gaps](#gaps)), otherwise empty.
    2. Branch ruleset `release-branches`, target `release/*`: the same rules as
       `main`, with its status checks in ruleset 8,
       and the same bypass: the release approvers team only while there
       is one code owner ([Gaps](#gaps)), otherwise empty, and the same
-      allowed merge method, Merge only, so each pull request adds
+      allowed merge methods, Merge and Squash, so each pull request adds
       one commit to the branch's first-parent chain, the one `publish.yml`
       releases. Without the bypass, the only
       code owner's `release:version` pull request, which changes both
@@ -207,14 +207,17 @@ Steps 2 to 5 bring these to the settings below.
       creation to ruleset 4 and empty its bypass list.
    6. Branch ruleset `signed-commits`, target the default branch and
       `release/*`: Require signed commits, with no bypass actors, so nobody,
-      admins included, can merge a pull request with an unsigned commit. A
-      maintainer squashes a pull request into one commit, signs it and
-      merges it, and GitHub signs the merge commit itself
-      ([CONTRIBUTING.md](CONTRIBUTING.md#pull-requests)). The repository's
-      settings allow merge commits only (Settings → General → Pull
-      Requests), which the rulesets in 1 and 2 match. `pnpm rulesets`
-      doesn't manage that setting. Once `signed-commits` exists, set it with
-      `gh api -X PATCH repos/Qbit-Org/qbit-rpc -F allow_merge_commit=true -F allow_squash_merge=false -F allow_rebase_merge=false`,
+      admins included, can add an unsigned commit to them. A maintainer
+      squashes a pull request into one commit, signs it and pushes it, and
+      the pull request is then squash-merged: GitHub makes one commit and
+      signs it itself ([CONTRIBUTING.md](CONTRIBUTING.md#pull-requests)).
+      GitHub's signature satisfies this rule, so what requires a person's
+      signature is `signed-landing`, in ruleset 7, which nobody can bypass.
+      The repository's settings allow merge commits and squash merges
+      (Settings → General → Pull Requests), which the rulesets in 1 and 2
+      match. `pnpm rulesets` doesn't manage that setting. Once
+      `signed-commits` exists, set it with
+      `gh api -X PATCH repos/Qbit-Org/qbit-rpc -F allow_merge_commit=true -F allow_squash_merge=true -F allow_rebase_merge=false`,
       and read it with
       `gh api repos/Qbit-Org/qbit-rpc --jq '{allow_merge_commit, allow_squash_merge, allow_rebase_merge}'`.
    7. Branch ruleset `required-checks`, target the default branch: Require
@@ -310,7 +313,7 @@ Steps 2 to 5 bring these to the settings below.
      2. Save it as the secret `NPM_TOKEN` of the `npm` environment (Settings →
         Environments → `npm` → Add environment secret), where only the
         approved `publish` job can read it.
-     3. Push the tag, from the merge commit of step 6, as in
+     3. Push the tag, from the squash commit of step 6, as in
         [Cutting a release](#cutting-a-release), and approve the `publish`
         job after the [checklist](#approving-a-publish). With no trusted
         publisher, npm takes the token; the run still signs provenance.
@@ -476,8 +479,8 @@ nothing if that file was edited. The approver checks, against their own
 - [ ] the run is for the expected tag, and its commit (on the run page) is
       that tag's commit and is on `release/X.Y`'s first-parent chain, as a
       merge or squash commit there (an ancestor is not enough: every commit
-      inside a merged pull request is one, the commit a maintainer signed
-      included, so tag GitHub's merge commit and not that one):
+      inside a pull request merged with a merge commit is one, so tag the
+      commit GitHub made and not one inside the pull request):
       `git rev-list --first-parent origin/release/X.Y | grep -Fx "$(git rev-parse --verify '<commit>^{commit}')"`
       prints it. `rev-list` prints full SHAs, so the run page's short SHA,
       or the tag name, is expanded first;
