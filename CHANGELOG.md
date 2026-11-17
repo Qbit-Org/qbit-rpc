@@ -15,7 +15,13 @@ changes a package's `src/` adds a line here, which CI checks.
 How the code changed before its first release, review by review, is in
 [docs/history/before-0.1.0.md](docs/history/before-0.1.0.md).
 
-## 0.2.0 (unreleased)
+## 0.2.0 - 2026-11-17
+
+### Supported versions
+
+- **qbit Core 1.0.x releases**, as for 0.1.0. CI's regtest smoke test now runs
+  against v1.0.1, where 0.1.0's ran against v1.0.0. The Node.js, TypeScript,
+  `@types/node` and `zeromq` requirements are 0.1.0's.
 
 ### `@qbit-oss/rpc`
 
@@ -46,6 +52,37 @@ How the code changed before its first release, review by review, is in
   type), and a copy of the client checked with `ClientSatisfies` that declares
   `vout` required on these results now reports `returns`: declare it optional.
   See [wallet history](docs/rpc/wallet.md#wallet-history).
+
+### `@qbit-oss/zmq`
+
+- No code changes: released at 0.2.0 with `@qbit-oss/rpc`, as both packages
+  share one version.
+
+### Known limitations
+
+- Verified against qbit Core v1.0.1 on regtest only, with fault injection
+  ([report](docs/network-reports/2026-11-17-regtest-regtest.md)). As for
+  0.1.0, the mainnet read-only sweep and 24-hour ZMQ soak that
+  [docs/network-verification.md](docs/network-verification.md) plans were not
+  run for this release, and testnet4 is not in the plan, so neither package
+  has met a live network's replies or a long-lived ZMQ connection.
+- Two wallet changes of qbit Core v1.0.1 are not typed. `getwalletinfo`'s
+  `pqc_key_validation` gains `reencryption_required`, true while an encrypted
+  wallet still stores PQC keys unencrypted. `getWalletInfo()` does not report
+  it: `pqcKeyValidation.signingBlocked` then stays true until an unlock has
+  re-encrypted those keys (one that failed validation never is), so waiting
+  for validation, as
+  [wallet](docs/rpc/wallet.md#signing-right-after-qbitd-starts) advises, does
+  not end it. While it is true, `backupWallet` fails with `RpcError` -13, and
+  takes no `allow_unencrypted_pqc_keys`. `call('getwalletinfo')` and
+  `call('backupwallet', ...)` reach both.
+- On qbit Core v1.0.1, `walletPassphrase` can reject after it has unlocked the
+  wallet: when the keypool refill fails, the node answers `RpcError` -4, "The
+  wallet is unlocked until the timeout, but its keypool could not be
+  refilled", and locks it again only at the timeout. Call `walletLock()` after
+  that error unless the wallet should stay unlocked. See
+  [wallet](docs/rpc/wallet.md#unlocking-an-encrypted-wallet).
+- 0.1.0's other known limitations still hold.
 
 ## 0.1.0 - 2026-11-09
 
