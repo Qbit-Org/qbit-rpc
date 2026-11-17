@@ -215,9 +215,9 @@ holds up to about 25 bits/vB.
 
 Commit each report under `docs/network-reports/` (the default path,
 `<date>-<chain>-<mode>.md`) and list it below. Every failure in a report is
-fixed, or explained here. Then update the `0.1.0` section's known limitations
-in `CHANGELOG.md`, and the networks and qbit Core versions verified in the
-README.
+fixed, or explained here. Then update the known limitations of the release's
+section in `CHANGELOG.md`, and the networks and qbit Core versions verified
+in the README.
 
 ## Results
 
@@ -226,12 +226,15 @@ README.
 | 2026-11-05 | 1, regtest, every mode (from a working tree) | qbit Core v1.0.0, regtest | `f655a1b` with this change | not committed: a rehearsal of the script | pass |
 | 2026-11-09 | 1, regtest, every mode | qbit Core v1.0.0, regtest | `3c9b8c4` (`release/0.1`) | [2026-11-09-regtest-regtest.md](network-reports/2026-11-09-regtest-regtest.md) | pass |
 | 2026-11-09 | 2 and 3, mainnet read-only and ZMQ soak | — | — | not run for 0.1.0 | skipped |
+| 2026-11-17 | 1, regtest, every mode | qbit Core v1.0.1, regtest | `1a1b5a6` (`main`, where `release/0.2` is cut) | [2026-11-17-regtest-regtest.md](network-reports/2026-11-17-regtest-regtest.md) | pass |
+| 2026-11-17 | 2 and 3, mainnet read-only and ZMQ soak | — | — | not run for 0.2.0 | skipped |
 
 Findings so far:
 
 - On regtest, every fault above has the expected outcome, and every
   `RpcUnknownOutcomeError` reconciled by its txid. In the SIGKILL case the
-  transaction was in the mempool again after the restart.
+  transaction was in the mempool again after the restart. qbit Core v1.0.1
+  gave the same outcomes as v1.0.0.
 - After a restart, qbit Core v1.0.0 refuses to sign from an unencrypted
   wallet until it has validated the wallet's plaintext PQC keys
   (`signing_blocked` in `getwalletinfo`'s `pqc_key_validation`), with

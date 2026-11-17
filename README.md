@@ -33,7 +33,7 @@ application.
 A service that reacts to blocks usually wants both: ZMQ to wake up, RPC to read
 what changed.
 
-Both are verified against qbit Core v1.0.0 on regtest, with fault injection;
+Both are verified against qbit Core v1.0.1 on regtest, with fault injection;
 not yet against mainnet or testnet4 ([network verification](docs/network-verification.md)).
 
 ## Example
