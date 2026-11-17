@@ -73,6 +73,13 @@ Calling `walletPassphrase` again is safe too: it waits for one still running,
 then sets a new relock time. `walletLock()` also waits for it, under the same
 default deadline.
 
+**An error after the unlock.** On qbit Core v1.0.1, `walletPassphrase` can
+reject with an `RpcError` and leave the wallet unlocked: when the keypool
+refill fails, the node answers -4, "The wallet is unlocked until the timeout,
+but its keypool could not be refilled", and locks the wallet again only at the
+timeout. Call `walletLock()` after that error unless the wallet should stay
+unlocked; `getWalletInfo().unlockedUntil` tells which state it is in.
+
 ## Signing right after `qbitd` starts
 
 After `qbitd` starts, qbit Core v1.0.0 validates an unencrypted wallet's
@@ -80,6 +87,13 @@ plaintext PQC keys before it signs. Until
 `getWalletInfo().pqcKeyValidation.signingBlocked` is false, `walletProcessPsbt`
 fails with `RpcError` "plaintext PQC wallet key validation is still in
 progress". Wait for it before signing.
+
+On qbit Core v1.0.1, `signingBlocked` is also true while an encrypted wallet
+still stores PQC keys unencrypted: `reencryption_required` in `getwalletinfo`'s
+`pqc_key_validation`, which `getWalletInfo()` does not report, so read it with
+`call('getwalletinfo')`. Waiting does not end that. Unlocking the wallet
+re-encrypts the keys that passed validation, and one that failed is never
+re-encrypted.
 
 ## PQC signature budgets
 
