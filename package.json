@@ -6,7 +6,7 @@
   "engines": {
     "node": "^22.13.0 || ^24.0.0 || >=26.0.0"
   },
-  "packageManager": "pnpm@11.28.6+sha512.55d90390c3b39042f1505a2697789f0256c6d95bb28bdd7cb731af1887c9f2629ef581acb9f4e4ec772024c8203c2aed22a03299b97103fdcf32668e905d0024",
+  "packageManager": "pnpm@11.28.13+sha512.d5caa9cdcd6067ac2902f9f44daa00b1288a73babf1e98f4f375b3a7583b1894b4d49f7527da8f5e1530198bb10e03adba321a1f015429dc2946ce8a7a9a8c65",
   "scripts": {
     "build": "pnpm -r --if-present build",
     "test": "pnpm -r --if-present test",
@@ -47,7 +47,7 @@
   },
   "homepage": "https://github.com/Qbit-Org/qbit-rpc#readme",
   "devDependencies": {
-    "prettier": "3.9.10",
+    "prettier": "3.10.1",
     "typedoc": "0.28.20",
     "types-node-floor": "npm:@types/node@22.0.0",
     "typescript": "^5.9.3",
